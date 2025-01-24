@@ -209,7 +209,7 @@ def quantize(signal: Ts, levels: int = 256, differentiable: bool = False) -> Ts:
     qt = signal * v_max
     qt = torch.round(qt) / v_max
     if differentiable:
-        qt_noise = qt - signal.detach
+        qt_noise = qt - signal.detach()
         return signal + qt_noise
     else:
         return qt
@@ -231,6 +231,7 @@ class SimpleSensor(Sensor):
     :param pixel_size: Height and width of a pixel in meters.
     :type pixel_size: float or tuple[float, float]
     :param bool rgb: RGB sensor if ``True``, grayscale sensor otherwise.
+        If ``None``, CFA will not be applied and output will have a channel dimension.
         Default: ``True``.
     :param srf: SRF tensor of shape ``(N_C, N_wl)`` where ``N_C`` is 1 or 3,
         or a 3-tuple of tensors of length ``N_wl``, corresponding to the SRF of
@@ -256,7 +257,7 @@ class SimpleSensor(Sensor):
         pixel_size: Pair[float],
         rgb: bool = True,
         srf: Ts | tuple[Ts, Ts, Ts] = None,
-        bayer_pattern: BayerPattern = 'RGGB',
+        bayer_pattern: BayerPattern = None,
         noise_std: float = 0.,
         max_value: float = 1.,
         _quantize: int = 256,
@@ -265,7 +266,7 @@ class SimpleSensor(Sensor):
         super().__init__(pixel_num, pixel_size)
         self.rgb: bool = rgb  #: RGB sensor or not.
         #: Bayer CFA pattern. See :py:func:`rgb2raw`
-        self.bayer_pattern: BayerPattern = bayer_pattern
+        self.bayer_pattern: BayerPattern | None = bayer_pattern
         self.noise_std: float = noise_std  #: Standard deviation of Gaussian noise.
         self.max_value: float = max_value  #: Maximum possible value of signal.
         self.quantize: int = _quantize  #: Quantization level.
@@ -280,7 +281,7 @@ class SimpleSensor(Sensor):
             raise ValueError(
                 f'Number of channels of SRF must be one or three in {self.__class__.__name__}'
             )
-        if rgb:
+        if rgb and bayer_pattern is not None:
             srf = _make_srf(srf, bayer_pattern)  # 4 x N_wl
         self.register_buffer('srf', srf)
 
@@ -299,7 +300,10 @@ class SimpleSensor(Sensor):
             if self.rgb:  # radiance: ... x 3 x H x W
                 if radiance.size(-3) != 3:
                     raise ValueError(_MSG1.format('3', 'RGB'))
-                transmitted = rgb2raw(radiance, self.bayer_pattern).squeeze(-3)
+                if self.bayer_pattern is None:
+                    transmitted = radiance
+                else:
+                    transmitted = rgb2raw(radiance, self.bayer_pattern).squeeze(-3)
             else:
                 if radiance.size(-3) != 1:
                     raise ValueError(_MSG1.format('1', 'grayscale'))
@@ -319,5 +323,5 @@ class SimpleSensor(Sensor):
         if self.quantize <= 0:
             return signal
         return quantize(
-            signal.detach / self.max_value, self.quantize, self.differentiable_quantization
+            signal.detach() / self.max_value, self.quantize, self.differentiable_quantization
         )

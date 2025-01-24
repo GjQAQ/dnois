@@ -6,7 +6,7 @@ from torch import nn
 
 from . import _surf
 from ._surf import *
-from ... import mt, torch as _t
+from ... import mt, torch as _t, utils
 from ...base.typing import Any, Ts, Scalar, Sequence, scalar, cast
 
 __all__ = [
@@ -63,6 +63,11 @@ class _SphericalBase(CircularSurface, metaclass=abc.ABCMeta):  # docstring for S
         super().__init__(material, aperture, reflective, newton_config, d=d)
         self.roc: nn.Parameter = nn.Parameter(scalar(roc))  #: Radius of curvature.
 
+    def extra_repr(self) -> str:
+        r = super().extra_repr()
+        r += f',\nroc={utils.fmt(self.roc.item())}'
+        return r
+
     def to_dict(self, keep_tensor=True) -> dict[str, Any]:
         d = super().to_dict(keep_tensor)
         d['roc'] = self._attr2dictitem('roc', keep_tensor)
@@ -82,23 +87,23 @@ class Spherical(_SphericalBase):
     def h_derivative_r2(self, r2: Ts) -> Ts:
         return _spherical_der_wrt_r2(r2, 1 / self.roc)
 
-    def _solve_t(self, ray: BatchedRay) -> Ts:
-        if self.roc.isinf().all():
-            return (self.context.z - ray.z) / ray.d_z
-
-        o_hat = torch.cat([ray.o[..., :2], ray.z.unsqueeze(-1) - self.context.z], -1) / self.roc
-        qc_b = torch.sum(o_hat * ray.d, -1) - ray.d_z  # quadratic coefficient: b
-        qc_c = o_hat.square().sum(-1) - 2 * o_hat[..., 2]  # quadratic coefficient: c
-        q_sqrt_delta = torch.sqrt(qc_b.square() - qc_c)  # sqrt of delta in quadratic equation
-        q_sqrt_delta = torch.copysign(q_sqrt_delta, ray.d_z)
-        t_hat = -qc_b - q_sqrt_delta
-        t = t_hat * self.roc
-
-        nan_mask = t.isnan()
-        if nan_mask.any():
-            h_ext_value = self.context.z + self.roc
-            t = torch.where(nan_mask, (h_ext_value - ray.z) / ray.d_z, t)
-        return t
+    # def _solve_t(self, ray: BatchedRay) -> Ts:
+    #     if self.roc.isinf().all():
+    #         return (self.context.baseline - ray.z) / ray.d_z
+    #
+    #     o_hat = torch.cat([ray.o[..., :2], ray.z.unsqueeze(-1) - self.context.baseline], -1) / self.roc
+    #     qc_b = torch.sum(o_hat * ray.d, -1) - ray.d_z  # quadratic coefficient: b
+    #     qc_c = o_hat.square().sum(-1) - 2 * o_hat[..., 2]  # quadratic coefficient: c
+    #     q_sqrt_delta = torch.sqrt(qc_b.square() - qc_c)  # sqrt of delta in quadratic equation
+    #     q_sqrt_delta = torch.copysign(q_sqrt_delta, ray.d_z)
+    #     t_hat = -qc_b - q_sqrt_delta
+    #     t = t_hat * self.roc
+    #
+    #     nan_mask = t.isnan()
+    #     if nan_mask.any():
+    #         h_ext_value = self.context.baseline + self.roc
+    #         t = torch.where(nan_mask, (h_ext_value - ray.z) / ray.d_z, t)
+    #     return t
 
 
 class _ConicBase(_SphericalBase, metaclass=abc.ABCMeta):  # docstring for Conic
@@ -134,6 +139,11 @@ class _ConicBase(_SphericalBase, metaclass=abc.ABCMeta):  # docstring for Conic
         super().__init__(roc, material, aperture, reflective, newton_config, d=d)
         self.conic: nn.Parameter = nn.Parameter(scalar(conic))  #: Conic coefficient.
 
+    def extra_repr(self) -> str:
+        r = super().extra_repr()
+        r += f',\nconic={utils.fmt(self.conic.item())}'
+        return r
+
     def h_derivative_r2(self, r2: Ts) -> Ts:
         return _spherical_der_wrt_r2(r2, 1 / self.roc, self.conic)
 
@@ -158,9 +168,9 @@ class Conic(_ConicBase):
 
     def _solve_t(self, ray: BatchedRay) -> Ts:
         if self.roc.isinf().all():
-            return (self.context.z - ray.z) / ray.d_z
+            return (self.context.baseline - ray.z) / ray.d_z
 
-        o_hat = torch.cat([ray.o[..., :2], ray.z.unsqueeze(-1) - self.context.z], -1) / self.roc
+        o_hat = torch.cat([ray.o[..., :2], ray.z.unsqueeze(-1) - self.context.baseline], -1) / self.roc
         qc_a = 1 + self.conic * ray.d_z.square()  # quadratic coefficient: a
         _1 = o_hat * ray.d
         _1[..., 2] = _1[..., 2] * (self.conic + 1)
@@ -175,7 +185,7 @@ class Conic(_ConicBase):
 
         nan_mask = t.isnan()
         if nan_mask.any():
-            h_ext_value = self.context.z + self.roc
+            h_ext_value = self.context.baseline + self.roc
             t = torch.where(nan_mask, (h_ext_value - ray.z) / ray.d_z, t)
         return t
 
@@ -222,6 +232,11 @@ class EvenAspherical(_ConicBase):
         for i, a in enumerate(coefficients):
             self.register_parameter(f'a{i + 1}', nn.Parameter(scalar(a)))
         self._n = len(coefficients)
+
+    def extra_repr(self) -> str:
+        r = super().extra_repr()
+        r += f',\n' + ','.join(f'a{i + 1}={utils.fmt(a.item())}' for i, a in enumerate(self.coefficients))
+        return r
 
     def h_r2(self, r2: Ts) -> Ts:
         a = 0
@@ -401,6 +416,12 @@ class PolynomialPhase(PlanarPhase, CircularSurface):
             self.register_parameter(f'b{i + 1}', nn.Parameter(scalar(_b)))
         self.m: int = len(b)  #: Number of rectangular coefficients :math:`m`.
 
+    def extra_repr(self) -> str:
+        r = super().extra_repr()
+        r += f',\n' + ','.join(f'a{i + 1}={utils.fmt(a.item())}' for i, a in enumerate(self.a))
+        r += f',\n' + ','.join(f'b{i + 1}={utils.fmt(b.item())}' for i, b in enumerate(self.b))
+        return r
+
     def h_r2(self, r2: Ts) -> Ts:
         return torch.zeros_like(r2)
 
@@ -468,6 +489,9 @@ class Fresnel(Planar, EvenAspherical):
         d: Scalar = None
     ):
         EvenAspherical.__init__(self, roc, conic, coefficients, material, aperture, reflective, d=d)
+
+    def extra_repr(self) -> str:
+        return EvenAspherical.extra_repr(self)
 
     def h_r2(self, r2: Ts) -> Ts:
         return torch.zeros_like(r2)

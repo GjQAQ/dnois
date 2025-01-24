@@ -1,7 +1,10 @@
 import inspect
 
+from .. import base
+
 __all__ = [
     'subclasses',
+    'fmt',
 ]
 
 
@@ -12,11 +15,14 @@ def _subclasses(cls: type) -> set[type]:
     return subs
 
 
-def subclasses(cls:type, _filter: bool = True) -> list[type]:
+def subclasses(cls: type, _filter: bool = True) -> list[type]:
     sub_list = _subclasses(cls)
     if _filter:
-        sub_list =  list(filter(lambda c: not inspect.isabstract(c) and not c.__name__.startswith('_'), sub_list))
+        sub_list = list(filter(lambda c: not inspect.isabstract(c) and not c.__name__.startswith('_'), sub_list))
     sub_list = sorted(sub_list, key=lambda c: c.__name__)
     return sub_list
 
 
+def fmt(v: float) -> str:
+    s = f'{{:{base.float_print_fmt}}}'
+    return s.format(v)

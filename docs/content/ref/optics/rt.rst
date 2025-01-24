@@ -19,6 +19,8 @@ Optical surfaces
     :toctree: ../../generated/optics/rt/surf
 
     surface_types
+    CoaxialContext
+    CoaxialSurfaceList
     Context
     CircularSurface
     Surface

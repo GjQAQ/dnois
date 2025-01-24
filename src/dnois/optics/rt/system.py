@@ -8,13 +8,15 @@ from . import surf, SurfaceList
 from .ray import BatchedRay
 from ..system import RenderingOptics
 from ... import scene as _sc, base, utils, fourier, torch as _t
-from ...base import typing
+from ...base import typing, ddb
 from ...base.typing import Ts, Any, Size2d, Vector, Scalar, Self, PsfCenter
 from ...sensor import Sensor
 
 __all__ = [
     'CoaxialRayTracing',
 ]
+
+from ...utils import t4plot
 
 DEFAULT_FIND_CHIEF_SAMPLES: int = 101
 DEFAULT_SAMPLES: int = 512
@@ -273,7 +275,8 @@ class CoaxialRayTracing(RenderingOptics):
         """
         out_ray: BatchedRay = self.surfaces(ray)
         ref_idx = self.surfaces.last.material.n(out_ray.wl, 'm')
-        return out_ray.march_to(self.surfaces.total_length, ref_idx)
+        out_ray = out_ray.march_to(self.surfaces.total_length, ref_idx)
+        return out_ray
 
     def trace_point(self, point: Ts, wl: Vector, sampler: surf.Sampler = None) -> BatchedRay:
         """
@@ -411,34 +414,61 @@ class CoaxialRayTracing(RenderingOptics):
     #     d_chief, l0_chief = _make_direction(points_chief, origin, True)  # ... x 1 x 1( x 3)
     #     chief_ray = BatchedRay(points_chief, d_chief, wl, 0.)  # ... x N_wl x 1
 
-    # @torch.no_grad()
-    # def show_spot_diagram(self, fov: Vector = None, wl: Vector = None) -> plt.Figure:
-    #     """
-    #     .. warning::
-    #
-    #         This method is subject to change.
-    #     """
-    #     if fov is None:
-    #         fov_half = self.reference.fov_half
-    #         fov = [0., fov_half * 0.5 ** 0.5, fov_half]
-    #     wl = self.pick('wl', wl)
-    #     fov = typing.vector(fov, device=self.device, dtype=self.dtype)
-    #     wl = typing.vector(wl, device=self.device, dtype=self.dtype)
-    #
-    #     n_fov = fov.numel()
-    #     n_row = math.floor(math.sqrt(n_fov) + 1e-5)
-    #     n_col = math.ceil(n_fov / n_row)
-    #     fig, ax = plt.subplots(n_row, n_col, figsize=(n_col * 4, n_row * 3))
-    #
-    #     for i, fov in enumerate(fov.tolist()):
-    #         o = self.fovd2obj((0, fov), float('inf'), True)
-    #         _, chief_ray = self._generate_rays(o, wl, 1)
-    #         radial_offset = torch.sqrt(chief_ray.o[..., :2].square().sum(-1))
-    #         d_proj = torch.sqrt(chief_ray.d[..., :2].square().sum(-1))
-    #         rs_roc = radial_offset / d_proj  # N_wl x 1
-    #         enter_pupil_z = torch.sqrt(rs_roc.square() - radial_offset.square()).squeeze(-1)  # N_wl
-    #         enter_pupil_z += chief_ray.z
-    #         pupil_ap=surf.CircularAperture()
+    @torch.no_grad()
+    def show_spot_diagram(
+        self, points: Ts = None, wl: Vector = None, *, entr_d=None, entr_z=None, width=None
+    ) -> plt.Figure:
+        """
+        .. warning::
+
+            This method is subject to change.
+        """
+        if points is None:
+            fov_half = self.reference.fov_half
+            fov = [0., fov_half * 0.5 ** 0.5, fov_half]
+            points = self.fovd2obj([(0., fov_item) for fov_item in fov], float('inf'))
+        wl = self.pick('wl', wl)
+        wl = typing.vector(wl, device=self.device, dtype=self.dtype)
+
+        points = self.cam2lens(points)
+        n_point = points.size(0)
+        n_row = int(math.sqrt(n_point) + 1e-5)
+        n_col = int(math.ceil(n_point / n_row))
+        fig, axs = plt.subplots(n_row, n_col, squeeze=False, figsize=(n_col * 5, n_row * 5))
+
+        for i in range(n_point):
+            # _, chief_ray = self._generate_rays(points[i], wl, 1)
+            # radial_offset = torch.sqrt(chief_ray.o[..., :2].square().sum(-1))
+            # d_proj = torch.sqrt(chief_ray.d[..., :2].square().sum(-1))
+            # rs_roc = radial_offset / d_proj  # N_wl x 1
+            # enter_pupil_z = torch.sqrt(rs_roc.square() - radial_offset.square()).squeeze(-1)  # N_wl
+            # enter_pupil_z += chief_ray.z
+            pupil_ap = surf.CircularAperture(entr_d)
+            pupil_ap.to(device=self.device, dtype=self.dtype)
+            x, y = pupil_ap.sample_unipolar(6, 6)
+            pupil_points = torch.stack([x, y, torch.full_like(x, entr_z)], -1)  # N_spp x 3
+            direction, _ = _make_direction(pupil_points, points[i], True)  # N_spp|1 x 3
+            ray_in = BatchedRay(pupil_points, direction, wl.view(-1, 1))  # N_wl x N_spp
+            ray_out = self.trace_ray(ray_in)  # N_wl x N_spp
+
+            r, c = i // n_col, i % n_col
+            ax: plt.Axes = axs[r][c]
+            for j in range(wl.size(0)):
+                x, y = t4plot(ray_out.x[j]), t4plot(ray_out.y[j])
+                x -= (x.max() + x.min()) / 2
+                y -= (y.max() + y.min()) / 2
+                ax.scatter(
+                    x, y,
+                    s=2,
+                    c=utils.wl2rgb(wl[j].item(), output_format='hex'),
+                    label=f'{wl[j].item():.4g}',
+                )
+                ax.legend()
+                ax.set_aspect('equal')
+                ax.set_xlim(-width, width)
+                ax.set_ylim(-width, width)
+
+        return fig
 
     @torch.no_grad()
     def show_cross_section(
@@ -788,17 +818,23 @@ class CoaxialRayTracing(RenderingOptics):
         n_spp = out_ray.shape[-1]
 
         xy_center = self._find_xy_center(psf_center, self.cam2lens(origins), out_ray, wl)
-        xy = out_ray.o[..., :2] - xy_center  # ... x N_wl x N_spp x 2
+        xy = out_ray.o[..., :2]  # ... x N_wl x N_spp x 2
+        # xy = torch.where(out_ray.valid.unsqueeze(-1), xy, 0)
+        xy = xy - xy_center  # ... x N_wl x N_spp x 2
+        if xy.requires_grad and ddb.debugging():
+            # print(xy.numel(), xy.shape, out_ray.valid_percentage())
+            xy.register_hook(ddb.grad_hook_check_peculiar(f'xy in {self._psf_inc_rect.__qualname__}'))
 
         x, y = xy[..., 0] / self.sensor.pixel_size[1], xy[..., 1] / self.sensor.pixel_size[0]  # ... x N_wl x N_spp
         # if PSF size is odd, the center is N/2, relative positions are -N//2, ..., N//2
         # if PSF size is even, the center is (N+1)/2, relative positions are -N//2, ..., N//2-1
-        x, y = x + size[1] // 2 + 0.5, y + size[0] // 2 + 0.5
+        x, y = x + (size[1] // 2 + 0.5), y + (size[0] // 2 + 0.5)
         c_a, r_a = torch.floor(x.detach() + 0.5).long(), torch.floor(y.detach() + 0.5).long()
         in_region = c_a.ge(0) & c_a.le(size[1]) & r_a.ge(0) & r_a.le(size[0])  # ... x N_wl x N_spp
         mask = out_ray.valid & in_region  # ... x N_wl x N_spp
-        c_a[~mask] = 0
-        r_a[~mask] = 0
+        for t in (x, y, c_a, r_a):  # mask out invalid rays in these four tensors
+            t[~mask] = 0
+
         c_as, r_as = c_a - 1, r_a - 1
         w_c, w_r = c_a - x + 0.5, r_a - y + 0.5
         iw_c, iw_r = 1 - w_c, 1 - w_r

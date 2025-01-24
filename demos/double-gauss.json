@@ -1,0 +1,138 @@
+{
+  "surfaces": [
+    {
+      "type": "Spherical",
+      "material": "SK2",
+      "aperture": {
+        "type": "CircularAperture",
+        "diameter": 0.05867840722203255
+      },
+      "roc": 0.05415324494242668
+    },
+    {
+      "type": "Spherical",
+      "material": "vacuum",
+      "aperture": {
+        "type": "CircularAperture",
+        "diameter": 0.056533169001340866
+      },
+      "roc": 0.15252192318439484
+    },
+    {
+      "type": "Spherical",
+      "material": "SK16",
+      "aperture": {
+        "type": "CircularAperture",
+        "diameter":0.04870916157960892
+      },
+      "roc": 0.03595062345266342
+    },
+    {
+      "type": "Spherical",
+      "material": "F5",
+      "aperture": {
+        "type": "CircularAperture",
+        "diameter":0.04271645098924637
+      },
+      "roc": Infinity
+    },
+    {
+      "type": "Spherical",
+      "material": "vacuum",
+      "aperture": {
+        "type": "CircularAperture",
+        "diameter": 0.02986566722393036
+      },
+      "roc": 0.022269925102591515
+    },
+    {
+      "type": "CircularStop",
+      "aperture": {
+        "type": "CircularAperture",
+        "diameter":0.02
+      }
+    },
+    {
+      "type": "Spherical",
+      "material": "F5",
+      "aperture": {
+        "type": "CircularAperture",
+        "diameter":0.026602674275636673
+      },
+      "roc": -0.025685032829642296
+    },
+    {
+      "type": "Spherical",
+      "material": "SK16",
+      "aperture": {
+        "type": "CircularAperture",
+        "diameter":0.03325006365776062
+      },
+      "roc": Infinity
+    },
+    {
+      "type": "Spherical",
+      "material": "vacuum",
+      "aperture": {
+        "type": "CircularAperture",
+        "diameter":0.03812296316027641
+      },
+      "roc": -0.036980219185352325
+    },
+    {
+      "type": "Spherical",
+      "material": "SK16",
+      "aperture": {
+        "type": "CircularAperture",
+        "diameter":0.04294765740633011
+      },
+      "roc": 0.19641733169555664
+    },
+    {
+      "type": "Spherical",
+      "material": "vacuum",
+      "aperture": {
+        "type": "CircularAperture",
+        "diameter":0.0435943678021431
+      },
+      "roc": -0.06714755296707153
+    }
+  ],
+  "contexts": [
+    {
+      "distance": 0.008746657520532608
+    },
+    {
+      "distance": 0.0005000000237487257
+    },
+    {
+      "distance": 0.014000000432133675
+    },
+    {
+      "distance": 0.003776965895667672
+    },
+    {
+      "distance": 0.014253059402108192
+    },
+    {
+      "distance": 0.012428129091858864
+    },
+    {
+      "distance": 0.003776965895667672
+    },
+    {
+      "distance": 0.010833928361535072
+    },
+    {
+      "distance": 0.0005000000237487257
+    },
+    {
+      "distance": 0.006858174689114094
+    },
+    {
+      "distance": 0.05731453746557236
+    }
+  ],
+  "foremost_material": "vacuum",
+  "stop_idx": 5
+}

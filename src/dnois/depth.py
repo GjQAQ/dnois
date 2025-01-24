@@ -1,6 +1,7 @@
 import torch
 
 from .base.typing import Ts
+from . import torch as _t
 
 __all__ = [
     'center_depth',
@@ -9,6 +10,7 @@ __all__ = [
     'depth_range',
     'ips2depth',
     'ips2slope',
+    'quantize_depth_map',
     'slope2depth',
     'slope2ips',
     'slope_lim',
@@ -57,13 +59,30 @@ def depth_range(central_depth, slope_range_):
     return _center_depth2 / (2 + slope_range_), _center_depth2 / (2 - slope_range_)
 
 
-def quantize_depth_map(dmap: Ts, min_depth, max_depth, n: int) -> list[Ts]:
+def quantize_depth_map(dmap: Ts, min_depth, max_depth, n: int, binary: bool = False, eps: float = 1e-8) -> Ts:
+    """
+    :param Tensor dmap: A tensor of any shape ``(...)``.
+    :param min_depth: Minimum valid depth.
+    :type min_depth: float or Tensor
+    :param max_depth: Maximum valid depth.
+    :type max_depth: float or Tensor
+    :param int n: Number of slices i.e. quantization level.
+    :param bool binary: Whether to return a binary mask. Default: ``False``.
+    :return: A tensor of shape ``(n, ...)`` where the first dimension means different slices.
+    """
     dmap = dmap.clamp(min_depth, max_depth)
     imap = depth2ips(dmap, min_depth, max_depth)
-    imap = imap.clamp(0, 1)
-    imap = imap * n
-    idx_map = imap.floor().int().clamp(max=n - 1)
-    masks = [torch.zeros_like(idx_map, dtype=torch.bool) for _ in range(n)]
-    for i in range(n):
-        masks[i][idx_map == i] = True
-    return masks
+    imap = imap.clamp(eps, 1) * n
+    ips = torch.arange(1, n + 1, dtype=imap.dtype, device=imap.device)  # ...
+    ips = _t.as1d(ips, imap.ndim + 1, 0)  # N x ...
+    diff = ips - imap  # N x ...
+
+    if binary:
+        alpha = torch.zeros_like(diff, dtype=torch.bool)
+        alpha[diff.ge(0) & diff.lt(1)] = 1
+    else:
+        alpha = torch.zeros_like(diff)
+        mask = diff.gt(-1) & diff.le(0)
+        alpha[mask] = diff[mask] + 1
+        alpha[diff.gt(0) & diff.le(1)] = 1
+    return alpha

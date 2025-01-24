@@ -3,7 +3,7 @@ import importlib.resources
 
 import torch
 
-from . import unit as u, exception
+from . import unit as u, exception, ddb
 from .typing import Numeric, Ts, overload
 
 __all__ = [
@@ -176,6 +176,8 @@ def refract(incident: Ts, normal: Ts, n1: Numeric, n2: Numeric = None) -> Ts:
         ``n1``, ``n2`` and ``mu`` can be negative.
     """
     ni = torch.sum(normal * incident, -1, True)  # inner product, ... x 1
+    if ni.requires_grad and ddb.debugging():
+        ni.register_hook(ddb.grad_hook_check_peculiar(f'ni in {refract.__qualname__}'))
     # if ni.lt(0).any():
     #     raise exception.PhysicsError('The angle between normal vector and incident ray is not acute.')
     n1 = _as_tensor(n1, ni).unsqueeze(-1)  # ... x 1
@@ -183,7 +185,7 @@ def refract(incident: Ts, normal: Ts, n1: Numeric, n2: Numeric = None) -> Ts:
     if n2 is None:
         mu = n1  # ... x 1
         nt2 = 1 - mu.square() * (1 - ni.square())  # ... x 1
-        refractive = torch.sqrt(nt2) * normal + mu * (incident - ni * normal)
+        refractive = torch.sqrt(nt2.relu()) * normal + mu * (incident - ni * normal)
         return refractive
     else:
         ni = ni * n1

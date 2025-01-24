@@ -7,7 +7,7 @@ from torch import nn
 
 from .ray import BatchedRay
 from ... import mt, utils, torch as _t, base
-from ...base import typing
+from ...base import typing, ddb
 from ...base.typing import Sequence, Ts, Any, Callable, Scalar, Self, Size2d
 
 __all__ = [
@@ -87,20 +87,20 @@ class Context(_t.EnhancedModule):
         self.surface: 'Surface' = surface  #: The host surface that this context belongs to.
         self.surface_list: 'SurfaceList' = surface_list  #: The surface list containing the surface.
 
-    def __getattr__(self, name: str):
-        try:
-            return super().__getattr__(name)
-        except AttributeError:
-            pass
-        if name in self._transform_params:
-            return self.new_tensor(0)  # default value for coordinate system parameters
-        raise AttributeError(name)
-
     def __setattr__(self, key, value):
         if key in {'surface', 'surface_list'}:
             self.__dict__[key] = value  # avoid these two are registered as submodule
         else:
             return super().__setattr__(key, value)
+
+    def extra_repr(self) -> str:
+        ret = []
+        if '_parameters' in self.__dict__:
+            params = self.__dict__['_parameters']
+            for name in self._transform_params:
+                if name in params:
+                    ret.append(f'{name}={utils.fmt(params[name].item())}')
+        return ', '.join(ret)
 
     def g2l(self, x: Ts, direction: bool = False) -> Ts:
         r"""
@@ -124,7 +124,9 @@ class Context(_t.EnhancedModule):
         if self.shifted and not direction:
             x = x - self.origin
         if self.rotated:
-            x = _rotation_mat(torch.stack([self.theta, self.phi, self.chi])) @ x.unsqueeze(-1)
+            x = _rotation_mat(torch.stack([
+                self._get_csp('theta'), self._get_csp('phi'), self._get_csp('chi')
+            ])) @ x.unsqueeze(-1)
         return x
 
     def l2g(self, x: Ts, direction: bool = False) -> Ts:
@@ -147,7 +149,9 @@ class Context(_t.EnhancedModule):
         :rtype: Tensor
         """
         if self.rotated:
-            x = _rotation_mat(-torch.stack([self.chi, self.phi, self.theta])).T @ x.unsqueeze(-1)
+            x = _rotation_mat(-torch.stack([
+                self._get_csp('chi'), self._get_csp('phi'), self._get_csp('theta')
+            ])).T @ x.unsqueeze(-1)
         if self.shifted and not direction:
             x = x + self.origin
         return x
@@ -230,8 +234,9 @@ class Context(_t.EnhancedModule):
 
         :type: Tensor
         """
-        s = self.theta.sin()
-        return torch.stack([s * self.phi.cos(), s * self.phi.sin(), self.theta.cos()])
+        theta, phi = self._get_csp('theta'), self._get_csp('phi')
+        s = theta.sin()
+        return torch.stack([s * phi.cos(), s * phi.sin(), theta.cos()])
 
     @axis.setter
     def axis(self, value: Ts):
@@ -240,10 +245,8 @@ class Context(_t.EnhancedModule):
             raise base.ShapeError(f'axis must be a 1D vector, got shape {value.shape}')
 
         value: Ts = value / torch.linalg.vector_norm(value)
-        theta = value[2].acos()
-        phi = torch.atan2(value[1], value[0])
-        self.theta = theta
-        self.phi = phi
+        self.register_parameter('theta', nn.Parameter(value[2].acos()))
+        self.register_parameter('phi', nn.Parameter(torch.atan2(value[1], value[0])))
 
     @property
     def origin(self) -> Ts:
@@ -254,7 +257,7 @@ class Context(_t.EnhancedModule):
 
         :type: Tensor
         """
-        return torch.stack([self.x, self.y, self.z])
+        return torch.stack([self._get_csp(n) for n in 'xyz'])
 
     @origin.setter
     def origin(self, value: Ts):
@@ -262,16 +265,20 @@ class Context(_t.EnhancedModule):
         if value.ndim != 1:
             raise base.ShapeError(f'origin must be a 1D vector, got shape {value.shape}')
         for i, n in enumerate('xyz'):
-            setattr(self, n, value[i])
+            self.register_parameter(n, nn.Parameter(value[i]))
 
     @origin.deleter
     def origin(self):
         for n in 'xyz':
-            delattr(self, n)
+            if hasattr(self, n):
+                delattr(self, n)
 
     @classmethod
     def from_dict(cls, d: dict) -> 'Context':
         raise TypeError(f'{cls.__name__} cannot be instantiated from a dict by calling {cls.from_dict.__qualname__}')
+
+    def _get_csp(self, name: str) -> Ts:
+        return getattr(self, name, self.new_tensor(0.))
 
     def _check_available(self):
         if self.surface in self.surface_list:
@@ -308,6 +315,14 @@ class CoaxialContext(Context):
     ):
         super().__init__(surface, surface_list)
         self.register_parameter('distance', nn.Parameter(distance))
+
+    def extra_repr(self) -> str:
+        r = super().extra_repr()
+        if len(r) > 0:
+            r += ',\n'
+        d = self.distance
+        r += f'distance={utils.fmt(d if d is None else d.item())}'
+        return r
 
     def g2l(self, x: Ts, direction: bool = False) -> Ts:
         if not direction:
@@ -463,6 +478,9 @@ class CircularAperture(Aperture):
 
         self.register_buffer('radius', None)
         self.radius: Ts = typing.scalar(diameter) / 2  #: Radius of the aperture.
+
+    def extra_repr(self) -> str:
+        return f'radius={utils.fmt(self.radius.item())}'
 
     def evaluate(self, x: Ts, y: Ts) -> torch.BoolTensor:
         return typing.cast(torch.BoolTensor, x.square() + y.square() <= self.radius.square())
@@ -683,6 +701,9 @@ class Surface(_t.EnhancedModule, metaclass=abc.ABCMeta):
         """
         pass
 
+    def extra_repr(self) -> str:
+        return f'material={self.material.name}, reflective={self.reflective}'
+
     def forward(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
         """
         Returns the refracted rays of a group of incident rays ``ray``.
@@ -762,8 +783,11 @@ class Surface(_t.EnhancedModule, metaclass=abc.ABCMeta):
             mu = self.material.n(ray.wl, 'm') / self.context.material_before.n(ray.wl, 'm')
             normal = -normal
         refractive = base.refract(ray.d, normal, mu)
-        ray.d = refractive.nan_to_num(nan=0)
-        ray.update_valid_(~refractive[..., 0].isnan())
+        # if refractive.requires_grad and ddb.debugging():
+        #     refractive.register_hook(ddb.grad_hook_check_peculiar(f'refractive in {self.refract.__qualname__}'))
+        ray.d = torch.where(refractive.isnan().any(-1).unsqueeze(-1), refractive.new_tensor([0, 0, 1]), refractive)
+        # ray.d = refractive.nan_to_num(nan=0)
+        ray.update_valid_(~refractive.isnan().any(-1))
         return ray
 
     def reflect(self, ray: BatchedRay) -> BatchedRay:
@@ -1191,12 +1215,6 @@ class SurfaceList(nn.ModuleList, collections.abc.MutableSequence, base.AsJsonMix
         """:meta private:"""
         return SurfaceList(self._slist + list(other), self.mt_head)
 
-    def __repr__(self) -> str:
-        """:meta private:"""
-        _repr = super().__repr__()[:-1]  # remove that last parentheses
-        _repr += f'  env_material={repr(self.mt_head)}\n)'
-        return _repr
-
     def __dir__(self):
         """:meta private:"""
         return super().__dir__() + ['env_material']
@@ -1252,6 +1270,9 @@ class SurfaceList(nn.ModuleList, collections.abc.MutableSequence, base.AsJsonMix
         self._slist.clear()
         self._super_clear()
         self.extend(ss)
+
+    def extra_repr(self) -> str:
+        return f'foremost_material={self.mt_head.name}, stop_idx={self.stop_idx}'
 
     def add_module(self, name: str, module: nn.Module):
         """:meta private:"""

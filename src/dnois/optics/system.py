@@ -8,7 +8,7 @@ from torch import nn
 
 from . import formation, _func
 from .. import base, utils, depth as _d, scene as _sc, torch as _t
-from ..base import ShapeError, typing
+from ..base import ShapeError, typing, ddb
 from ..base.typing import (
     Ts, Size2d, FovSeg, Vector, Callable, Any,
     size2d, vector, cast
@@ -48,11 +48,11 @@ class StandardOptics(Optics, metaclass=abc.ABCMeta):
         #: Focal length of the reference model, i.e. the image distance.
         self.image_distance: float | None = image_distance
 
-    def __getattribute__(self, item: str):
-        attr = super().__getattribute__(item)
-        if item == 'sensor' and attr is None:
-            raise RuntimeError(f'Trying to get sensor from a {type(self).__name__} object without sensor')
-        return attr
+    def __setattr__(self, key, value):
+        if key == 'sensor':
+            self.__dict__[key] = value  # avoid it is registered as submodule
+        else:
+            return super().__setattr__(key, value)
 
     def tanfovd2obj(self, tanfov: typing.Sequence[tuple[float, float]] | Ts, depth: float | Ts) -> Ts:
         r"""
@@ -600,8 +600,8 @@ class RenderingOptics(_t.TensorContainerMixIn, StandardOptics, base.AsJsonMixIn,
             psf = self.psf(obj_points, psf_size, wl, **kwargs)  # D x N_wl x H_P x W_P
             psf = psf.transpose(0, 1)  # N_wl x D x H_P x W_P
 
-            masks = _d.quantize_depth_map(scene.depth, min_d, max_d, depth_quantization_level)
-            masks = torch.stack(masks, 1).unsqueeze(1)  # B x 1 x D x H x W
+            masks = _d.quantize_depth_map(scene.depth, min_d, max_d, depth_quantization_level)  # D x B x H x W
+            masks = masks.transpose(0, 1).unsqueeze(1)  # B x 1 x D x H x W
             image = formation.depth_aware(scene.image, masks, psf, pad, occlusion_aware)  # B x N_wl x H x W
         else:
             if not (torch.is_tensor(depth) and depth.numel() == 1):
@@ -609,6 +609,8 @@ class RenderingOptics(_t.TensorContainerMixIn, StandardOptics, base.AsJsonMixIn,
             obj_points = self.fovd2obj([fov], depth)  # B(1) x 3
 
             psf = self.psf(obj_points, psf_size, wl, **kwargs)  # B(1) x N_wl x H_P x W_P
+            if psf.requires_grad and ddb.debugging():
+                psf.register_hook(ddb.grad_hook_check_peculiar(f'PSF in {self.conv_render.__qualname__}'))
 
             image = formation.simple(scene.image, psf, pad)  # B x N_wl x H x W
 

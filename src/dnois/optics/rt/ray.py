@@ -321,6 +321,7 @@ class BatchedRay(_t.TensorContainerMixIn):
         if valid.dtype != torch.bool:
             raise TypeError('Only bool tensors are supported.')
         self.valid = torch.logical_and(self._ts['v'], valid)
+        self.copy_valid_()
         return self
 
     def valid_percentage(self, dims: int | Sequence[int] = None) -> Ts:

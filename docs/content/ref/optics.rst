@@ -43,7 +43,6 @@ The following content implements :ref:`abstract_models` in these two ways.
 ***********************************
 Image formation
 ***********************************
-TODO: description
 
 .. autosummary::
     :toctree: ../generated/optics/formation
@@ -56,7 +55,7 @@ TODO: description
 **************************************
 Optics
 **************************************
-TODO: description
+Here are some useful functions for optical calculation.
 
 .. autosummary::
     :toctree: ../generated/optics/o
@@ -65,3 +64,7 @@ TODO: description
     imgd
     objd
     norm_psf
+
+**************************************
+Regularization
+**************************************
