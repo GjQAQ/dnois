@@ -15,7 +15,9 @@ Sensor model
     quantize
     rgb2raw
     spectral_integrate_cfa
-    SimpleSensor
+
+    Sensor
+    StandardSensor
 
 ***********************************
 Noise
@@ -24,3 +26,4 @@ Noise
     :toctree: ../generated/sensor/noise
 
     gaussian
+    poisson

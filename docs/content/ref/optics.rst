@@ -20,9 +20,8 @@ TODO
     :toctree: ../generated/optics/abstract
 
     IdealOptics
-    Pinhole
-    RenderingOptics
-    StandardOptics
+    PinholeOptics
+    PsfImagingOptics
 
 Implemented models
 =====================================

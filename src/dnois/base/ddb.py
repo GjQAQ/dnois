@@ -30,6 +30,16 @@ def debugging() -> bool:
 
 
 def grad_hook_check_peculiar(name: str, msg: str = None) -> Callable[[Ts], None]:
+    """
+    Returns a tensor backward hook function (see :meth:`torch.Tensor.register_hook`)
+    to check whether the gradient w.r.t. to the hooked tensor contains ``inf``, ``-inf``
+    or ``nan``. A :class:`RuntimeError` will be raised if so.
+
+    :param str name: The name of hooked tensor for error message.
+    :param str msg: Additional information appended to the error message. Default: do not append.
+    :return: The hook function.
+    :rtype: Callable[[Tensor], None]
+    """
     def _check_peculiar(grad: Ts):
         n_nan = grad.isnan().sum()
         n_inf = grad.isinf().sum()

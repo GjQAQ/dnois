@@ -7,4 +7,5 @@ from .unit import *
 
 from . import ddb, typing
 
-float_print_fmt = '.6g'
+#: Default format to print float numbers.
+float_print_fmt: str = '.6g'

@@ -6,13 +6,16 @@ from torch import nn
 
 from . import _surf
 from ._surf import *
+from .. import _func
 from ... import mt, torch as _t, utils
-from ...base.typing import Any, Ts, Scalar, Sequence, scalar, cast
+from ...base import ddb
+from ...base.typing import Any, Ts, Scalar, Sequence, Numeric, scalar, cast
 
 __all__ = [
     'Conic',
     'EvenAspherical',
     'Fresnel',
+    'ParaxialMixIn',
     'PolynomialPhase',
     'Spherical',
     'Standard',
@@ -20,20 +23,60 @@ __all__ = [
 __all__ += _surf.__all__
 
 
-def _spherical(r2: Ts, c: Ts, k: Ts = None) -> Ts:  # TODO: optimize
-    a = c.square() if k is None else c.square() * (1 + k)
-    return c * r2 / (1 + torch.sqrt(1 - r2 * a))
+def _conic(r2: Ts, c: Ts, k: Ts = None) -> Ts:
+    _1 = c.square() if k is None else c.square() * (1 + k)
+    return c * r2 / (1 + torch.sqrt(torch.relu(1 - r2 * _1)))
 
 
 def _spherical_der_wrt_r2(r2: Ts, c: Ts, k: Ts = None) -> Ts:
     _1 = c.square() if k is None else c.square() * (1 + k)
     _2 = r2 * _1
-    _3 = torch.sqrt(1 - _2)
-    _4 = _3 + 1
-    return c / _4 * (1 + _2 / (2 * _3 * _4))
+    _3 = 1 - _2
+    mask = _3.ge(0)
+    _4 = torch.sqrt(torch.relu(1 - _2))
+    _5 = _4 + 1
+    return torch.where(mask, c / _5 * (1 + _2 / (2 * _4 * _5 + 1e-10)), 0)
 
 
-class _SphericalBase(CircularSurface, metaclass=abc.ABCMeta):  # docstring for Spherical
+class ParaxialMixIn(metaclass=abc.ABCMeta):
+    @property
+    @abc.abstractmethod
+    def px_curvature(self) -> Ts:
+        pass
+
+    def px_image_point(self, wl: Numeric, point: Ts, forward: bool = True) -> Ts:
+        """
+
+        :param wl: ...
+        :type wl: float or Tensor
+        :param Tensor point: ... x 3
+        :param bool forward:
+        :return: ... x 3
+        :rtype: Tensor
+        """
+        surf = cast(Surface, self)
+        n_obj = surf.ctx.material_before.n(wl, 'm')  # ...
+        n_img = surf.material.n(wl, 'm')  # ...
+        z0 = surf.ctx.baseline  # 0d
+        z = point[..., 2]  # ...
+        if forward:
+            obj_d = z0 - z  # ...
+            c = self.px_curvature  # 0d
+        else:
+            obj_d = z - z0  # ...
+            c = -self.px_curvature  # 0d
+            n_img, n_obj = n_obj, n_img
+        diopter = c * (n_img - n_obj)  # ...
+
+        img_d = _func.imgd(obj_d, n_obj, n_img, diopter)  # ...
+        z = z0 + img_d if forward else z0 - img_d  # ...
+
+        lateral_amplification = n_obj / (n_obj - diopter * obj_d)  # ...
+        xy = point[..., :2] * lateral_amplification.unsqueeze(-1)  # ... x 2
+        return torch.cat([xy, z.unsqueeze(-1)], -1)  # ... x 3
+
+
+class _SphericalBase(CircularSurface, ParaxialMixIn, metaclass=abc.ABCMeta):  # docstring for Spherical
     r"""
     Spherical surfaces.
 
@@ -77,12 +120,16 @@ class _SphericalBase(CircularSurface, metaclass=abc.ABCMeta):  # docstring for S
     def geo_radius(self) -> Ts:
         return self.roc
 
+    @property
+    def px_curvature(self) -> Ts:
+        return 1 / self.roc
+
 
 class Spherical(_SphericalBase):
     __doc__ = _SphericalBase.__doc__
 
     def h_r2(self, r2: Ts) -> Ts:
-        return _spherical(r2, 1 / self.roc)
+        return _conic(r2, 1 / self.roc)
 
     def h_derivative_r2(self, r2: Ts) -> Ts:
         return _spherical_der_wrt_r2(r2, 1 / self.roc)
@@ -164,7 +211,7 @@ class Conic(_ConicBase):
     __doc__ = _ConicBase.__doc__
 
     def h_r2(self, r2: Ts) -> Ts:
-        return _spherical(r2, 1 / self.roc, self.conic)
+        return _conic(r2, 1 / self.roc, self.conic)
 
     def _solve_t(self, ray: BatchedRay) -> Ts:
         if self.roc.isinf().all():
@@ -242,7 +289,7 @@ class EvenAspherical(_ConicBase):
         a = 0
         for c in reversed(self.coefficients):
             a = (a + c) * r2
-        return _spherical(r2, 1 / self.roc, self.conic) + a
+        return _conic(r2, 1 / self.roc, self.conic) + a
 
     def h_derivative_r2(self, r2: Ts) -> Ts:
         s_der = _spherical_der_wrt_r2(r2, 1 / self.roc, self.conic)
@@ -275,6 +322,10 @@ class EvenAspherical(_ConicBase):
         :type: int
         """
         return self._n
+
+    @property
+    def px_curvature(self) -> Ts:
+        return super().px_curvature + 2 * self.a1
 
 
 def _diff(x: Ts, d: float, dim: int) -> Ts:
@@ -502,6 +553,7 @@ class Fresnel(Planar, EvenAspherical):
     def _optical_normal(self, x: Ts, y: Ts) -> Ts:
         r2 = x.square() + y.square()
         lim2 = self.geo_radius.square()
+        r2 = r2.clamp_max(lim2)
 
         _der = EvenAspherical.h_derivative_r2(self, r2) * 2
         phpx, phpy = _der * x, _der * y

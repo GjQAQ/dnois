@@ -4,6 +4,6 @@ for common optical systems.
 """
 from .ray import *
 from .surf import *
-from .system import *
+from .crt import *
 
-from . import ray, surf, system
+from . import ray, surf, crt

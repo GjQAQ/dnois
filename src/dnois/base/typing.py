@@ -20,23 +20,21 @@ __all__ = [
     'is_tensor',
     'pair',
     'scalar',
-    'scl_or_vec',
     'size2d',
     'sizend',
     'vector',
 
     'ConvOut',
-    'FovSeg',
+    'Double',
     'Numeric',
     'Pair',
-    'PsfCenter',
     'RGBFormat',
     'Scalar',
-    'SclOrVec',
     'Size2d',
     'Sizend',
     'Spacing',
     'Tensor',
+    'Triple',
     'Ts',
     'Vector',
 ]
@@ -54,20 +52,20 @@ Spacing = Union[float, Ts]  # delta (grid spacing) type
 Numeric = Union[float, Ts]  # support numeric operation
 Scalar = Union[float, Ts]  # can be converted to 0d tensor
 Vector = Union[float, Sequence[float], Ts]  # can be converted to 1d tensor
-SclOrVec = Union[float, Sequence[float], Ts]  # Scalar or Vector
 
 Pair = Union[_T, tuple[_T, _T]]
 Size2d = Pair[int]
 Sizend = Union[int, Sequence[int]]
 
+Double = tuple[_T, _T]
+Triple = tuple[_T, _T, _T]
+
 # options
-FovSeg = Literal['paraxial', 'pointwise']
 ConvOut = Literal['full', 'same', 'valid']
 RGBFormat = Literal['floats', 'ints', 'hex']
-PsfCenter = Literal['linear', 'mean', 'chief']
 
 
-def pair[T](arg: Pair[T], type_: type[T] = None) -> tuple[T, T]:
+def pair(arg: Pair[_T], type_: type[_T] = None) -> tuple[_T, _T]:
     if type_ is None:
         return arg if isinstance(arg, tuple) else (arg, arg)
 
@@ -138,21 +136,3 @@ def scalar(arg: Scalar, dtype: _dty = None, device: Device = None, **kwargs) -> 
 
 def is_scalar(arg: Any) -> bool:
     return isinstance(arg, float) or (is_tensor(arg) and arg.ndim == 0)
-
-
-def scl_or_vec(arg: SclOrVec, dtype: _dty = None, device: Device = None, **kwargs) -> Ts:
-    cfg = {}
-    if dtype is not None:
-        cfg['dtype'] = dtype
-    if device is not None:
-        cfg['device'] = device
-    if isinstance(arg, float):
-        return torch.tensor(arg, **cfg)
-    elif isinstance(arg, Sequence) and all(isinstance(item, float) for item in arg):
-        return torch.tensor(arg, **cfg)
-    elif is_tensor(arg):
-        if arg.ndim > 1:
-            raise ShapeError(f'Trying to convert a tensor with shape {arg.shape} to a scalar or vector')
-        return arg.to(**cfg, **kwargs)
-    else:
-        raise TypeError(f'A float, a sequence of float or a 0d or 1d tensor expected, got {type(arg)}')

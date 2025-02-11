@@ -1,5 +1,3 @@
-from .typing import Numeric
-
 __all__ = [
     'convert',
     'get_default_unit',
@@ -58,7 +56,7 @@ def scale(unit: str) -> float:
     return v
 
 
-def convert(value: Numeric, from_: str, to: str) -> Numeric:  # trailing underline due to "from" is a keyword
+def convert(value, from_: str, to: str):  # trailing underline due to "from" is a keyword
     """
     Convert a quantity with given unit ``from_`` to that with unit ``to``.
 

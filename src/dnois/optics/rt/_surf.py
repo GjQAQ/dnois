@@ -80,7 +80,7 @@ class Context(_t.EnhancedModule):
     chi: Ts  #: Spin angle of local coordinate.
 
     _transform_params = {'x', 'y', 'z', 'theta', 'phi', 'chi'}
-    _writable_params = _t.EnhancedModule._writable_params | _transform_params
+    _writable_params = _transform_params
 
     def __init__(self, surface: 'Surface', surface_list: 'SurfaceList'):
         super().__init__()
@@ -90,6 +90,10 @@ class Context(_t.EnhancedModule):
     def __setattr__(self, key, value):
         if key in {'surface', 'surface_list'}:
             self.__dict__[key] = value  # avoid these two are registered as submodule
+        elif key in self._writable_params:
+            self.register_parameter(key, nn.Parameter(typing.scalar(
+                value, device=self.device, dtype=self.dtype
+            )))
         else:
             return super().__setattr__(key, value)
 
@@ -275,6 +279,7 @@ class Context(_t.EnhancedModule):
 
     @classmethod
     def from_dict(cls, d: dict) -> 'Context':
+        # deserialization of this class is controlled by SurfaceList
         raise TypeError(f'{cls.__name__} cannot be instantiated from a dict by calling {cls.from_dict.__qualname__}')
 
     def _get_csp(self, name: str) -> Ts:
@@ -734,6 +739,10 @@ class Surface(_t.EnhancedModule, metaclass=abc.ABCMeta):
         :rtype: BatchedRay
         """
         t = self._solve_t(self.context.g2l_ray(ray))
+        # if t.requires_grad and ddb.debugging():
+        #     t.register_hook(ddb.grad_hook_check_peculiar(
+        #         f't in {self.intercept.__qualname__} (surface {self.ctx.index})'
+        #     ))
         ray = ray.march(t, self.context.material_before.n(ray.wl, 'm'))
 
         ray_in_local = self.context.g2l_ray(ray)
@@ -775,16 +784,26 @@ class Surface(_t.EnhancedModule, metaclass=abc.ABCMeta):
             return ray
 
         xy_local = self.context.g2l(ray.o)[..., :2]
+        if xy_local.requires_grad and ddb.debugging():
+            xy_local.register_hook(ddb.grad_hook_check_peculiar(
+                f'xy_local in {self.refract.__qualname__} (surface {self.ctx.index})'
+            ))
         normal = self._optical_normal(xy_local[..., 0], xy_local[..., 1])
         normal = self.context.l2g(normal, True)
+        if normal.requires_grad and ddb.debugging():
+            normal.register_hook(ddb.grad_hook_check_peculiar(
+                f'normal in {self.refract.__qualname__} (surface {self.ctx.index})'
+            ))
         if forward:
             mu = self.context.material_before.n(ray.wl, 'm') / self.material.n(ray.wl, 'm')
         else:
             mu = self.material.n(ray.wl, 'm') / self.context.material_before.n(ray.wl, 'm')
             normal = -normal
         refractive = base.refract(ray.d, normal, mu)
-        # if refractive.requires_grad and ddb.debugging():
-        #     refractive.register_hook(ddb.grad_hook_check_peculiar(f'refractive in {self.refract.__qualname__}'))
+        if refractive.requires_grad and ddb.debugging():
+            refractive.register_hook(ddb.grad_hook_check_peculiar(
+                f'refractive in {self.refract.__qualname__} (surface {self.ctx.index})'
+            ))
         ray.d = torch.where(refractive.isnan().any(-1).unsqueeze(-1), refractive.new_tensor([0, 0, 1]), refractive)
         # ray.d = refractive.nan_to_num(nan=0)
         ray.update_valid_(~refractive.isnan().any(-1))
@@ -849,6 +868,11 @@ class Surface(_t.EnhancedModule, metaclass=abc.ABCMeta):
             'material': self.material.name,
             'aperture': self.aperture.to_dict(keep_tensor),
         }
+
+    @property
+    def apt(self) -> Aperture:
+        """Alias for :attr:`.aperture`.\n\n:type: Aperture"""
+        return self.aperture
 
     @property
     def ctx(self) -> Context | None:

@@ -24,6 +24,12 @@ class AsDictMixIn:
 
     @classmethod
     def from_dict(cls, d: dict):
+        """
+        Constructs an instance of ``cls`` from a ``dict``.
+
+        :param dict d: A ``dict`` typically returned by :meth:`.to_dict`.
+        :return: An instance of ``cls``.
+        """
         cls: type
         d = cast(type[AsDictMixIn], cls)._pre_from_dict(d)
         return cls(**d)
@@ -71,6 +77,16 @@ class AsJsonMixIn(AsDictMixIn):
 
     @classmethod
     def load_json(cls, file, **kwargs):
+        """
+        Constructs an instance of ``cls`` through loading JSON from a file,
+        converting it to a ``dict`` and then calling :meth:`.from_dict`.
+
+        :param file: The JSON file to load. Either its path (``str`` or ``pathlib.Path``)
+            or a file-like object.
+        :type file: str or ``pathlib.Path`` or file-like object
+        :param kwargs: Keyword arguments passed to :func:`json.load`.
+        :return: An instance of ``cls``.
+        """
         if isinstance(file, str):
             file = Path(file)
         if isinstance(file, Path):

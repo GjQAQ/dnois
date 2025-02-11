@@ -90,7 +90,7 @@ class BatchedRay(_t.TensorContainerMixIn):
     :type init_phase: float or Tensor
     """
 
-    __slots__ = ('_d_normed', '_o_modified', '_ts',)
+    __slots__ = ('_o_modified', '_ts',)
 
     def __init__(
         self,
@@ -99,6 +99,8 @@ class BatchedRay(_t.TensorContainerMixIn):
         wl: float | Ts,
         init_opl: float | Ts = None,
         init_phase: float | Ts = None,
+        *,
+        d_normed: bool = False
     ):
         if origin.size(-1) != 3 or direction.size(-1) != 3:
             raise ValueError(
@@ -115,7 +117,7 @@ class BatchedRay(_t.TensorContainerMixIn):
         _check_shape_compatible(origin[..., 0], direction[..., 0], wl, init_opl, init_phase)
         self._ts: dict[str, Ts | None] = {
             'o': origin,
-            'd': _normalize(direction),
+            'd': direction if d_normed else _normalize(direction),
             'wl': wl,
             'v': torch.tensor(True, dtype=torch.bool, device=device),
             'opl': init_opl,
@@ -332,6 +334,25 @@ class BatchedRay(_t.TensorContainerMixIn):
             dims = [dims]
         total = functools.reduce(lambda x, y: x * y, [v.size(dim) for dim in dims])
         return v.sum(dims, False) / total
+
+    def focus(self, dim: int = -1) -> Ts:  # TODO: valid
+        shape = self.shape
+        o, d = self.o.broadcast_to(shape), self.d.broadcast_to(shape)
+        if dim >= 0:
+            o, d = o.transpose(dim, -2), d.transpose(dim, -2)  # ... x N x 3
+        else:
+            o, d = o.transpose(dim - 1, -2), d.transpose(dim - 1, -2)  # ... x N x 3
+
+        outer_prod = d.unsqueeze(-1) @ d.unsqueeze(-2)  # ... x N x 3 x 3
+        outer_prod = outer_prod.mean(dim=-3)  # ... x 3 x 3
+        a = torch.eye(3, device=self.device, dtype=self.dtype) - outer_prod  # ... x 3 x 3
+        inner = torch.sum(o * d, -1, True)  # ... x N x 1
+        b = 2 * torch.mean(inner * d - o, -2)  # ... x 3
+
+        # torch.linalg.solve is preferred to torch.inverse
+        a_inv_mul_b = torch.linalg.solve(a, b)  # ... x 3
+        x = -a_inv_mul_b / 2  # ... x 3
+        return x
 
     @property
     def shape(self) -> torch.Size:

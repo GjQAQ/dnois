@@ -26,7 +26,7 @@ def _ts_info(ts: Ts) -> dict[str, Any]:
 class ImageScene(Scene):
     """
     Class for scenes represented by its pinhole image, i.e. perspective projection
-    to the image plane of a pinhole camera.
+    to the image plane via a pinhole camera.
 
     Given the intrinsic parameters of a pinhole camera and corresponding depth map,
     the image can be projected backward to reconstruct a point cloud.

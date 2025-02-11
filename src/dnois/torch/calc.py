@@ -1,11 +1,12 @@
 import torch
 
-from ..base.typing import Ts, Sequence
+from ..base.typing import Ts, Sequence, Double
 
 __all__ = [
     'abs2',
     'expi',
     'polynomial',
+    'ssqrt',
 ]
 
 
@@ -62,3 +63,8 @@ def polynomial(x, coefficients: Sequence):
         else:
             fx = fx * x + a
     return fx
+
+
+def ssqrt(x: Ts) -> Double[Ts]:
+    mask = x >= 0
+    return torch.sqrt(x.relu()), mask

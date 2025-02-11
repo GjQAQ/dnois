@@ -162,7 +162,7 @@ class ParamTransformModule(nn.Module):
             delattr(self, name)
 
         lt_name = self._latent_name(name)
-        self.register_parameter(lt_name, param)  # method of super class will be called virtually
+        super().register_parameter(lt_name, param)
 
         transforms = self._get_transforms_dict()
         transforms[name] = transform
@@ -349,12 +349,21 @@ class TensorContainerMixIn(DeviceMixIn, DtypeMixIn):
 
 class FreezeParamMixIn(nn.Module):
     def freeze(self, name: str | typing.Sequence[str] = None):
+        """Equivalent to ``self.set_optimizable(name, False)``. See :meth:`.set_optimizable`."""
         self.set_optimizable(name, False)
 
     def unfreeze(self, name: str | typing.Sequence[str] = None):
+        """Equivalent to ``self.set_optimizable(name, True)``. See :meth:`.set_optimizable`."""
         self.set_optimizable(name, True)
 
     def set_optimizable(self, name: str | typing.Sequence[str] = None, optimizable: bool = True):
+        """
+        Specify whether a parameter is optimizable.
+
+        :param str name: Name of the parameter. If ``None``, all parameters will be set.
+            It follows the same convention as :meth:`torch.nn.Module.get_parameter`.
+        :param bool optimizable: Whether the specified parameter is optimizable. Default: ``True``.
+        """
         if name is None:
             for p in self.parameters():
                 p.requires_grad = optimizable
@@ -373,8 +382,6 @@ class EnhancedModule(
     TensorContainerMixIn,
     FreezeParamMixIn,
 ):
-    _writable_params = set()
-
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         original_to_dict = cls.__dict__.get('to_dict', None)
@@ -383,8 +390,7 @@ class EnhancedModule(
         if original_to_dict is not None:
             original_to_dict = cast(Callable, original_to_dict)
 
-            def _wrapped_to_dict(self, keep_tensor: bool = True):
-                self: EnhancedModule
+            def _wrapped_to_dict(self: EnhancedModule, keep_tensor: bool = True):
                 d = original_to_dict(self, keep_tensor)
                 tp = self.transformed_parameters
                 if len(tp) != 0:
@@ -400,20 +406,12 @@ class EnhancedModule(
             if isinstance(original_from_dict, classmethod):
                 original_from_dict = original_from_dict.__wrapped__
 
-            def _wrapped_from_dict(clz, d: dict):
-                clz: type[EnhancedModule]
+            def _wrapped_from_dict(clz: type[EnhancedModule], d: dict):
                 tp = d.pop('transformed_parameters', {})
                 obj = original_from_dict(clz, d)
                 for k, (param, transform) in tp.items():
+                    param = nn.Parameter(torch.tensor(param))
                     obj.register_latent_parameter(k, param, Transform.from_dict(transform))
                 return obj
 
             cls.from_dict = classmethod(wraps(original_from_dict)(_wrapped_from_dict))
-
-    def __setattr__(self, key, value):  # TODO: deprecate
-        if key in self._writable_params:
-            self.register_parameter(key, nn.Parameter(
-                typing.scalar(value, dtype=self.dtype, device=self.device)  # TODO: scalar?
-            ))
-        else:
-            super().__setattr__(key, value)

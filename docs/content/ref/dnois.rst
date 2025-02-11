@@ -4,6 +4,15 @@ DNOIS
 
 .. automodule:: dnois
 
+********************************
+Camera
+********************************
+.. autosummary::
+    :toctree: ../generated/dnois/camera
+
+    Camera
+
+
 *********************************
 Physics
 *********************************
@@ -43,3 +52,13 @@ Exception classes
     :toctree: ../generated/dnois/exception
 
     ShapeError
+    PhysicsError
+
+***************************************
+Miscellaneous
+***************************************
+.. autosummary::
+    :toctree: ../generated/dnois/misc
+
+    float_print_fmt
+

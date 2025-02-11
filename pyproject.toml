@@ -6,9 +6,9 @@ build-backend = "setuptools.build_meta"
 name = "dnois"
 version = "0.0.1"
 dependencies = [
-    "matplotlib",
-    "numpy",
-    "torch",
+    "matplotlib>=3.9.2",
+    "numpy>=2.1.3",
+    "torch>=2.5",
 ]
 authors = [
     { name = "Jiaqi Guo", email = "gjq@tongji.edu.cn" }

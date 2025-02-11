@@ -15,6 +15,7 @@ TODO: description of this page
     :maxdepth: 1
 
     ref/dnois
+    ref/ext
     ref/fourier
     ref/mt
     ref/optics

@@ -43,6 +43,8 @@ html_js_files = [
     'js/notation.js',
 ]
 
+numfig = True
+
 autodoc_member_order = 'groupwise'
 autodoc_mocked_imports = [
     'matplotlib',

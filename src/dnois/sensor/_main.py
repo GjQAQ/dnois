@@ -13,7 +13,7 @@ __all__ = [
     'spectral_integrate_cfa',
 
     'BayerPattern',
-    'SimpleSensor',
+    'StandardSensor',
 ]
 
 _MSG1 = 'Number of channels of input radiance is not {0} for an {1} sensor without SRF'
@@ -215,7 +215,7 @@ def quantize(signal: Ts, levels: int = 256, differentiable: bool = False) -> Ts:
         return qt
 
 
-class SimpleSensor(Sensor):
+class StandardSensor(Sensor):
     """
     A simple RGB or grayscale sensor model, which processes the radiance field reaching the sensor
     plane as follows:
@@ -230,18 +230,16 @@ class SimpleSensor(Sensor):
     :type pixel_num: int or tuple[int, int]
     :param pixel_size: Height and width of a pixel in meters.
     :type pixel_size: float or tuple[float, float]
-    :param bool rgb: RGB sensor if ``True``, grayscale sensor otherwise.
-        If ``None``, CFA will not be applied and output will have a channel dimension.
-        Default: ``True``.
+    :param bool rgb: RGB sensor if ``True``, grayscale sensor otherwise. Default: ``True``.
     :param srf: SRF tensor of shape ``(N_C, N_wl)`` where ``N_C`` is 1 or 3,
         or a 3-tuple of tensors of length ``N_wl``, corresponding to the SRF of
         R, G, B channels. Default: do not perform spectral integral.
     :type srf: Tensor or tuple[Tensor, Tensor, Tensor]
-    :param BayerPattern bayer_pattern: See :py:func:`rgb2raw`. Default: ``'RGGB'``.
-    :param float noise_std: Standard deviation of the Gaussian white noise.
-        Default: 0.
-    :param float max_value: Maximum possible value of output signal.
-        Default: 1.
+    :param BayerPattern bayer_pattern: See :py:func:`rgb2raw`. Default: no CFA.
+    :param noise_std: Standard deviation of the Gaussian white noise.
+        See :func:`gaussian`. Default: 0.
+    :type noise_std: float or tuple[float, float]
+    :param float max_value: Maximum possible value of output signal. Default: 1.
     :param int _quantize: Quantization level. The output signal will not be
         quantized if a negative or zero value is given. Default: 256.
     :param bool differentiable_quant: See :py:func:`quantize`. Default: ``True``.
@@ -258,7 +256,7 @@ class SimpleSensor(Sensor):
         rgb: bool = True,
         srf: Ts | tuple[Ts, Ts, Ts] = None,
         bayer_pattern: BayerPattern = None,
-        noise_std: float = 0.,
+        noise_std: float | tuple[float, float] = 0.,
         max_value: float = 1.,
         _quantize: int = 256,
         differentiable_quant: bool = True,
@@ -267,7 +265,7 @@ class SimpleSensor(Sensor):
         self.rgb: bool = rgb  #: RGB sensor or not.
         #: Bayer CFA pattern. See :py:func:`rgb2raw`
         self.bayer_pattern: BayerPattern | None = bayer_pattern
-        self.noise_std: float = noise_std  #: Standard deviation of Gaussian noise.
+        self.noise_std: float | tuple[float, float] = noise_std  #: Standard deviation of Gaussian noise.
         self.max_value: float = max_value  #: Maximum possible value of signal.
         self.quantize: int = _quantize  #: Quantization level.
         #: Whether to perform differentiable quantization.
@@ -291,9 +289,11 @@ class SimpleSensor(Sensor):
         electric signal, an 2D image.
 
         :param Tensor radiance: A tensor representing the received radiance field,
-            of shape ``(..., N_C, H, W)`` if ``srf`` is ``None`` or
-            ``(..., N_wl, H, W)`` otherwise.
-        :return: Output image signal, a tensor of shape ``(..., H, W)``.
+            of shape ``(..., N_wl, H, W)``.
+        :return: Output image signal, a tensor of shape ``(..., N_C', H, W)``.
+            If ``self.srf`` is not ``None``, ``radiance`` is monochromatic (``N_wl=1``)
+            or ``self.bayer_pattern`` is not ``None``, ``N_C'`` is 1. Otherwise,
+            ``N_C'`` is 3 (RGB regardless of SRF and Bayer CFA).
         :rtype: Tensor
         """
         if self.srf is None:
@@ -301,13 +301,13 @@ class SimpleSensor(Sensor):
                 if radiance.size(-3) != 3:
                     raise ValueError(_MSG1.format('3', 'RGB'))
                 if self.bayer_pattern is None:
-                    transmitted = radiance
+                    transmitted = radiance  # ... x 3 x H x W
                 else:
-                    transmitted = rgb2raw(radiance, self.bayer_pattern).squeeze(-3)
-            else:
+                    transmitted = rgb2raw(radiance, self.bayer_pattern).squeeze(-3)  # ... x 1 x H x W
+            else:  # radiance:... x 1 x H x W
                 if radiance.size(-3) != 1:
                     raise ValueError(_MSG1.format('1', 'grayscale'))
-                transmitted = radiance
+                transmitted = radiance  # ... x 1 x H x W
         else:
             if radiance.size(-3) != self.srf.size(-1):
                 raise ValueError(
@@ -315,7 +315,8 @@ class SimpleSensor(Sensor):
                     'that of the sensor\'s SRF'
                 )
             unit_size = 2 if self.rgb else 1
-            transmitted = spectral_integrate_cfa(radiance, self.srf, unit_size)
+            transmitted = spectral_integrate_cfa(radiance, self.srf, unit_size)  # ... x H x W
+            transmitted = transmitted.unsqueeze(-3)  # ... x 1 x H x W
 
         signal = gaussian(transmitted, self.noise_std)
         signal = signal.clip(0., self.max_value)
