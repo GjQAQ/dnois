@@ -34,6 +34,8 @@ Debugging
     debug
     debugging
 
+.. _ref_dnois_units:
+
 *********************************
 Units
 *********************************
@@ -41,9 +43,12 @@ Units
     :toctree: ../generated/dnois/
 
     convert
-    get_default_unit
-    set_default_unit
-    units
+    get_default
+    set_default
+
+    Unit
+    Length
+    Angle
 
 *********************************
 Exception classes

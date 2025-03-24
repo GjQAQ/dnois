@@ -1,3 +1,4 @@
+from .. import base
 from ..base.typing import RGBFormat, Ts, cast
 
 __all__ = [
@@ -15,7 +16,7 @@ def t4plot(tensor: Ts) -> Ts:
 
 
 def wl2rgb(wl: float, gamma: float = 0.8, output_format: RGBFormat = 'floats') -> RGBTriplet:
-    wl *= 1e9
+    wl = base.Length.default_to(wl, 'nm')
     if 380 <= wl <= 440:
         red, green, blue = -(wl - 440) / (440 - 380), 0., 1.
     elif 440 <= wl <= 490:

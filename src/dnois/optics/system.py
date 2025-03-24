@@ -7,7 +7,7 @@ import torch
 
 from . import formation, _func
 from .. import base, utils, depth as _d, scene as _sc, torch as _t
-from ..base import ShapeError, typing, ddb
+from ..base import ShapeError, typing
 from ..base.typing import (
     Ts, Size2d, Double, Vector, Callable,
     size2d, vector, cast
@@ -24,7 +24,7 @@ __all__ = [
 SegLit = typing.Literal['uniform', 'pointwise']
 Seg = SegLit | Double[int]
 
-DEFAULT_WL = base.fline('d', 'He')
+DEFAULT_WL = base.fline('d', 'He', unit='m')
 
 
 class ImagingOptics(
@@ -59,6 +59,10 @@ class ImagingOptics(
     def render_image_scene(self, scene: _sc.ImageScene, **kwargs) -> Ts:
         pass
 
+    @abc.abstractmethod
+    def render_point_cloud_scene(self, scene: _sc.PointCloudScene, **kwargs) -> Ts:
+        pass
+
     def forward(self, scene: _sc.Scene, **kwargs) -> Ts:
         """
         Render a scene.
@@ -66,14 +70,16 @@ class ImagingOptics(
         :param dnois.scene.Scene scene: The scene to render.
         :param kwargs: Keyword arguments passed to ``self.render_*_scene`` methods.
         :return: Rendered image.
-        :rtype: Ts
+        :rtype: Tensor
         """
         if isinstance(scene, _sc.ImageScene):
             return self.render_image_scene(scene, **kwargs)
+        elif isinstance(scene, _sc.PointCloudScene):
+            return self.render_point_cloud_scene(scene, **kwargs)
         else:
             raise TypeError(f'Unknown scene type for {self._cn()}: {type(scene).__name__}')
 
-    def _cn(self) -> str:  # just to avoid being too lengthy
+    def _cn(self) -> str:  # just to avoid code to be too lengthy
         return self.__class__.__name__
 
     def _sensor(self) -> Sensor:
@@ -135,7 +141,8 @@ class ObjectSpaceMixIn(_t.TensorContainerMixIn):
         :param depth: Depths of points. A tensor with any shape that is
             broadcastable with ``fov`` other than its last dimension.
         :type depth: float | Tensor
-        :param bool in_degrees: Whether ``fov`` is in degrees. Default: ``False``.
+        :param bool in_degrees: Whether ``fov`` is in degrees. If ``False``,
+            ``fov`` is assumed to be in :doc:`default angle unit </content/guide/unit>`. Default: ``False``.
         :return: 3D coordinates of points, a tensor of shape ``(..., 3)``.
         :rtype: Tensor
         """
@@ -143,6 +150,8 @@ class ObjectSpaceMixIn(_t.TensorContainerMixIn):
             fov = self.new_tensor(fov)
         if in_degrees:
             fov = fov.deg2rad()
+        else:
+            fov = base.Angle.default_to(fov, 'rad')
         if not torch.all(fov.gt(-torch.pi / 2) & fov.lt(torch.pi / 2)):
             raise ValueError(f'FoV angle must lie in the range (-pi/2, pi/2)')
         return self.tanfovd2obj(fov.tan(), depth)
@@ -164,7 +173,7 @@ class ObjectSpaceMixIn(_t.TensorContainerMixIn):
         :return: Tangent of x and y FoV angles. A tensor of shape ``(..., 2)``.
         :rtype: Tensor
         """
-        _t.check_3d_vector(point, f'point in {self.obj2fov.__qualname__}')
+        _t.check_3d_vector(point, f'point in {self.obj2tanfov.__qualname__}')
 
         is_inf = point[..., [2]].isinf()  # ... x 1
         point2d = -point[..., :2]
@@ -176,18 +185,18 @@ class ObjectSpaceMixIn(_t.TensorContainerMixIn):
             else:
                 return point2d / point[..., [2]]
 
-    def obj2fov(self, point: Ts, in_degrees: bool = False) -> Ts:
+    def obj2fov(self, point: Ts) -> Ts:
         """
         Similar to :meth:`.point2tanfov`, but returns FoV angles rather than tangents.
 
         :param Tensor point: Coordinates of points. A tensor with shape ``(..., 3)``
             where the last dimension indicates coordinates of points in camera's coordinate system.
-        :param bool in_degrees: Whether to return FoV angles in degrees. Default: ``False``.
         :return: x and y FoV angles. A tensor of shape ``(..., 2)``.
         :rtype: Tensor
         """
         fov = self.obj2tanfov(point).arctan()
-        return fov.rad2deg() if in_degrees else fov
+        fov = base.Angle.as_default(fov, 'rad')
+        return fov
 
 
 class PerspectiveMixIn(ObjectSpaceMixIn):
@@ -266,6 +275,15 @@ class PinholeOptics(ImagingOptics, PerspectiveMixIn):
         self.fl: float = fl
 
     def render_image_scene(self, scene: _sc.ImageScene, **kwargs) -> Ts:
+        """
+        Render an image scene. Pinhole camera returns the :attr:`~dnois.scene.ImageScene.image`
+        directly as long as its intrinsic (if exists) and resolution match those of the sensor.
+
+        :param dnois.scene.ImageScene scene: The scene to render.
+        :param kwargs: Not used.
+        :return: Rendered image with shape identical to that of the image of ``scene``.
+        :rtype: Tensor
+        """
         if (si := scene.intrinsic) is not None:
             if not torch.allclose(si, self.intrinsic().broadcast_to(si.size(0), -1, -1)):
                 raise NotImplementedError()
@@ -274,6 +292,9 @@ class PinholeOptics(ImagingOptics, PerspectiveMixIn):
             raise RuntimeError(f'Got {_sc.ImageScene.__name__} with shape {scene.height}x{scene.width}, '
                                f'but size of sensor is {pn[0]}x{pn[1]}')
         return scene.image
+
+    def render_point_cloud_scene(self, scene: _sc.PointCloudScene, **kwargs) -> Ts:
+        raise NotImplementedError()
 
     def intrinsic(self, **kwargs) -> Ts:
         """
@@ -299,20 +320,64 @@ class PinholeOptics(ImagingOptics, PerspectiveMixIn):
 
     @property
     def fov_full(self) -> float:
+        r"""
+        Full FoV of the pinhole camera:
+
+        .. math::
+            \varphi_\text{full}=2\arctan\frac{L}{2f}
+
+        where :math:`L` is diagonal length and :math:`f` is focal length.
+
+        :return: Full FoV in radian.
+        :rtype: float
+        """
         return self.fov_half * 2
 
     @property
     def fov_half(self) -> float:
+        r"""
+        Half FoV of the pinhole camera:
+
+        .. math::
+            \varphi_\text{half}=\arctan\frac{L}{2f}
+
+        where :math:`L` is diagonal length and :math:`f` is focal length.
+
+        :return: Half FoV in radian.
+        :rtype: float
+        """
         half_h, half_w = self._sensor().h / 2, self._sensor().w / 2
         tan = math.sqrt(half_h * half_h + half_w * half_w) / self.fl
         return math.atan(tan)
 
     @property
     def fov_half_x(self) -> float:
+        r"""
+        Half X-FoV of the pinhole camera:
+
+        .. math::
+            \varphi_\text{half-X}=\arctan\frac{W}{2f}
+
+        where :math:`W` is the width of sensor and :math:`f` is focal length.
+
+        :return: Half X-FoV in radian.
+        :rtype: float
+        """
         return math.atan(self._sensor().w / (2 * self.fl))
 
     @property
     def fov_half_y(self) -> float:
+        r"""
+        Half Y-FoV of the pinhole camera:
+
+        .. math::
+            \varphi_\text{half-Y}=\arctan\frac{H}{2f}
+
+        where :math:`H` is the height of sensor and :math:`f` is focal length.
+
+        :return: Half Y-FoV in radian.
+        :rtype: float
+        """
         return math.atan(self._sensor().h / (2 * self.fl))
 
     def _perspective_focal_length(self) -> float:
@@ -337,364 +402,9 @@ def _stitch_symmetric(psf: Ts, h: int, w: int, x_symmetric: bool, y_symmetric: b
     return psf
 
 
-class PsfImagingOptics(ImagingOptics, PerspectiveMixIn, utils.CaptureHookMixIn):
-    """
-    Base class for optical systems that renders images through PSFs.
-    See :doc:`/content/guide/optics/imodel` for details.
-
-    If two object points symmetric w.r.t. x-axis (i.e. whose x coordinates are equal
-    and y coordinates are opposite) are expected to produce PSFs symmetric w.r.t. x-axis,
-    one can set ``x_symmetric`` to ``True`` to compute PSFs in one side only,
-    which is more efficient than computing two symmetric PSFs. It is similar
-    for ``y_symmetric``. Specifically, an axisymmetric system allows both as ``True``.
-
-    See :class:`ImagingOptics` for descriptions about more parameters.
-
-    :param float perspective_focal_length: Focal length for perspective projection.
-        Default: no perspective projection.
-    :param wl: Wavelengths for imaging. Default: Fraunhofer *d* line.
-        See :func:`~dnois.fraunhofer_line` for details.
-    :type wl: float, Sequence[float] or 1D Tensor
-    :param segments: Number of field-of-view segments when rendering images.
-        Default: ``'uniform'``.
-
-        ``int`` or ``tuple[int, int]``
-            The numbers of FoV segments in vertical and horizontal directions.
-            PSFs in each segment are assumed to be FoV-invariant.
-
-        ``'uniform'``
-            PSF is assumed to be space-invariant hence simple convolution can be used.
-
-        ``'pointwise'``
-            The optical responses of every individual object points will be computed.
-    :type segments: int, tuple[int, int] or str
-    :param depth: Depth adopted for rendering images when the scene to be imaged
-        carries no depth information. Default: infinity.
-
-        ``float`` or ``Sequence[float]`` or 1D tensor
-            Randomly select a value from given value for each image.
-
-        A pair of 0D tensors
-            They are interpreted as minimum and maximum values
-            for random sampling (see :py:meth:`~sample_depth`).
-    :type depth: float, Sequence[float], Tensor or tuple[Tensor, Tensor]
-    :param psf_size: Height and width of PSF (i.e. convolution kernel) used to simulate imaging.
-        Default: ``(64, 64)``.
-    :type psf_size: int or tuple[int, int]
-    :param bool norm_psf: Whether to normalize PSFs to have unit total energy. Default: ``True``.
-    :param cropping: Widths in pixels for cropping after rendering to alleviate
-        aliasing (caused by circular convolution) or dimming (caused by linear convolution)
-        in edges. Default: 0.
-    :param bool x_symmetric: Whether this system is symmetric w.r.t. x-axis.
-        See descriptions above. Default: ``False``.
-    :param bool y_symmetric: Whether this system is symmetric w.r.t. y-axis.
-        See descriptions above. Default: ``False``.
-    """
-    _inherent = ['sensor', 'perspective_focal_length']
-    _external = ['wl', 'segments', 'depth', 'psf_size', 'norm_psf', 'cropping', 'x_symmetric', 'y_symmetric']
-
-    def __init__(
-        self,
-        sensor: Sensor = None,
-        perspective_focal_length: float = None,
-        wl: Vector = None,
-        segments: SegLit | Size2d = 'uniform',
-        depth: Vector | Double[Ts] = float('inf'),
-        psf_size: Size2d = 64,
-        norm_psf: bool = True,
-        cropping: Size2d = 0,
-        x_symmetric: bool = False,
-        y_symmetric: bool = False,
-    ):
-        super().__init__(sensor)
-        if wl is None:
-            wl = DEFAULT_WL  # self.wl is assumed to never be None
-
-        self.perspective_focal_length: float = perspective_focal_length
-        self.wl = wl  # property setter
-        self.depth = depth  # property setter
-        #: Number of field-of-view segments when rendering images. See :class:`PsfImagingOptics`.
-        self.segments: Seg = cast(Seg, segments)
-        #: Height and width of PSF (i.e. convolution kernel) used to simulate imaging.
-        #: See :class:`PsfImagingOptics`.
-        self.psf_size: Double[int] = size2d(psf_size)
-        self.norm_psf: bool = norm_psf  #: Whether to normalize PSFs to have unit total energy.
-        self.cropping: Double[int] = size2d(cropping)  #: See :class:`PsfImagingOptics`.
-        self.x_symmetric: bool = x_symmetric  #: See :class:`PsfImagingOptics`.
-        self.y_symmetric: bool = y_symmetric  #: See :class:`PsfImagingOptics`.
-
-    @abc.abstractmethod
-    def psf(
-        self,
-        origins: Ts,
-        psf_size: Size2d = None,
-        wl: Vector = None,
-        norm_psf: bool = None,
-        **kwargs
-    ) -> Ts:
-        r"""
-        Returns PSF of points whose coordinates
-        in :ref:`camera's coordinate system <guide_imodel_cameras_coordinate_system>`
-        are given by ``points``.
-
-        The coordinate direction of returned PSF is defined as follows.
-        Horizontal and vertical directions represent x- and y-axis, respectively.
-        x is positive in left side and y is positive in upper side.
-        In 3D space, the directions of x- and y-axis are identical to that of
-        camera's coordinate system. In this way, returned PSF can be convolved with
-        a clear image directly to produce a blurred image.
-
-        :param Tensor origins: Source points of which to evaluate PSF. A tensor with shape
-            ``(..., 3)`` where the last dimension indicates coordinates of points in camera's
-            coordinate system. The coordinates comply with :ref:`guide_imodel_ccs_inf`.
-        :param psf_size: Numbers of pixels of PSF in vertical and horizontal directions.
-            Default: :attr:`.psf_size`.
-        :type psf_size: int or tuple[int, int]
-        :param wl: Wavelengths to evaluate PSF on. Default: :attr:`.wl`.
-        :type wl: float, Sequence[float] or Tensor
-        :param bool norm_psf: Whether to normalize PSF to have unit total energy.
-            Default: :attr:`.norm_psf`.
-        :return: PSF conditioned on ``origins``. A tensor with shape ``(..., N_wl, H, W)``.
-        :rtype: Tensor
-        """
-        pass
-
-    @utils.with_external
-    def render_image_scene(self, scene: _sc.ImageScene, segments: SegLit | Size2d = None, **kwargs) -> Ts:
-        r"""
-        Implementation of :doc:`imaging simulation </content/guide/overview>`.
-        This method will call either of three imaging methods:
-
-        - If ``segments`` is ``'uniform'``, call :meth:`conv_render`;
-        - If ``'pointwise'``, call :meth:`pointwise_render`;
-        - Otherwise, ``segments`` is a pair of integers, call :meth:`patchwise_render`.
-
-        :param scene: The scene to be imaged.
-        :type scene: :class:`~dnois.scene.Scene`
-        :param segments: See :class:`PsfImagingOptics`. Default: :attr:`.segments`.
-        :param kwargs: Additional keyword arguments passed to the underlying imaging methods.
-        :return: Computed :ref:`imaged radiance field <guide_overview_irf>`.
-            A tensor of shape :math:`(B, N_\lambda, H, W)`.
-        :rtype: Tensor
-        """
-        self._check_image_scene(scene)
-        if segments == 'uniform':
-            return self.conv_render(scene, **kwargs)
-        elif segments == 'pointwise':
-            return self.pointwise_render(scene, **kwargs)
-        else:  # tuple[int, int]
-            return self.patchwise_render(scene, segments, **kwargs)
-
-    @utils.with_external
-    def pointwise_render(
-        self,
-        scene: _sc.ImageScene,
-        wl: Vector = None,
-        depth: Vector | Double[Ts] = None,
-        psf_size: Size2d = None,
-        norm_psf: bool = None,
-        **kwargs,
-    ) -> Ts:
-        r"""
-        Renders :ref:`imaged radiance field <guide_overview_irf>` in a point-wise manner,
-        i.e. PSFs of all the pixels are computed and superposed.
-
-        :param scene: The scene to be imaged.
-        :type scene: :class:`~dnois.scene.Scene`
-        :param wl: See :class:`PsfImagingOptics`. Default: :attr:`.wl`.
-        :param depth: See :class:`PsfImagingOptics`. Default: :attr:`.depth`.
-        :param psf_size: See :class:`PsfImagingOptics`. Default: :attr:`.psf_size`.
-        :param bool norm_psf: See :class:`PsfImagingOptics`. Default: :attr:`.norm_psf`.
-        :param kwargs: Additional keyword arguments passed to :meth:`.psf`.
-        :return: Computed :ref:`imaged radiance field <guide_overview_irf>`.
-            A tensor of shape :math:`(B, N_\lambda, H, W)`.
-        :rtype: Tensor
-        """
-        self._check_image_scene(scene)
-        if wl.numel() != scene.n_wl:
-            raise ValueError(f'A scene with {wl.numel()} wavelengths expected, got {scene.n_wl}')
-
-        scene = scene.batch()
-        _, _, n_h, n_w = scene.image.shape
-        depth_map = self._make_depth_map(scene, depth)  # B|1 x H x W
-        obj_points = self.points_grid((n_h, n_w), depth_map, True)  # B|1 x H x W x 3
-        if not scene.depth_aware:
-            obj_points = _symmetric_patch(obj_points, self.x_symmetric, self.y_symmetric)
-
-        psf = self.psf(obj_points, psf_size, wl, norm_psf, **kwargs)  # B|1 x H x W x N_wl x H_P x W_P
-        if not scene.depth_aware:
-            psf = _stitch_symmetric(psf, n_h, n_w, self.x_symmetric, self.y_symmetric)
-        psf = psf.permute(0, 3, 1, 2, 4, 5)  # B|1 x N_wl x H x W x H_P x W_P
-
-        image = formation.superpose(scene.image, psf)  # B x N_wl x H x W
-
-        image = self.crop(image)
-        return image
-
-    @utils.with_external
-    def patchwise_render(
-        self,
-        scene: _sc.ImageScene,
-        pad: Size2d = 0,
-        linear_conv: bool = True,
-        merging: utils.PatchMerging = 'slope',
-        segments: Size2d = None,
-        wl: Vector = None,
-        depth: Vector | Double[Ts] = None,
-        psf_size: Size2d = None,
-        norm_psf: bool = None,
-        **kwargs
-    ) -> Ts:
-        r"""
-        Renders :ref:`imaged radiance field <guide_overview_irf>` in a patch-wise manner.
-        In other words, the image plane is partitioned into non-overlapping
-        patches and PSF is assumed to be space-invariant in each patch, but varies
-        from patch to patch.
-
-        :param scene: The scene to be imaged.
-        :type scene: :class:`~dnois.scene.Scene`
-        :param pad: Padding amount for each patch. See :func:`~dnois.optics.space_variant`
-            for more details. Default: ``(0, 0)``.
-        :type pad: int or tuple[int, int]
-        :param bool linear_conv: Whether to compute linear convolution rather than
-            circular convolution when computing blurred image. Default: ``True``.
-        :param str merging: Merging method to use for patch-wise (spatially variant) imaging.
-            See :func:`~dnois.optics.space_variant` for more details. Default: ``'slope'``.
-        :param segments: See :class:`PsfImagingOptics`. Default: :attr:`.segments`.
-        :param wl: See :class:`PsfImagingOptics`. Default: :attr:`.wl`.
-        :param depth: See :class:`PsfImagingOptics`. Default: :attr:`.depth`.
-        :param psf_size: See :class:`PsfImagingOptics`. Default: :attr:`.psf_size`.
-        :param bool norm_psf: See :class:`PsfImagingOptics`. Default: :attr:`.norm_psf`.
-        :param kwargs: Additional keyword arguments passed to :meth:`.psf`.
-        :return: Computed :ref:`imaged radiance field <guide_overview_irf>`.
-            A tensor of shape :math:`(B, N_\lambda, H, W)`.
-        :rtype: Tensor
-        """
-        pad = size2d(pad)
-
-        self._check_image_scene(scene)
-        if not isinstance(segments, tuple) or not len(segments) == 2:
-            raise ValueError(f'segments must be a pair of ints, got {type(segments)}')
-        if wl.numel() != scene.n_wl:
-            raise ValueError(f'A scene with {wl.numel()} wavelengths expected, got {scene.n_wl}')
-        if scene.depth_aware:
-            warnings.warn(f'Depth-aware rendering is not supported currently '
-                          f'for {self.patchwise_render.__qualname__}')
-
-        scene = scene.batch()
-        n_b, n_wl, n_h, n_w = scene.image.shape
-        if not (torch.is_tensor(depth) and depth.numel() == 1):
-            depth = torch.stack([self.random_depth(depth) for _ in range(n_b)])  # B(1)
-        # B(1) x N_y x N_x x 3
-        obj_points = self.points_grid(cast(Double[int], segments), depth.flatten())
-        obj_points = _symmetric_patch(obj_points, self.x_symmetric, self.y_symmetric)
-
-        psf = self.psf(obj_points, psf_size, wl, norm_psf, **kwargs)  # B(1) x N_y x N_x x N_wl x H x W
-        psf = _stitch_symmetric(psf, segments[0], segments[1], self.x_symmetric, self.y_symmetric)
-
-        psf = psf.permute(0, 3, 1, 2, 4, 5)  # B(1) x N_wl x N_y x N_x x H x W
-        image_blur = formation.space_variant(scene.image, psf, pad, linear_conv, merging)  # B x N_wl x H x W
-
-        image_blur = self.crop(image_blur)
-        return image_blur
-
-    @utils.with_external
-    def conv_render(
-        self,
-        scene: _sc.ImageScene,
-        fov: Double[float] | Callable[[], Double[float]] | str = None,
-        wl: Vector = None,
-        depth: Vector | Double[Ts] = None,
-        psf_size: Size2d = None,
-        norm_psf: bool = None,
-        pad: Size2d | str = 'linear',
-        occlusion_aware: bool = False,
-        depth_quantization_level: int = 16,
-        psf_cache: Ts = None,
-        **kwargs
-    ) -> Ts:
-        r"""
-        Renders :ref:`imaged radiance field <guide_overview_irf>` via vanilla convolution.
-        It means that PSF is considered as space-invariant.
-
-        :param scene: The scene to be imaged.
-        :type scene: :class:`~dnois.scene.Scene`
-        :param fov: Corresponding FoV in degrees of the PSF used to render the scene.
-            The argument is interpreted depending on its type:
-
-            ``tuple[float, float]``
-                x and y FoV angles.
-
-            ``'random'``
-                Randomly draw a pair of x and y FoV angles in a uniform distribution.
-
-            ``Callable[[], tuple[float, float]]``
-                A callable that returns a pair of x and y FoV angles.
-                This is useful when non-uniform probability distribution is desired.
-
-            Default: ``(0., 0.)``
-        :param wl: See :class:`PsfImagingOptics`. Default: :attr:`.wl`.
-        :param depth: See :class:`PsfImagingOptics`. Default: :attr:`.depth`.
-        :param psf_size: See :class:`PsfImagingOptics`. Default: :attr:`.psf_size`.
-        :param bool norm_psf: See :class:`PsfImagingOptics`. Default: :attr:`.norm_psf`.
-        :param pad: Padding width used to mitigate aliasing. See :func:`dnois.fourier.dconv2`
-            for more details. Default: ``'linear'``.
-        :type pad: int, tuple[int, int] or str
-        :param bool occlusion_aware: Whether to use occlusion-aware image formation algorithm.
-            See :func:`dnois.optics.depth_aware` for more details.
-            This matters only when ``scene`` carries depth map. Default: ``False``.
-        :param int depth_quantization_level: Number of quantization levels for depth-aware imaging.
-            This matters only when ``scene`` carries depth map. Default: ``16``.
-        :param Tensor psf_cache: If given, use this tensor as PSF rather than compute it. Default: ``None``.
-        :param kwargs: Additional keyword arguments passed to :meth:`.psf`.
-        :return: Computed :ref:`imaged radiance field <guide_overview_irf>`.
-            A tensor of shape :math:`(B, N_\lambda, H, W)`.
-        :rtype: Tensor
-        """
-        if fov is None:
-            fov = (0., 0.)
-        if isinstance(fov, str) and fov == 'random':
-            rm = self.reference
-            fov = (random.uniform(-rm.fov_half_x, rm.fov_half_x), random.uniform(-rm.fov_half_y, rm.fov_half_y))
-        elif callable(fov):
-            fov = cast(Callable, fov)()
-
-        self._check_image_scene(scene)
-        if wl.numel() != scene.n_wl:
-            raise ValueError(f'A scene with {wl.numel()} wavelengths expected, got {scene.n_wl}')
-
-        scene = scene.batch()
-        if scene.depth_aware:
-            if not isinstance(depth, tuple):
-                raise ValueError(f'depth must be a pair of 0D tensors for depth-aware imaging')
-            q_depth = self.seq_depth(n=depth_quantization_level)  # D
-            obj_points = self.fovd2obj([fov], q_depth)  # D x 3
-        else:
-            if not (torch.is_tensor(depth) and depth.numel() == 1):
-                depth = torch.stack([self.random_depth(depth) for _ in range(scene.batch_size)])  # B(1)
-            obj_points = self.fovd2obj([fov], depth)  # B(1) x 3
-
-        if psf_cache is None:
-            psf = self.psf(obj_points, psf_size, wl, norm_psf, **kwargs)
-        else:
-            psf = psf_cache
-        self.capture_hook(f'conv_render.psf', psf)
-        if psf.requires_grad and ddb.debugging():
-            psf.register_hook(ddb.grad_hook_check_peculiar(f'PSF in {self.conv_render.__qualname__}'))
-
-        if scene.depth_aware:
-            psf = psf.transpose(0, 1)  # N_wl x D x H_P x W_P
-
-            min_d, max_d = depth
-            masks = _d.quantize_depth_map(scene.depth, min_d, max_d, depth_quantization_level)  # D x B x H x W
-            masks = masks.transpose(0, 1).unsqueeze(1)  # B x 1 x D x H x W
-            image = formation.depth_aware(scene.image, masks, psf, pad, occlusion_aware)  # B x N_wl x H x W
-        else:
-            # PSF: B(1) x N_wl x H_P x W_P
-            image = formation.simple(scene.image, psf, pad)  # B x N_wl x H x W
-
-        image = self.crop(image)
-        return image
+# This class provides methods to inversely map points on image plane into object space.
+class RenderImageSceneMixIn(PerspectiveMixIn, metaclass=abc.ABCMeta):
+    depth: Ts | Double[Ts]
 
     @utils.with_external
     def seq_depth(
@@ -817,14 +527,458 @@ class PsfImagingOptics(ImagingOptics, PerspectiveMixIn, utils.CaptureHookMixIn):
             segments, (1 / segments[0], 1 / segments[1]), 0.5,
             symmetric=True, device=self.device, dtype=self.dtype
         )
-        tanfov_x = (1 - tanfov_x) * self.fov_x_lower + tanfov_x * self.fov_x_upper
-        tanfov_y = (1 - tanfov_y) * self.fov_y_lower + tanfov_y * self.fov_y_upper
+        tanfov_x = (1 - tanfov_x) * math.tan(self.fov_x_lower) + tanfov_x * math.tan(self.fov_x_upper)
+        tanfov_y = (1 - tanfov_y) * math.tan(self.fov_y_lower) + tanfov_y * math.tan(self.fov_y_upper)
         tanfov_x, tanfov_y = torch.broadcast_tensors(tanfov_x, tanfov_y)  # N_x x N_y
         if not depth_as_map:
             depth = depth[..., None, None]
         return self.tanfovd2obj(torch.stack([tanfov_x, tanfov_y], -1), depth)  # ... x N_x x N_y x 3
 
+    @property
+    def fov_x_upper(self) -> float:
+        """
+        Maximum x FoV in radian.
+
+        :type: float
+        """
+        return self.reference.fov_half_x
+
+    @property
+    def fov_x_lower(self) -> float:
+        """
+        Minimum x FoV in radian.
+
+        :type: float
+        """
+        return -self.reference.fov_half_x
+
+    @property
+    def fov_x_full(self) -> float:
+        """
+        Full x FoV in radian. It is the difference between :attr:`.fov_x_upper` and :attr:`.fov_x_lower`.
+
+        :type: float
+        """
+        return self.fov_x_upper - self.fov_x_lower
+
+    @property
+    def fov_y_upper(self) -> float:
+        """
+        Maximum y FoV in radian.
+
+        :type: float
+        """
+        return self.reference.fov_half_y
+
+    @property
+    def fov_y_lower(self) -> float:
+        """
+        Minimum y FoV in radian.
+
+        :type: float
+        """
+        return -self.reference.fov_half_y
+
+    @property
+    def fov_y_full(self) -> float:
+        """
+        Full y FoV in radian. It is the difference between :attr:`.fov_y_upper` and :attr:`.fov_y_lower`.
+
+        :type: float
+        """
+        return self.fov_y_upper - self.fov_y_lower
+
+    def _normalize_depth(self, depth: Vector | Double[Ts]) -> Ts | Double[Ts]:
+        if isinstance(depth, tuple) and len(depth) == 2 and all(torch.is_tensor(t) for t in depth):
+            if depth[0].ndim != 0 or depth[1].ndim != 0:
+                raise ShapeError(f'If a pair of tensor, both of them should be 0D, got {depth}')
+        else:
+            depth = vector(depth, dtype=self.dtype, device=self.device)
+        return depth
+
+    def _make_depth_map(self, scene: _sc.ImageScene, depth: Vector | Double[Ts]) -> Ts:
+        scene = scene.batch()
+        n_b, _, n_h, n_w = scene.image.shape
+
+        if scene.depth_aware:
+            depth_map = scene.depth
+        else:
+            if not (torch.is_tensor(depth) and depth.numel() == 1):
+                depth = torch.stack([self.random_depth(depth) for _ in range(n_b)])
+            depth_map = depth.reshape(-1, 1, 1).expand(-1, n_h, n_w)
+        return depth_map  # B|1 x H x W
+
+
+class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn):
+    """
+    Base class for optical systems that renders images through PSFs.
+    See :doc:`/content/guide/optics/imodel` for details.
+
+    If two object points symmetric w.r.t. x-axis (i.e. whose x coordinates are equal
+    and y coordinates are opposite) are expected to produce PSFs symmetric w.r.t. x-axis,
+    one can set ``x_symmetric`` to ``True`` to compute PSFs in one side only,
+    which is more efficient than computing two symmetric PSFs. It is similar
+    for ``y_symmetric``. Specifically, an axisymmetric system allows both as ``True``.
+
+    See :class:`ImagingOptics` for descriptions about more parameters.
+
+    :param float perspective_focal_length: Focal length for perspective projection.
+        Default: no perspective projection.
+    :param wl: Wavelengths for imaging. Default: Fraunhofer *d* line.
+        See :func:`~dnois.fraunhofer_line` for details.
+    :type wl: float, Sequence[float] or 1D Tensor
+    :param segments: Number of field-of-view segments when rendering images.
+        Default: ``'uniform'``.
+
+        ``int`` or ``tuple[int, int]``
+            The numbers of FoV segments in vertical and horizontal directions.
+            PSFs in each segment are assumed to be FoV-invariant.
+
+        ``'uniform'``
+            PSF is assumed to be space-invariant hence simple convolution can be used.
+
+        ``'pointwise'``
+            The optical responses of every individual object points will be computed.
+    :type segments: int, tuple[int, int] or str
+    :param depth: Depth adopted for rendering images when the scene to be imaged
+        carries no depth information. Default: infinity.
+
+        ``float`` or ``Sequence[float]`` or 1D tensor
+            Randomly select a value from given value for each image.
+
+        A pair of 0D tensors
+            They are interpreted as minimum and maximum values
+            for random sampling (see :py:meth:`~sample_depth`).
+    :type depth: float, Sequence[float], Tensor or tuple[Tensor, Tensor]
+    :param psf_size: Height and width of PSF (i.e. convolution kernel) used to simulate imaging.
+        Default: ``(64, 64)``.
+    :type psf_size: int or tuple[int, int]
+    :param bool norm_psf: Whether to normalize PSFs to have unit total energy. Default: ``True``.
+    :param cropping: Widths in pixels for cropping after rendering to alleviate
+        aliasing (caused by circular convolution) or dimming (caused by linear convolution)
+        in edges. Default: 0.
+    :param bool x_symmetric: Whether this system is symmetric w.r.t. x-axis.
+        See descriptions above. Default: ``False``.
+    :param bool y_symmetric: Whether this system is symmetric w.r.t. y-axis.
+        See descriptions above. Default: ``False``.
+    """
+    _inherent = ['sensor', 'perspective_focal_length']
+    _external = ['wl', 'segments', 'depth', 'psf_size', 'norm_psf', 'cropping', 'x_symmetric', 'y_symmetric']
+
+    def __init__(
+        self,
+        sensor: Sensor = None,
+        perspective_focal_length: float = None,
+        wl: Vector = None,
+        segments: SegLit | Size2d = 'uniform',
+        depth: Vector | Double[Ts] = float('inf'),
+        psf_size: Size2d = 64,
+        norm_psf: bool = True,
+        cropping: Size2d = 0,
+        x_symmetric: bool = False,
+        y_symmetric: bool = False,
+    ):
+        super().__init__(sensor)
+        if wl is None:
+            wl = base.Length.as_default(DEFAULT_WL, 'm')  # self.wl is assumed to never be None
+
+        self.perspective_focal_length: float | None = perspective_focal_length
+        self.wl = wl  # property setter
+        self.depth = depth  # property setter
+        #: Number of field-of-view segments when rendering images. See :class:`PsfImagingOptics`.
+        self.segments: Seg = cast(Seg, segments)
+        #: Height and width of PSF (i.e. convolution kernel) used to simulate imaging.
+        #: See :class:`PsfImagingOptics`.
+        self.psf_size: Double[int] = size2d(psf_size)
+        self.norm_psf: bool = norm_psf  #: Whether to normalize PSFs to have unit total energy.
+        self.cropping: Double[int] = size2d(cropping)  #: See :class:`PsfImagingOptics`.
+        self.x_symmetric: bool = x_symmetric  #: See :class:`PsfImagingOptics`.
+        self.y_symmetric: bool = y_symmetric  #: See :class:`PsfImagingOptics`.
+
+    @abc.abstractmethod
+    def psf(
+        self,
+        origins: Ts,
+        psf_size: Size2d = None,
+        wl: Vector = None,
+        norm_psf: bool = None,
+        **kwargs
+    ) -> Ts:
+        r"""
+        Returns PSF of points whose coordinates
+        in :ref:`camera's coordinate system <guide_imodel_cameras_coordinate_system>`
+        are given by ``points``.
+
+        The coordinate direction of returned PSF is defined as follows.
+        Horizontal and vertical directions represent x- and y-axis, respectively.
+        x is positive in left side and y is positive in upper side.
+        In 3D space, the directions of x- and y-axis are identical to that of
+        camera's coordinate system. In this way, returned PSF can be convolved with
+        a clear image directly to produce a blurred image.
+
+        :param Tensor origins: Source points of which to evaluate PSF. A tensor with shape
+            ``(..., 3)`` where the last dimension indicates coordinates of points in camera's
+            coordinate system. The coordinates comply with :ref:`guide_imodel_ccs_inf`.
+        :param psf_size: Numbers of pixels of PSF in vertical and horizontal directions.
+            Default: :attr:`.psf_size`.
+        :type psf_size: int or tuple[int, int]
+        :param wl: Wavelengths to evaluate PSF on. Default: :attr:`.wl`.
+        :type wl: float, Sequence[float] or Tensor
+        :param bool norm_psf: Whether to normalize PSF to have unit total energy.
+            Default: :attr:`.norm_psf`.
+        :return: PSF conditioned on ``origins``. A tensor with shape ``(..., N_wl, H, W)``.
+        :rtype: Tensor
+        """
+        pass
+
+    @utils.with_external
+    def render_image_scene(self, scene: _sc.ImageScene, segments: SegLit | Size2d = None, **kwargs) -> Ts:
+        r"""
+        Implementation of :doc:`imaging simulation </content/guide/overview>`.
+        This method will call either of three imaging methods:
+
+        - If ``segments`` is ``'uniform'``, call :meth:`conv_render`;
+        - If ``'pointwise'``, call :meth:`pointwise_render`;
+        - Otherwise, ``segments`` is a pair of integers, call :meth:`patchwise_render`.
+
+        :param scene: The scene to be imaged.
+        :type scene: :class:`~dnois.scene.Scene`
+        :param segments: See :class:`PsfImagingOptics`. Default: :attr:`.segments`.
+        :param kwargs: Additional keyword arguments passed to the underlying imaging methods.
+        :return: Computed :ref:`imaged radiance field <guide_overview_irf>`.
+            A tensor of shape :math:`(B, N_\lambda, H, W)`.
+        :rtype: Tensor
+        """
+        self._check_image_scene(scene)
+        if segments == 'uniform':
+            return self.conv_render(scene, **kwargs)
+        elif segments == 'pointwise':
+            return self.pointwise_render(scene, **kwargs)
+        else:  # tuple[int, int]
+            return self.patchwise_render(scene, segments, **kwargs)
+
+    def render_point_cloud_scene(self, scene: _sc.PointCloudScene, **kwargs) -> Ts:
+        raise NotImplementedError()
+
+    @utils.with_external
+    def pointwise_render(
+        self,
+        scene: _sc.ImageScene,
+        wl: Vector = None,
+        depth: Vector | Double[Ts] = None,
+        psf_size: Size2d = None,
+        norm_psf: bool = None,
+        **kwargs,
+    ) -> Ts:
+        r"""
+        Renders :ref:`imaged radiance field <guide_overview_irf>` in a point-wise manner,
+        i.e. PSFs of all the pixels are computed and superposed.
+
+        :param scene: The scene to be imaged.
+        :type scene: :class:`~dnois.scene.Scene`
+        :param wl: See :class:`PsfImagingOptics`. Default: :attr:`.wl`.
+        :param depth: See :class:`PsfImagingOptics`. Default: :attr:`.depth`.
+        :param psf_size: See :class:`PsfImagingOptics`. Default: :attr:`.psf_size`.
+        :param bool norm_psf: See :class:`PsfImagingOptics`. Default: :attr:`.norm_psf`.
+        :param kwargs: Additional keyword arguments passed to :meth:`.psf`.
+        :return: Computed :ref:`imaged radiance field <guide_overview_irf>`.
+            A tensor of shape :math:`(B, N_\lambda, H, W)`.
+        :rtype: Tensor
+        """
+        self._check_image_scene(scene)
+        if wl.numel() != scene.n_wl:
+            raise ValueError(f'A scene with {wl.numel()} wavelengths expected, got {scene.n_wl}')
+
+        scene = scene.batch()
+        _, _, n_h, n_w = scene.image.shape
+        depth_map = self._make_depth_map(scene, depth)  # B|1 x H x W
+        obj_points = self.points_grid((n_h, n_w), depth_map, True)  # B|1 x H x W x 3
+        if not scene.depth_aware:
+            obj_points = _symmetric_patch(obj_points, self.x_symmetric, self.y_symmetric)
+
+        psf = self.psf(obj_points, psf_size, wl, norm_psf, **kwargs)  # B|1 x H x W x N_wl x H_P x W_P
+        if not scene.depth_aware:
+            psf = _stitch_symmetric(psf, n_h, n_w, self.x_symmetric, self.y_symmetric)
+        psf = psf.permute(0, 3, 1, 2, 4, 5)  # B|1 x N_wl x H x W x H_P x W_P
+
+        image = formation.superpose(scene.image, psf)  # B x N_wl x H x W
+
+        image = self.crop(image)
+        return image
+
+    @utils.with_external
+    def patchwise_render(
+        self,
+        scene: _sc.ImageScene,
+        pad: Size2d = 0,
+        linear_conv: bool = True,
+        segments: Size2d = None,
+        wl: Vector = None,
+        depth: Vector | Double[Ts] = None,
+        psf_size: Size2d = None,
+        norm_psf: bool = None,
+        **kwargs
+    ) -> Ts:
+        r"""
+        Renders :ref:`imaged radiance field <guide_overview_irf>` in a patch-wise manner.
+        In other words, the image plane is partitioned into non-overlapping
+        patches and PSF is assumed to be space-invariant in each patch, but varies
+        from patch to patch.
+
+        :param scene: The scene to be imaged.
+        :type scene: :class:`~dnois.scene.Scene`
+        :param pad: Padding amount for each patch. See :func:`~dnois.optics.space_variant`
+            for more details. Default: ``(0, 0)``.
+        :type pad: int or tuple[int, int]
+        :param bool linear_conv: Whether to compute linear convolution rather than
+            circular convolution when computing blurred image. Default: ``True``.
+        :param segments: See :class:`PsfImagingOptics`. Default: :attr:`.segments`.
+        :param wl: See :class:`PsfImagingOptics`. Default: :attr:`.wl`.
+        :param depth: See :class:`PsfImagingOptics`. Default: :attr:`.depth`.
+        :param psf_size: See :class:`PsfImagingOptics`. Default: :attr:`.psf_size`.
+        :param bool norm_psf: See :class:`PsfImagingOptics`. Default: :attr:`.norm_psf`.
+        :param kwargs: Additional keyword arguments passed to :meth:`.psf`.
+        :return: Computed :ref:`imaged radiance field <guide_overview_irf>`.
+            A tensor of shape :math:`(B, N_\lambda, H, W)`.
+        :rtype: Tensor
+        """
+        pad = size2d(pad)
+
+        self._check_image_scene(scene)
+        if not isinstance(segments, tuple) or not len(segments) == 2:
+            raise ValueError(f'segments must be a pair of ints, got {type(segments)}')
+        if wl.numel() != scene.n_wl:
+            raise ValueError(f'A scene with {wl.numel()} wavelengths expected, got {scene.n_wl}')
+        if scene.depth_aware:
+            warnings.warn(f'Depth-aware rendering is not supported currently '
+                          f'for {self.patchwise_render.__qualname__}')
+
+        scene = scene.batch()
+        n_b, n_wl, n_h, n_w = scene.image.shape
+        if not (torch.is_tensor(depth) and depth.numel() == 1):
+            depth = torch.stack([self.random_depth(depth) for _ in range(n_b)])  # B(1)
+        # B(1) x N_y x N_x x 3
+        obj_points = self.points_grid(cast(Double[int], segments), depth.flatten())
+        obj_points = _symmetric_patch(obj_points, self.x_symmetric, self.y_symmetric)
+
+        psf = self.psf(obj_points, psf_size, wl, norm_psf, **kwargs)  # B(1) x N_y x N_x x N_wl x H x W
+        psf = _stitch_symmetric(psf, segments[0], segments[1], self.x_symmetric, self.y_symmetric)
+
+        psf = psf.permute(0, 3, 1, 2, 4, 5)  # B(1) x N_wl x N_y x N_x x H x W
+        image_blur = formation.space_variant(scene.image, psf, pad, linear_conv)  # B x N_wl x H x W
+
+        image_blur = self.crop(image_blur)
+        return image_blur
+
+    @utils.with_external
+    def conv_render(
+        self,
+        scene: _sc.ImageScene,
+        fov: Double[float] | Callable[[], Double[float]] | str = None,
+        wl: Vector = None,
+        depth: Vector | Double[Ts] = None,
+        psf_size: Size2d = None,
+        norm_psf: bool = None,
+        pad: Size2d | str = 'linear',
+        occlusion_aware: bool = False,
+        depth_quantization_level: int = 16,
+        compensate_edge: bool = False,
+        eps: float = 1e-3,
+        psf_cache: Ts = None,
+        **kwargs
+    ) -> Ts:
+        r"""
+        Renders :ref:`imaged radiance field <guide_overview_irf>` via vanilla convolution.
+        It means that PSF is considered as space-invariant.
+
+        :param scene: The scene to be imaged.
+        :type scene: :class:`~dnois.scene.Scene`
+        :param fov: Corresponding FoV in degrees of the PSF used to render the scene.
+            The argument is interpreted depending on its type:
+
+            ``tuple[float, float]``
+                x and y FoV angles.
+
+            ``'random'``
+                Randomly draw a pair of x and y FoV angles in a uniform distribution.
+
+            ``Callable[[], tuple[float, float]]``
+                A callable that returns a pair of x and y FoV angles.
+                This is useful when non-uniform probability distribution is desired.
+
+            Default: ``(0., 0.)``
+        :param wl: See :class:`PsfImagingOptics`. Default: :attr:`.wl`.
+        :param depth: See :class:`PsfImagingOptics`. Default: :attr:`.depth`.
+        :param psf_size: See :class:`PsfImagingOptics`. Default: :attr:`.psf_size`.
+        :param bool norm_psf: See :class:`PsfImagingOptics`. Default: :attr:`.norm_psf`.
+        :param pad: Padding width used to mitigate aliasing. See :func:`dnois.fourier.dconv2`
+            for more details. Default: ``'linear'``.
+        :type pad: int, tuple[int, int] or str
+        :param bool occlusion_aware: Whether to use occlusion-aware image formation algorithm.
+            See :func:`dnois.optics.depth_aware` for more details.
+            This matters only when ``scene`` carries depth map. Default: ``False``.
+        :param int depth_quantization_level: Number of quantization levels for depth-aware imaging.
+            This matters only when ``scene`` carries depth map. Default: ``16``.
+        :param bool compensate_edge: See :func:`dnois.optics.simple`. Default: ``False``.
+        :param float eps: See :func:`dnois.optics.simple`. Default: ``1e-3``.
+        :param Tensor psf_cache: If given, use this tensor as PSF rather than compute it. Default: ``None``.
+        :param kwargs: Additional keyword arguments passed to :meth:`.psf`.
+        :return: Computed :ref:`imaged radiance field <guide_overview_irf>`.
+            A tensor of shape :math:`(B, N_\lambda, H, W)`.
+        :rtype: Tensor
+        """
+        if fov is None:
+            fov = (0., 0.)
+        if isinstance(fov, str) and fov == 'random':
+            rm = self.reference
+            fov = (random.uniform(-rm.fov_half_x, rm.fov_half_x), random.uniform(-rm.fov_half_y, rm.fov_half_y))
+            fov = self.variable_hook('conv_render.fov', fov)
+        elif callable(fov):
+            fov = cast(Callable, fov)()
+
+        self._check_image_scene(scene)
+        if wl.numel() != scene.n_wl:
+            raise ValueError(f'A scene with {wl.numel()} wavelengths expected, got {scene.n_wl}')
+
+        scene = scene.batch()
+        if scene.depth_aware:
+            if not isinstance(depth, tuple):
+                raise ValueError(f'depth must be a pair of 0D tensors for depth-aware imaging')
+            q_depth = self.seq_depth(n=depth_quantization_level)  # D
+            obj_points = self.fovd2obj([fov], q_depth)  # D x 3
+        else:
+            if not (torch.is_tensor(depth) and depth.numel() == 1):
+                depth = torch.stack([self.random_depth(depth) for _ in range(scene.batch_size)])  # B(1)
+            obj_points = self.fovd2obj([fov], depth)  # B(1) x 3
+
+        if psf_cache is None:
+            psf = self.psf(obj_points, psf_size, wl, norm_psf, **kwargs)
+        else:
+            psf = psf_cache
+        psf = self.variable_hook(f'conv_render.psf', psf)
+
+        if scene.depth_aware:
+            psf = psf.transpose(0, 1)  # N_wl x D x H_P x W_P
+
+            min_d, max_d = depth
+            masks = _d.quantize_depth_map(scene.depth, min_d, max_d, depth_quantization_level)  # D x B x H x W
+            masks = masks.transpose(0, 1).unsqueeze(1)  # B x 1 x D x H x W
+            image = formation.depth_aware(scene.image, masks, psf, pad, occlusion_aware)  # B x N_wl x H x W
+        else:
+            # PSF: B(1) x N_wl x H_P x W_P
+            image = formation.simple(scene.image, psf, pad, compensate_edge, eps)  # B x N_wl x H x W
+
+        image = self.crop(image)
+        return image
+
     def crop(self, image: Ts) -> Ts:
+        """
+        Crop ``image`` by width :attr:`.cropping`.
+
+        :param Tensor image: A tensor of shape ``(..., H, W)``.
+        :return: Cropped image. A tensor of shape ``(..., H', W')``.
+        :rtype: Tensor
+        """
         return utils.crop(image, self.cropping)
 
     def to_dict(self, keep_tensor=True) -> dict[str, typing.Any]:
@@ -867,36 +1021,6 @@ class PsfImagingOptics(ImagingOptics, PerspectiveMixIn, utils.CaptureHookMixIn):
     def wl(self, value: Ts):  # already normalized in __setattr__
         self.register_buffer('_b_wl', value)
 
-    @property
-    def fov_x_upper(self) -> float:
-        return self.reference.fov_half_x
-
-    @property
-    def fov_x_lower(self) -> float:
-        return -self.reference.fov_half_x
-
-    @property
-    def fov_x_full(self) -> float:
-        return self.fov_x_upper - self.fov_x_lower
-
-    @property
-    def fov_y_upper(self) -> float:
-        return self.reference.fov_half_y
-
-    @property
-    def fov_y_lower(self) -> float:
-        return -self.reference.fov_half_y
-
-    @property
-    def fov_y_full(self) -> float:
-        return self.fov_y_upper - self.fov_y_lower
-
-    @property
-    def fov_full(self) -> float:
-        dx = math.tan(self.fov_x_upper) - math.tan(self.fov_x_lower)
-        dy = math.tan(self.fov_y_upper) - math.tan(self.fov_y_lower)
-        return math.atan(math.sqrt(dx * dx + dy * dy))
-
     def _check_image_scene(self, scene: _sc.Scene):
         if not isinstance(scene, _sc.ImageScene):
             raise RuntimeError(f'An {_sc.ImageScene.__name__} expected, but got {type(scene).__name__}')
@@ -904,26 +1028,6 @@ class PsfImagingOptics(ImagingOptics, PerspectiveMixIn, utils.CaptureHookMixIn):
             raise NotImplementedError(f'{self._cn()} does not support polarization currently')
         if scene.intrinsic is not None:
             raise NotImplementedError(f'{self._cn()} does not support scenes with intrinsic currently')
-
-    def _make_depth_map(self, scene: _sc.ImageScene, depth: Vector | Double[Ts]) -> Ts:
-        scene = scene.batch()
-        n_b, _, n_h, n_w = scene.image.shape
-
-        if scene.depth_aware:
-            depth_map = scene.depth
-        else:
-            if not (torch.is_tensor(depth) and depth.numel() == 1):
-                depth = torch.stack([self.random_depth(depth) for _ in range(n_b)])
-            depth_map = depth.reshape(-1, 1, 1).expand(-1, n_h, n_w)
-        return depth_map  # B|1 x H x W
-
-    def _normalize_depth(self, depth: Vector | Double[Ts]) -> Ts | Double[Ts]:
-        if isinstance(depth, tuple) and len(depth) == 2 and all(torch.is_tensor(t) for t in depth):
-            if depth[0].ndim != 0 or depth[1].ndim != 0:
-                raise ShapeError(f'If a pair of tensor, both of them should be 0D, got {depth}')
-        else:
-            depth = vector(depth, dtype=self.dtype, device=self.device)
-        return depth
 
     def _normalize_wl(self, wl: Vector):
         return vector(wl, dtype=self.dtype, device=self.device)
@@ -961,7 +1065,7 @@ class PsfImagingOptics(ImagingOptics, PerspectiveMixIn, utils.CaptureHookMixIn):
         return d
 
 
-class IdealOptics(PsfImagingOptics):  # TODO: adapt to new class hierarchy
+class IdealOptics(PsfImagingOptics):
     """
     Ideal optics model.
 
@@ -976,15 +1080,20 @@ class IdealOptics(PsfImagingOptics):  # TODO: adapt to new class hierarchy
 
     def __init__(
         self,
-        perspective_focal_length: float,
         pupil_diameter: float,
         fl1: float,
         fl2: float = None,
         sensor: Sensor = None,
+        perspective_focal_length: float = None,
+        sensor_distance: float = None,
         **kwargs,
     ):
         if fl2 is None:
             fl2 = fl1
+        if sensor_distance is not None:
+            if perspective_focal_length is not None:
+                raise ValueError(f'Only one of perspective_focal_length and sensor_distance can be specified')
+            perspective_focal_length = sensor_distance * fl1 / fl2
 
         kwargs.setdefault('x_symmetric', True)
         kwargs.setdefault('y_symmetric', True)
@@ -995,7 +1104,7 @@ class IdealOptics(PsfImagingOptics):  # TODO: adapt to new class hierarchy
         self.fl2: float = fl2  #: Focal length in image space.
 
     @utils.with_external
-    def psf(self, origins: Ts, psf_size: Size2d = None, wl: Vector = None, **kwargs) -> Ts:
+    def psf(self, origins: Ts, psf_size: Size2d = None, **kwargs) -> Ts:
         if len(kwargs) != 0:
             raise RuntimeError(f'Unknown keyword arguments for {self.__class__.__name__}: '
                                f'{", ".join(kwargs.keys())}')
@@ -1035,9 +1144,10 @@ class IdealOptics(PsfImagingOptics):  # TODO: adapt to new class hierarchy
         """
         Distance between image principal plane and image plane (sensor plane).
 
-        :rtype:
+        :type: float
         """
-        if self.fl1 == self.fl2:
-            return self.image_distance
-        else:
-            return self.image_distance * self.fl2 / self.fl1
+        return self._perspective_focal_length() * self.fl2 / self.fl1
+
+    @sensor_distance.setter
+    def sensor_distance(self, value: float):
+        self.perspective_focal_length = value * self.fl1 / self.fl2

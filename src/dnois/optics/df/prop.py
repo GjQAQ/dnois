@@ -99,9 +99,9 @@ def _init_ft_common(
 
     wl = vector(wl)
     distance = vector(distance)
-    prod = wl * distance.unsqueeze(-1)  # N_d x N_wl
-    phase_scale = torch.pi / prod  # k/(2d)
-    quadratic_phase = phase_scale[..., None, None] * (u.square() + v.square())
+    prod = (wl * distance.unsqueeze(-1))[..., None, None]  # N_d x N_wl x 1 x 1
+    phase_scale = (torch.pi / prod)  # k/(2d), N_d x N_wl x 1 x 1
+    quadratic_phase = phase_scale * (u.square() + v.square())  # ... x N_d x N_wl x H x W
     if not far_field:
         if ampl_phase_form:
             cache['quadratic_phase'] = quadratic_phase
@@ -109,13 +109,13 @@ def _init_ft_common(
             cache['quadratic_phase_factor'] = _t.expi(quadratic_phase)
 
     if phase_factor:
-        y, x = utils.grid(grid_size, (dy, dx))
-        _post_phase = phase_scale[..., None, None] * (x.square() + y.square())
-        _post_phase += 2 * torch.pi * distance.unsqueeze(-4) / wl - torch.pi / 2
+        y, x = utils.grid(grid_size, (dy, dx))  # ... x N_d x N_wl
+        _post_phase = phase_scale * (x.square() + y.square())  # ... x N_d x N_wl x H x W
+        _post_phase += 2 * torch.pi * (distance.unsqueeze(-1) / wl)[..., None, None] - torch.pi / 2
         cache['phase_factor'] = _t.expi(_post_phase)
 
     if scale_factor:
-        cache['scale_factor'] = 1 / prod[..., None, None]  # N_d x N_wl x 1 x 1
+        cache['scale_factor'] = 1 / prod  # N_d x N_wl x 1 x 1
 
     return cache
 

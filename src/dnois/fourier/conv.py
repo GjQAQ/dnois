@@ -196,7 +196,7 @@ def dconv(
     :param str out: One of the following options. Default: ``full``. In each dimension:
 
         ``full``
-            Return complete result so the size of each dimension is ``max(N, M) + padding - 1``.
+            Return complete result so the size of each dimension is ``max(N, M) + padding``.
 
         ``same``
             Return the middle segment of result. In other words, drop the first

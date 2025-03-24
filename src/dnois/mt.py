@@ -6,19 +6,19 @@ and Sellmeier formula, etc.
 All the material classes are derived from :py:class:`Material` and share its
 constructor arguments. They have also a method :py:meth:`~Material.n`
 to compute the refractive index for given wavelength. Each class implements
-this method by its own dispersion formula.
+this method by its own dispersion formula. The main reference for these dispersion
+types is Zemax.
 
 This module maintains a material library to add, delete or retrieve materials.
 See :ref:`accessing_materials`.
 """
-# TODO: declare source: Zemax manual
 
 import abc
+import re
 
 import torch
 
-from . import utils
-from .base import convert
+from . import utils, base
 from .base.typing import Numeric, Union, cast
 
 __all__ = [
@@ -45,11 +45,11 @@ __all__ = [
     'Sellmeier5',
 ]
 
-_PRINT_PRECISION = 3
+RANGE_CHECK_EPS = 1e-5
 
 
-def _format_flist(flist: list[float], precision: int) -> str:
-    return f'[{", ".join(f"{c:.{precision}f}" for c in flist)}]'
+def _format_flist(flist: list[float]) -> str:
+    return f'[{", ".join(f"{utils.fmt(c)}" for c in flist)}]'
 
 
 class Material(metaclass=abc.ABCMeta):
@@ -82,35 +82,30 @@ class Material(metaclass=abc.ABCMeta):
         self.default_unit = default_unit
 
     def __repr__(self):
-        return f'{self.__class__.__name__}({self._repr(_PRINT_PRECISION)})'
+        return f'{self.__class__.__name__}({self._repr()})'
 
     @abc.abstractmethod
-    def n(self, wavelength: Numeric, unit: str = None) -> Numeric:
+    def n(self, wavelength: Numeric) -> Numeric:
         """
         Computes refractive index.
 
         :param wavelength: Value of wavelength.
         :type: float or Tensor
-        :param str unit: The unit of given wavelength. Default: ``self.default_unit``.
         :return: Refractive index.
         :rtype: float or Tensor
         """
         pass
 
     @abc.abstractmethod
-    def _repr(self, precision: int) -> str:
-        return (f'name={self.name}, '
-                f'domain=({self.min_wl:.{precision}f}, {self.max_wl:.{precision}f}), '
-                f'in {self.default_unit}')
+    def _repr(self) -> str:
+        return (f'name={self.name}, domain=('
+                f'{utils.fmt(self.min_wl)}{self.default_unit}, '
+                f'{utils.fmt(self.max_wl)}{self.default_unit})')
 
-    def _validate(self, wl: Numeric, unit: str = None) -> Numeric:
-        # convert wl in unit to wl in default unit if unit is given,
-        # or wl is assumed to be with default unit
-        if unit is not None and unit != self.default_unit:
-            wl = convert(wl, unit, self.default_unit)
-
+    def _validate(self, wl: Numeric) -> Numeric:
+        wl = base.Length.default_to(wl, self.default_unit)
         m1, m2 = (wl.min().item(), wl.max().item()) if torch.is_tensor(wl) else (wl, wl)
-        if m1 < self.min_wl * (1 - 1e-6) or m2 > self.max_wl * (1 + 1e-6):
+        if m1 < self.min_wl * (1 - RANGE_CHECK_EPS) or m2 > self.max_wl * (1 + RANGE_CHECK_EPS):
             raise ValueError(
                 f'Unsupported wavelength for material \'{self.name}\': '
                 f'{wl}(unit: {self.default_unit})'
@@ -127,6 +122,7 @@ class Constant(Material):
 
     See :class:`Material` for descriptions for other parameters.
     """
+    __slots__ = ('refractive_index',)
 
     def __init__(
         self,
@@ -139,10 +135,11 @@ class Constant(Material):
         super().__init__(name, min_wl, max_wl, default_unit)
         self.refractive_index: float = n  #: Refractive index.
 
-    def _repr(self, precision: int) -> str:
-        return f'n={self.refractive_index:.{precision}f}'
+    def _repr(self) -> str:
+        return super()._repr() + f', n={utils.fmt(self.refractive_index)}'
 
-    def n(self, wl: Numeric, unit: str = None) -> Numeric:
+    def n(self, wl: Numeric) -> Numeric:
+        wl = self._validate(wl)
         n = self.refractive_index
         return torch.full_like(wl, n) if torch.is_tensor(wl) else n
 
@@ -171,17 +168,14 @@ class Cauchy(Material):
         self.b = b  #: :math:`B` in Cauchy formula.
         self.c = c  #: :math:`C` in Cauchy formula.
 
-    def n(self, wl: Numeric, unit: str = None) -> Numeric:
-        wl = self._validate(wl, unit)
-        iw2 = 1 / wl ** 2
+    def n(self, wl: Numeric) -> Numeric:
+        wl = self._validate(wl)
+        iw2 = 1 / cast(Numeric, wl ** 2)
         n = (self.c * iw2 + self.b) * iw2 + self.a
         return n
 
-    def _repr(self, precision: int) -> str:
-        return (f'{super()._repr(precision)}, '
-                f'A={self.a:.{precision}f}, '
-                f'B={self.b:.{precision}f}, '
-                f'C={self.c:.{precision}f}')
+    def _repr(self) -> str:
+        return super()._repr() + f', A={utils.fmt(self.a)}, B={utils.fmt(self.b)}, C={utils.fmt(self.c)}'
 
 
 class Schott(Material):
@@ -212,18 +206,18 @@ class Schott(Material):
             return self.coefficients[int(name[1]) - 1]
         return super().__getattribute__(name)
 
-    def n(self, wl: Numeric, unit: str = None) -> Numeric:
-        wl = self._validate(wl, unit)
-        iw2 = 1 / wl ** 2
-        n2 = self.coefficients.pop(-1)
-        for c in reversed(self.coefficients):
+    def n(self, wl: Numeric) -> Numeric:
+        wl = self._validate(wl)
+        iw2 = 1 / cast(Numeric, wl ** 2)
+        cs = self.coefficients.copy()
+        n2 = cs.pop(-1)
+        for c in reversed(cs):
             n2 = n2 * iw2 + c
         n = n2 ** 0.5
         return n
 
-    def _repr(self, precision: int) -> str:
-        return (f'{super()._repr(precision)}, '
-                f'coefficients={_format_flist(self.coefficients, precision)}')
+    def _repr(self) -> str:
+        return f'{super()._repr()}, coefficients={_format_flist(self.coefficients)}'
 
 
 class _Sellmeier(Material):
@@ -242,21 +236,28 @@ class _Sellmeier(Material):
         self.ls = ls  #: The coefficients :math:`L_i` s in Sellmeier{num} formula.
 
     def __getattr__(self, name: str):
-        if len(name) == 2 and (name.startswith('k') or name.startswith('l')) and name[1].isdigit():
+        if re.match(r'^[kl][1-9]$', name):
             return getattr(self, f'{name[0]}s')[int(name[1]) - 1]
         return super().__getattribute__(name)
 
-    def n(self, wl: Numeric, unit: str = None) -> Numeric:
-        wl = self._validate(wl, unit)
-        w2 = wl ** 2
+    def __setattr__(self, key, value):
+        if re.match(r'^[kl][1-9]$', key):
+            if key[0] == 'k':
+                self.ks[int(key[1]) - 1] = value
+            else:
+                self.ls[int(key[1]) - 1] = value
+        else:
+            super().__setattr__(key, value)
+
+    def n(self, wl: Numeric) -> Numeric:
+        wl = self._validate(wl)
+        w2 = cast(Numeric, wl ** 2)
         n2 = 1 + sum([kc * w2 / (w2 - lc) for kc, lc in zip(self.ks, self.ls)])
         n = n2 ** 0.5
         return n
 
-    def _repr(self, precision: int) -> str:
-        return (f'{super()._repr(precision)}, '
-                f'K={_format_flist(self.ks, precision)}, '
-                f'L={_format_flist(self.ls, precision)}')
+    def _repr(self) -> str:
+        return f'{super()._repr()}, K={_format_flist(self.ks)}, L={_format_flist(self.ls)}'
 
 
 def _make_sellmeier(num: int, n_terms: int) -> type[_Sellmeier]:
@@ -308,18 +309,18 @@ class Sellmeier2(Material):
         self.swl1 = wl1 * wl1  #: :math:`\lambda_1^2` in Sellmeier2 formula.
         self.swl2 = wl2 * wl2  #: :math:`\lambda_2^2` in Sellmeier2 formula.
 
-    def n(self, wl: Numeric, unit: str = None) -> Numeric:
-        wl = self._validate(wl, unit)
-        w2 = wl ** 2
+    def n(self, wl: Numeric) -> Numeric:
+        wl = self._validate(wl)
+        w2 = cast(Numeric, wl ** 2)
         n2 = self.a_pp + self.b1 * w2 / (w2 - self.swl1) + self.b2 / (w2 - self.swl2)
         n = n2 ** 0.5
         return n
 
-    def _repr(self, precision: int) -> str:
-        return (f'{super()._repr(precision)}, '
-                f'A={self.a_pp - 1:.{precision}f}, '
-                f'B1={self.b1:.{precision}f}, B2={self.b2:.{precision}f}, '
-                f'Wl1={self.swl1 ** 0.5:.{precision}f}, Wl2={self.swl2 ** 0.5:.{precision}f}')
+    def _repr(self) -> str:
+        return (f'{super()._repr()}, '
+                f'A={utils.fmt(self.a_pp - 1)}, '
+                f'B1={utils.fmt(self.b1)}, B2={utils.fmt(self.b2)}, '
+                f'Wl1={utils.fmt(self.swl1 ** 0.5)}, Wl2={utils.fmt(self.swl2 ** 0.5)}')
 
 
 class Sellmeier4(Material):
@@ -350,20 +351,20 @@ class Sellmeier4(Material):
         self.d = d  #: :math:`D` in Sellmeier4 formula.
         self.e = e  #: :math:`E` in Sellmeier4 formula.
 
-    def n(self, wl: Numeric, unit: str = None) -> Numeric:
-        wl = self._validate(wl, unit)
-        w2 = wl ** 2
+    def n(self, wl: Numeric) -> Numeric:
+        wl = self._validate(wl)
+        w2 = cast(Numeric, wl ** 2)
         n2 = self.a + self.b * w2 / (w2 - self.c) + self.d * w2 / (w2 - self.e)
         n = n2 ** 0.5
         return n
 
-    def _repr(self, precision: int) -> str:
-        return (f'{super()._repr(precision)}, '
-                f'A={self.a:.{precision}f}, '
-                f'B={self.b:.{precision}f}, '
-                f'C={self.c:.{precision}f}, '
-                f'D={self.d:.{precision}f}, '
-                f'E={self.e:.{precision}f}')
+    def _repr(self) -> str:
+        return (f'{super()._repr()}, '
+                f'A={utils.fmt(self.a)}, '
+                f'B={utils.fmt(self.b)}, '
+                f'C={utils.fmt(self.c)}, '
+                f'D={utils.fmt(self.d)}, '
+                f'E={utils.fmt(self.e)}')
 
 
 class Herzberger(Material):
@@ -395,16 +396,16 @@ class Herzberger(Material):
             return self.coefficients[int(name[1]) - 1]
         return super().__getattribute__(name)
 
-    def n(self, wl: Numeric, unit: str = None) -> Numeric:
-        wl = self._validate(wl, unit)
-        w2 = wl ** 2
+    def n(self, wl: Numeric) -> Numeric:
+        wl = self._validate(wl)
+        w2 = cast(Numeric, wl ** 2)
         m = 1 / (w2 - 0.028)
         _1, _2, _3, _4, _5, _6 = self.coefficients
         n = _1 + m * (_2 + m * _3) + w2 * (_4 + w2 * (_5 + w2 * _6))
         return n
 
-    def _repr(self, precision: int) -> str:
-        return f'{super()._repr(precision)}, coefficients={_format_flist(self.coefficients, precision)}'
+    def _repr(self) -> str:
+        return f'{super()._repr()}, coefficients={_format_flist(self.coefficients)}'
 
 
 class Conrady(Material):
@@ -431,20 +432,26 @@ class Conrady(Material):
         self.a = a  #: :math:`a` in Conrady formula.
         self.b = b  #: :math:`b` in Conrady formula.
 
-    def n(self, wl: Numeric, unit: str = None) -> Numeric:
-        wl = self._validate(wl, unit)
-        n = self.n0 + self.a / wl + self.b / wl ** 3.5
+    def n(self, wl: Numeric) -> Numeric:
+        wl = self._validate(wl)
+        n = self.n0 + self.a / wl + self.b / cast(Numeric, wl ** 3.5)
         return n
 
-    def _repr(self, precision: int) -> str:
-        return (f'{super()._repr(precision)}, '
-                f'n0={self.n0:.{precision}f}, '
-                f'A={self.a:.{precision}f}, '
-                f'B={self.b:.{precision}f}')
+    def _repr(self) -> str:
+        return f'{super()._repr()}, n0={utils.fmt(self.n0)}, A={utils.fmt(self.a)}, B={utils.fmt(self.b)}'
 
 
-vacuum: Constant = Constant('vacuum', 1.)  #: Vacuum. It has constant refractive index 1.
-_builtins: list[Material] = [vacuum]
+vacuum = Constant('vacuum', 1.)
+silica = Sellmeier1(
+    'silica',
+    [0.6961663, 0.4079426, 0.8974794],
+    [0.0684043 ** 2, 0.1162414 ** 2, 9.896161 ** 2],
+    0.21, 6.7,
+)
+_builtins: list[Material] = [
+    vacuum,
+    silica,
+]
 _lib = {m.name: m for m in _builtins}
 
 
@@ -466,6 +473,19 @@ def get(name: str, default_none: bool = False) -> Union[Material, None]:
     return m
 
 
+def search(pattern: str | re.Pattern) -> list[Material]:
+    """
+    Search materials by regular expression.
+
+    :param str or re.Pattern pattern: The regular expression pattern.
+    :return: List of materials whose names match the pattern.
+    :rtype: list[Material]
+    """
+    if isinstance(pattern, str):
+        pattern = re.compile(pattern)
+    return [v for k, v in _lib.items() if pattern.search(k)]
+
+
 def register(material: Material, exist_ok: bool = False):
     """
     Add a new class of material into material library.
@@ -480,19 +500,18 @@ def register(material: Material, exist_ok: bool = False):
     _lib[name] = material
 
 
-def refractive_index(wavelength: Numeric, material: str, unit='m') -> Numeric:
+def refractive_index(wavelength: Numeric, material: str) -> Numeric:
     """
     Compute refractive index for given wavelength and material.
 
     :param wavelength: Specified wavelength.
     :type: float or Tensor
     :param str material: Specified material.
-    :param str unit: Unit of wavelength.
     :return: Refractive index.
     :rtype: float or Tensor
     """
     m = get(material)
-    n = m.n(wavelength, unit)
+    n = m.n(wavelength)
     return n
 
 
@@ -532,12 +551,17 @@ def remove(name: str, ignore_if_absent: bool = False):
         raise KeyError(f'Unknown material: {name}')
 
 
-def update(material: Material):
+def update(name: str, material: Material):
     """
     Update a registered material.
 
+    :param str name: Original name of the material.
     :param Material material: The new material instance.
     """
+    if name in _lib:
+        del _lib[name]
+    if material.name in _lib:
+        raise KeyError(f'Material {material.name} already exists.')
     register(material, exist_ok=True)
 
 

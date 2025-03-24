@@ -14,15 +14,20 @@ __all__ = [
     'PatchMerging',
 ]
 
-PatchMerging = Literal['avg', 'crop', 'slope']
+PatchMerging = Literal['avg', 'crop', 'slope', 'sum']
 
 
-def _average_merge(img, patch_n, patch_sz, overlap, patches):
+def _sum_merge(img, patch_n, patch_sz, overlap, patches):
     for i in range(patch_n[0]):
         upper = i * (patch_sz[0] - overlap[0])
         for j in range(patch_n[1]):
             left = j * (patch_sz[1] - overlap[1])
             img[..., upper:upper + patch_sz[0], left:left + patch_sz[1]] += patches[i][j]
+    return img
+
+
+def _average_merge(img, patch_n, patch_sz, overlap, patches):
+    img = _sum_merge(img, patch_n, patch_sz, overlap, patches)
 
     for i in range(1, patch_n[0]):
         upper = i * (patch_sz[0] - overlap[0])
@@ -187,6 +192,11 @@ def merge_patches(
         ``slope``
             In each overlapping position, pixels of involved patches are averaged
             where the component closer to its patches has larger weights.
+
+        ``sum``
+            Pixels of involved patches are summed up in all overlapping positions.
+
+        Default: ``avg``.
     :type merge_method: Literal['avg', 'crop', 'slope']
     :return: A resulted image of shape ... x H x W.
     :rtype: Tensor
@@ -208,6 +218,8 @@ def merge_patches(
         return _crop_merge(img, patch_n, patch_sz, overlap, patches)
     elif merge_method == 'slope':
         return _slope_merge(img, patch_n, patch_sz, overlap, patches)
+    elif merge_method == 'sum':
+        return _sum_merge(img, patch_n, patch_sz, overlap, patches)
     else:
         raise ValueError(f'Unknown merging method: {merge_method}')
 

@@ -1,13 +1,14 @@
 import abc
 import collections.abc
 import functools
+import warnings
 
 import torch
 from torch import nn
 
 from .ray import BatchedRay
 from ... import mt, utils, torch as _t, base
-from ...base import typing, ddb
+from ...base import typing
 from ...base.typing import Sequence, Ts, Any, Callable, Scalar, Self, Size2d
 
 __all__ = [
@@ -40,8 +41,11 @@ NT_THRESHOLD_STRICT: float = NT_THRESHOLD
 NT_UPDATE_BOUND: float = 5.
 NT_EPSILON: float = 1e-9
 
-SAMPLE_LIMIT: float = 1 - 1e-4
 EDGE_CUTTING: float = 1 - 1e-6
+DETECTION_RADIUS_EPS: float = 1e-5
+
+DEFAULT_APERTURE_D = float('inf')
+DEFAULT_MATERIAL = 'vacuum'
 
 
 def _dist_transform(x: Ts, curve: Callable[[Ts], Ts]) -> Ts:
@@ -50,6 +54,7 @@ def _dist_transform(x: Ts, curve: Callable[[Ts], Ts]) -> Ts:
 
 
 def _rotation_mat(angles: Ts) -> Ts:
+    angles = base.Angle.default_to(angles, 'rad')
     c, s = angles.cos(), angles.sin()
     return torch.stack([
         torch.stack([c.prod() - s[2] * s[0], c[2] * c[1] * s[0] + s[2] * c[0], -c[2] * s[1]]),
@@ -90,10 +95,6 @@ class Context(_t.EnhancedModule):
     def __setattr__(self, key, value):
         if key in {'surface', 'surface_list'}:
             self.__dict__[key] = value  # avoid these two are registered as submodule
-        elif key in self._writable_params:
-            self.register_parameter(key, nn.Parameter(typing.scalar(
-                value, device=self.device, dtype=self.dtype
-            )))
         else:
             return super().__setattr__(key, value)
 
@@ -103,7 +104,8 @@ class Context(_t.EnhancedModule):
             params = self.__dict__['_parameters']
             for name in self._transform_params:
                 if name in params:
-                    ret.append(f'{name}={utils.fmt(params[name].item())}')
+                    unit = base.get_default('length' if name in 'xyz' else 'angle')
+                    ret.append(f'{name}={utils.fmt(params[name].item())}{unit}')
         return ', '.join(ret)
 
     def g2l(self, x: Ts, direction: bool = False) -> Ts:
@@ -239,6 +241,7 @@ class Context(_t.EnhancedModule):
         :type: Tensor
         """
         theta, phi = self._get_csp('theta'), self._get_csp('phi')
+        theta, phi = base.Angle.default_to(theta, 'rad'), base.Angle.default_to(phi, 'rad')
         s = theta.sin()
         return torch.stack([s * phi.cos(), s * phi.sin(), theta.cos()])
 
@@ -249,8 +252,10 @@ class Context(_t.EnhancedModule):
             raise base.ShapeError(f'axis must be a 1D vector, got shape {value.shape}')
 
         value: Ts = value / torch.linalg.vector_norm(value)
-        self.register_parameter('theta', nn.Parameter(value[2].acos()))
-        self.register_parameter('phi', nn.Parameter(torch.atan2(value[1], value[0])))
+        self.register_parameter('theta', nn.Parameter(base.Angle.as_default(value[2].acos(), 'rad')))
+        self.register_parameter('phi', nn.Parameter(
+            base.Angle.as_default(torch.atan2(value[1], value[0]), 'rad')
+        ))
 
     @property
     def origin(self) -> Ts:
@@ -319,14 +324,16 @@ class CoaxialContext(Context):
         distance: typing.Scalar = None,
     ):
         super().__init__(surface, surface_list)
-        self.register_parameter('distance', nn.Parameter(distance))
+        if distance is None:
+            distance = 0.
+        self.register_parameter('distance', nn.Parameter(typing.scalar(distance)))
 
     def extra_repr(self) -> str:
         r = super().extra_repr()
         if len(r) > 0:
             r += ',\n'
         d = self.distance
-        r += f'distance={utils.fmt(d if d is None else d.item())}'
+        r += f'distance={utils.fmt(d if d is None else d.item())}{base.Length.default()}'
         return r
 
     def g2l(self, x: Ts, direction: bool = False) -> Ts:
@@ -476,22 +483,22 @@ class CircularAperture(Aperture):
     :type diameter: float | Tensor
     """
 
-    def __init__(self, diameter: Scalar):
+    def __init__(self, diameter: Scalar = DEFAULT_APERTURE_D):
         super().__init__()
         if diameter <= 0:
             raise ValueError('radius must be positive')
 
-        self.register_buffer('radius', None)
-        self.radius: Ts = typing.scalar(diameter) / 2  #: Radius of the aperture.
+        self.register_parameter('radius', None)
+        self.radius: nn.Parameter = nn.Parameter(typing.scalar(diameter) / 2, False)  #: Radius of the aperture.
 
     def extra_repr(self) -> str:
-        return f'radius={utils.fmt(self.radius.item())}'
+        return f'radius={utils.fmt(self.radius.item())}{base.Length.default()}'
 
     def evaluate(self, x: Ts, y: Ts) -> torch.BoolTensor:
-        return typing.cast(torch.BoolTensor, x.square() + y.square() <= self.radius.square())
+        return typing.cast(torch.BoolTensor, x.square() + y.square() < self._detection_radius().square())
 
     def pass_ray(self, ray: BatchedRay) -> torch.BoolTensor:
-        return typing.cast(torch.BoolTensor, ray.r2 <= self.radius.square())
+        return typing.cast(torch.BoolTensor, ray.r2 < self._detection_radius().square())
 
     def sample_random(self, n: int, sampling_curve: Callable[[Ts], Ts] = None) -> tuple[Ts, Ts]:
         r"""
@@ -554,7 +561,7 @@ class CircularAperture(Aperture):
         :rtype: tuple[Tensor, Tensor]
         """
         zero = torch.tensor([0.], dtype=self.dtype, device=self.device)
-        r = torch.linspace(0, self.radius * SAMPLE_LIMIT, n_radius + 1, device=self.device, dtype=self.dtype)
+        r = torch.linspace(0, self.radius, n_radius + 1, device=self.device, dtype=self.dtype)
         r = [r[i].expand(i * n_angle) for i in range(1, n_radius + 1)]  # n_t*n_r*(n_r+1)/2
         r = torch.cat([zero] + r)  # n_t*n_r*(n_r+1)/2+1
         t = [
@@ -579,6 +586,7 @@ class CircularAperture(Aperture):
         if not torch.is_tensor(theta):
             theta = torch.tensor(theta, dtype=self.dtype, device=self.device)
         r = torch.linspace(-1, 1, n, device=self.device, dtype=self.dtype) * self.radius
+        theta = base.Angle.default_to(theta, 'rad')
         theta = theta.unsqueeze(-1)
         return r * theta.cos(), r * theta.sin()
 
@@ -586,6 +594,9 @@ class CircularAperture(Aperture):
         d = super().to_dict(keep_tensor)
         d['diameter'] = self._attr2dictitem('radius', keep_tensor) * 2
         return d
+
+    def _detection_radius(self) -> Ts:
+        return self.radius * (1 + DETECTION_RADIUS_EPS)
 
 
 # TODO: ray validity check
@@ -619,14 +630,16 @@ class Surface(_t.EnhancedModule, metaclass=abc.ABCMeta):
 
     def __init__(
         self,
-        material: mt.Material | str,
-        aperture: Aperture,
+        material: mt.Material | str = DEFAULT_MATERIAL,
+        aperture: Aperture = None,
         reflective: bool = False,
         newton_config: dict[str, Any] = None,
         *,
         d: Scalar = None,
     ):
         super().__init__()
+        if aperture is None:
+            aperture = CircularAperture()
         if newton_config is None:
             newton_config = {}
         #: Material following the surface.
@@ -739,11 +752,7 @@ class Surface(_t.EnhancedModule, metaclass=abc.ABCMeta):
         :rtype: BatchedRay
         """
         t = self._solve_t(self.context.g2l_ray(ray))
-        # if t.requires_grad and ddb.debugging():
-        #     t.register_hook(ddb.grad_hook_check_peculiar(
-        #         f't in {self.intercept.__qualname__} (surface {self.ctx.index})'
-        #     ))
-        ray = ray.march(t, self.context.material_before.n(ray.wl, 'm'))
+        ray = ray.march(t, self.context.material_before.n(ray.wl))
 
         ray_in_local = self.context.g2l_ray(ray)
         ray.update_valid_(
@@ -784,28 +793,15 @@ class Surface(_t.EnhancedModule, metaclass=abc.ABCMeta):
             return ray
 
         xy_local = self.context.g2l(ray.o)[..., :2]
-        if xy_local.requires_grad and ddb.debugging():
-            xy_local.register_hook(ddb.grad_hook_check_peculiar(
-                f'xy_local in {self.refract.__qualname__} (surface {self.ctx.index})'
-            ))
         normal = self._optical_normal(xy_local[..., 0], xy_local[..., 1])
         normal = self.context.l2g(normal, True)
-        if normal.requires_grad and ddb.debugging():
-            normal.register_hook(ddb.grad_hook_check_peculiar(
-                f'normal in {self.refract.__qualname__} (surface {self.ctx.index})'
-            ))
         if forward:
-            mu = self.context.material_before.n(ray.wl, 'm') / self.material.n(ray.wl, 'm')
+            mu = self.context.material_before.n(ray.wl) / self.material.n(ray.wl)
         else:
-            mu = self.material.n(ray.wl, 'm') / self.context.material_before.n(ray.wl, 'm')
+            mu = self.material.n(ray.wl) / self.context.material_before.n(ray.wl)
             normal = -normal
         refractive = base.refract(ray.d, normal, mu)
-        if refractive.requires_grad and ddb.debugging():
-            refractive.register_hook(ddb.grad_hook_check_peculiar(
-                f'refractive in {self.refract.__qualname__} (surface {self.ctx.index})'
-            ))
         ray.d = torch.where(refractive.isnan().any(-1).unsqueeze(-1), refractive.new_tensor([0, 0, 1]), refractive)
-        # ray.d = refractive.nan_to_num(nan=0)
         ray.update_valid_(~refractive.isnan().any(-1))
         return ray
 
@@ -879,6 +875,17 @@ class Surface(_t.EnhancedModule, metaclass=abc.ABCMeta):
         """Alias for :attr:`.context`.\n\n:type: Context or None"""
         return self.context
 
+    @property
+    def distance(self) -> Ts:
+        d = getattr(self, '_distance', None)
+        if d is not None:
+            return d
+
+        if isinstance(self.context, CoaxialContext):
+            return self.context.distance
+        else:
+            raise RuntimeError(f'Trying to get distance from {self.__class__.__name__} without a coaxial context')
+
     @classmethod
     def from_dict(cls, d: dict):
         if cls is not Surface:
@@ -938,8 +945,8 @@ class Surface(_t.EnhancedModule, metaclass=abc.ABCMeta):
 class Planar(Surface):
     def __init__(
         self,
-        material: mt.Material | str,
-        aperture: Aperture,
+        material: mt.Material | str = DEFAULT_MATERIAL,
+        aperture: Aperture = None,
         reflective: bool = False,
         *,
         d: Scalar = None
@@ -960,7 +967,7 @@ class Planar(Surface):
 
     def intercept(self, ray: BatchedRay) -> BatchedRay:
         t = self._solve_t(self.context.g2l_ray(ray))
-        ray = ray.march(t, self.context.material_before.n(ray.wl, 'm'))
+        ray = ray.march(t, self.context.material_before.n(ray.wl))
 
         ray_in_local = self.context.g2l_ray(ray)
         ray.update_valid_(self.aperture.pass_ray(ray_in_local))
@@ -974,7 +981,7 @@ class Planar(Surface):
 
 
 class Stop(Planar):
-    def __init__(self, aperture: Aperture, move_ray: bool = True, *, d: Scalar = None):
+    def __init__(self, aperture: Aperture = None, move_ray: bool = True, *, d: Scalar = None):
         super().__init__('vacuum', aperture, False, d=d)  # material is ignored
         self._move_ray = move_ray
 
@@ -982,7 +989,7 @@ class Stop(Planar):
         ray_in_local = self.context.g2l_ray(ray)
         t = self._solve_t(ray_in_local)
         if self._move_ray:
-            ray = ray.march(t, self.context.material_before.n(ray.wl, 'm'))
+            ray = ray.march(t, self.context.material_before.n(ray.wl))
             ray_in_local = self.context.g2l_ray(ray)
             ray.update_valid_(self.aperture.pass_ray(ray_in_local))
             return ray
@@ -1034,15 +1041,13 @@ class CircularSurface(Surface, metaclass=abc.ABCMeta):
 
     def __init__(
         self,
-        material: mt.Material | str,
-        aperture: Aperture | float = None,
+        material: mt.Material | str = DEFAULT_MATERIAL,
+        aperture: Aperture | float = DEFAULT_APERTURE_D,
         reflective: bool = False,
         newton_config: dict[str, Any] = None,
         *,
         d: Scalar = None
     ):
-        if aperture is None:
-            aperture = float('inf')
         if isinstance(aperture, float):
             aperture = CircularAperture(aperture)
         super().__init__(material, aperture, reflective, newton_config, d=d)
@@ -1141,15 +1146,9 @@ class CircularSurface(Surface, metaclass=abc.ABCMeta):
         phpx, phpy = self.h_grad_extended(ray.x, ray.y, ray.r2)
         return torch.stack((phpx, phpy, -torch.ones_like(phpx)), dim=-1)
 
-    # def _newton_descent(self, ray: BatchedRay, f_value: Ts) -> Ts:
-    #     derivative_value = torch.sum(ray.d * self._f_grad(ray), dim=-1)
-    #     descent = f_value / (derivative_value + self._nt_epsilon)
-    #     descent = torch.clip(descent, -self._nt_update_bound, self._nt_update_bound)
-    #     return descent
-
 
 class CircularStop(Stop, CircularSurface):
-    def __init__(self, aperture: Scalar, *, d: Scalar = None):
+    def __init__(self, aperture: Scalar = DEFAULT_APERTURE_D, *, d: Scalar = None):
         if isinstance(aperture, float):
             aperture = CircularAperture(aperture)
         super().__init__(aperture, d=d)
@@ -1161,7 +1160,7 @@ class CircularStop(Stop, CircularSurface):
         return torch.zeros_like(r2)
 
 
-class SurfaceList(nn.ModuleList, collections.abc.MutableSequence, base.AsJsonMixIn):
+class SurfaceList(nn.ModuleList, collections.abc.MutableSequence, utils.VarHookMixIn, base.AsJsonMixIn):
     """
     A sequential container of surfaces. This class is derived from
     :py:class:`torch.nn.ModuleList` and implements
@@ -1314,9 +1313,10 @@ class SurfaceList(nn.ModuleList, collections.abc.MutableSequence, base.AsJsonMix
         :return: Output rays.
         :rtype: BatchedRay
         """
-        for s in (self._slist if forward else reversed(self._slist)):
+        for i, s in enumerate(self._slist if forward else reversed(self._slist)):
             try:
                 ray = s(ray, forward)
+                ray = self.variable_hook(f'forward.out_ray[{i}]', ray)
             except Exception as e:
                 idx = self.index(s)
                 e.add_note(f'This exception is raised during the forward pass of surface {idx}')
@@ -1388,8 +1388,8 @@ class SurfaceList(nn.ModuleList, collections.abc.MutableSequence, base.AsJsonMix
         return None if idx is None else self._slist[idx]
 
     @property
-    def ctxs(self) -> list[CoaxialContext]:
-        return [typing.cast(CoaxialContext, s.context) for s in self._slist]
+    def ctxs(self) -> list[Context]:
+        return [s.context for s in self._slist]
 
     @classmethod
     def from_dict(cls, d: dict):
@@ -1424,6 +1424,10 @@ class CoaxialSurfaceList(SurfaceList):
     """A subclass of :class:`SurfaceList` to contain coaxial surfaces."""
 
     @property
+    def ctxs(self) -> list[CoaxialContext]:
+        return [typing.cast(CoaxialContext, s.context) for s in self._slist]
+
+    @property
     def length(self) -> Ts:
         """
         Returns the distance between baselines of the first and that of the last surfaces
@@ -1444,7 +1448,10 @@ class CoaxialSurfaceList(SurfaceList):
         return typing.cast(Ts, sum(s.context.distance for s in self._slist))
 
     def _make_ctx(self, s):
-        return CoaxialContext(s, self, getattr(s, '_distance', None))
+        d = getattr(s, '_distance', None)
+        if d is not None:
+            del s._distance  # noqa
+        return CoaxialContext(s, self, d)
 
 
 def surface_types(name_only: bool = False) -> list[type[Surface]] | list[str]:

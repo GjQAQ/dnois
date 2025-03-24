@@ -327,6 +327,16 @@ class BatchedRay(_t.TensorContainerMixIn):
         return self
 
     def valid_percentage(self, dims: int | Sequence[int] = None) -> Ts:
+        """
+        Compute the percentage of valid rays along given dimensions.
+
+        :param dims: The dimensions along which the percentage is computed.
+            If ``None``, compute the percentage along all dimensions. Default: ``None``.
+        :type dims: int or Sequence[int]
+        :return: Percentage of valid rays. Its shape is :attr:`shape` except
+            for the dimensions specified by ``dims``.
+        :rtype: Tensor
+        """
         v = self.valid.broadcast_to(self.shape)
         if dims is None:
             dims = list(range(v.ndim))
@@ -335,19 +345,34 @@ class BatchedRay(_t.TensorContainerMixIn):
         total = functools.reduce(lambda x, y: x * y, [v.size(dim) for dim in dims])
         return v.sum(dims, False) / total
 
-    def focus(self, dim: int = -1) -> Ts:  # TODO: valid
+    def focus(self, dim: int = -1) -> Ts:
+        r"""
+        Computes the focus of rays along a given dimension.
+        It is determined as the point :math:`\mathbf{x}` whose total squared distance to rays is minimum:
+
+        .. math::
+            \mathbf{x}=\arg\min_x\sum_i\left(|\mathbf{x}-\mathbf{o}_i|^2-
+            \left((\mathbf{x}-\mathbf{o}_i)\cdot\mathbf{d}_i\right)^2\right)
+
+        which can be solved by least square method. The sum is performed along ``dim``.
+
+        :param int dim: The dimension along which the focus is computed. Default: ``-1``.
+        :return: The focus of rays. Its shape is :attr:`shape` except for the dimension ``dim``.
+        :rtype: Tensor
+        """
         shape = self.shape
-        o, d = self.o.broadcast_to(shape), self.d.broadcast_to(shape)
-        if dim >= 0:
-            o, d = o.transpose(dim, -2), d.transpose(dim, -2)  # ... x N x 3
-        else:
-            o, d = o.transpose(dim - 1, -2), d.transpose(dim - 1, -2)  # ... x N x 3
+        o, d, v = self.o.broadcast_to(shape), self.d.broadcast_to(shape), self.valid.broadcast_to(shape)
+        o = torch.where(v, o, float('nan'))
+        d = torch.where(v, d, float('nan'))
+        if dim < 0:
+            dim -= 1
+        o, d = o.transpose(dim, -2), d.transpose(dim, -2)  # ... x N x 3
 
         outer_prod = d.unsqueeze(-1) @ d.unsqueeze(-2)  # ... x N x 3 x 3
-        outer_prod = outer_prod.mean(dim=-3)  # ... x 3 x 3
+        outer_prod = outer_prod.nanmean(dim=-3)  # ... x 3 x 3
         a = torch.eye(3, device=self.device, dtype=self.dtype) - outer_prod  # ... x 3 x 3
-        inner = torch.sum(o * d, -1, True)  # ... x N x 1
-        b = 2 * torch.mean(inner * d - o, -2)  # ... x 3
+        inner = torch.nansum(o * d, -1, True)  # ... x N x 1
+        b = 2 * torch.nanmean(inner * d - o, -2)  # ... x 3
 
         # torch.linalg.solve is preferred to torch.inverse
         a_inv_mul_b = torch.linalg.solve(a, b)  # ... x 3
@@ -369,6 +394,11 @@ class BatchedRay(_t.TensorContainerMixIn):
 
     @property
     def ndim(self) -> int:
+        """
+        Number of dimensions of rays i.e. length of :attr:`shape`.
+
+        :type: int
+        """
         return len(self.shape)
 
     @property

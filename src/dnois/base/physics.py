@@ -3,7 +3,7 @@ import importlib.resources
 
 import torch
 
-from . import unit as u, exception, ddb
+from . import unit as u
 from .typing import Numeric, Ts, overload
 
 __all__ = [
@@ -67,7 +67,7 @@ def fraunhofer_line(
     :rtype: float | dict[str, float] | list[tuple[str, str, float]]
     """
     if unit is None:
-        unit = u.get_default_unit()
+        unit = u.get_default('length')
     if symbol is None:
         if element is None:
             return [(item[0], item[1], u.convert(item[2], 'm', unit)) for item in _fraunhofer_line_db]
@@ -176,8 +176,6 @@ def refract(incident: Ts, normal: Ts, n1: Numeric, n2: Numeric = None) -> Ts:
         ``n1``, ``n2`` and ``mu`` can be negative.
     """
     ni = torch.sum(normal * incident, -1, True)  # inner product, ... x 1
-    if ni.requires_grad and ddb.debugging():
-        ni.register_hook(ddb.grad_hook_check_peculiar(f'ni in {refract.__qualname__}'))
     # if ni.lt(0).any():
     #     raise exception.PhysicsError('The angle between normal vector and incident ray is not acute.')
     n1 = _as_tensor(n1, ni).unsqueeze(-1)  # ... x 1
@@ -190,7 +188,7 @@ def refract(incident: Ts, normal: Ts, n1: Numeric, n2: Numeric = None) -> Ts:
     else:
         ni = ni * n1
         n2 = _as_tensor(n2, ni).unsqueeze(-1)  # ... x 1
-        deflection = (torch.sqrt(n2.square() - n1.square() + ni.square()) - ni) * normal
+        deflection = (torch.sqrt(torch.relu(n2.square() - n1.square() + ni.square())) - ni) * normal
         return incident * n1 + deflection
 
 

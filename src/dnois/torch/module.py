@@ -1,4 +1,5 @@
 from functools import partial, wraps
+import numbers
 
 import torch
 from torch import nn
@@ -415,3 +416,18 @@ class EnhancedModule(
                 return obj
 
             cls.from_dict = classmethod(wraps(original_from_dict)(_wrapped_from_dict))
+
+    def __setattr__(self, key, value):
+        params:dict|object = self.__dict__.get('_parameters', _unset)
+        if params is _unset:
+            return super().__setattr__(key, value)
+        if key in params and (params[key] is None or params[key].ndim == 0):
+            if not torch.is_tensor(value):
+                if not isinstance(value, numbers.Number):
+                    raise TypeError(f'Value of parameter {key} of {type(self).__name__} must be a number')
+                value = self.new_tensor(value)
+            if not isinstance(value, nn.Parameter):
+                value = nn.Parameter(value)
+            self.register_parameter(key, value)
+        else:
+            super().__setattr__(key, value)

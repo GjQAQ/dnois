@@ -66,5 +66,13 @@ def polynomial(x, coefficients: Sequence):
 
 
 def ssqrt(x: Ts) -> Double[Ts]:
+    """
+    Secure version of :func:`torch.sqrt`. Negative values are treated as zero
+    to avoid NaNs in result.
+
+    :param Tensor x: Input tensor.
+    :return: A 2-tuple of tensor. The first is ``torch.sqrt(x.relu())`` and
+        the second is a bool tensor representing non-negative values in ``x``.
+    """
     mask = x >= 0
     return torch.sqrt(x.relu()), mask

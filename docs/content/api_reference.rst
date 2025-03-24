@@ -17,6 +17,7 @@ TODO: description of this page
     ref/dnois
     ref/ext
     ref/fourier
+    ref/isp
     ref/mt
     ref/optics
     ref/sensor

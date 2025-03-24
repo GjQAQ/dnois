@@ -7,6 +7,7 @@
 # Converter functions must conduct rigorous type checking and should be named
 # as the lower case of corresponding type alias.
 
+import numbers
 import typing
 from typing import *
 
@@ -27,6 +28,7 @@ __all__ = [
     'ConvOut',
     'Double',
     'Numeric',
+    'NumInv',
     'Pair',
     'RGBFormat',
     'Scalar',
@@ -49,7 +51,8 @@ Device = Union[str, int, _dev]  # as same as torch.DeviceLikeType
 # tensor-like
 Ts = Tensor
 Spacing = Union[float, Ts]  # delta (grid spacing) type
-Numeric = Union[float, Ts]  # support numeric operation
+Numeric = Union[numbers.Real, Ts]  # support numeric operation
+NumInv = TypeVar('NumInv', bound=Numeric)  # invariant numeric type
 Scalar = Union[float, Ts]  # can be converted to 0d tensor
 Vector = Union[float, Sequence[float], Ts]  # can be converted to 1d tensor
 

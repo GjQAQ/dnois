@@ -1,23 +1,16 @@
 import torch
-from torch import nn
 
+from ._func import *
 from .noise import gaussian
-from .pixel_array import Sensor
-from ..base.typing import Pair, Size2d, Literal, Ts, size2d
+from .. import utils
+from ..base.typing import Pair, Size2d, Ts, size2d, pair
 
 __all__ = [
-    'cfa_collect',
-    'cfa_flatten',
-    'quantize',
-    'rgb2raw',
-    'spectral_integrate_cfa',
-
-    'BayerPattern',
+    'Sensor',
     'StandardSensor',
 ]
 
 _MSG1 = 'Number of channels of input radiance is not {0} for an {1} sensor without SRF'
-BayerPattern = Literal['RGGB', 'GRBG', 'BGGR', 'BGRG']
 
 
 def _make_srf(srf: Ts | tuple[Ts, Ts, Ts], pattern: BayerPattern) -> Ts | None:
@@ -37,182 +30,48 @@ def _make_srf(srf: Ts | tuple[Ts, Ts, Ts], pattern: BayerPattern) -> Ts | None:
     return torch.stack(srf)
 
 
-def cfa_flatten(image: Ts, unit_size: Size2d = 1) -> Ts:
-    r"""
-    Flatten the pixels in a channel-wise image with shape :math:`(\cdots,C,H,W)` into
-    `CFA <https://en.wikipedia.org/wiki/Color_filter_array>`_ units with size :math:`(h,w)`
-    to form an image with shape :math:`(\cdots,H\times h,W\times w)`, where :math:`C=hw`.
-    This is the inverse of :py:func:`~dnois.sensor.cfa_collect`.
-
-    .. note::
-
-        This function is similar to :py:func:`~torch.nn.functional.pixel_shuffle` but
-        removes a dimension of the input and supports unequal unit height and width.
-
-    :param Tensor image: The image to be flattened, a tensor shape :math:`(\cdots,C,H,W)`.
-    :param unit_size: Height and width of a pixel group :math:`(h,w)`. Default: ``(1, 1)``.
-    :type: int or tuple[int, int]
-    :return: Flattened image with shape :math:`(\cdots,H\times h,W\times w)`.
-    :rtype: Tensor
+class Sensor(torch.nn.Module):
     """
-    us = size2d(unit_size)
-    if image.size(-3) != us[0] * us[1]:
-        raise ValueError(f'Number of channels must be equal to the product of unit height and width')
-    if us[0] == us[1] == 1:
-        return image.squeeze(-3)
-    if us[0] == us[1]:
-        return nn.functional.pixel_shuffle(image, us[0]).squeeze(-3)
+    A basic sensor model.
 
-    image = image.reshape(*image.shape[:-3], image.size(-3) // (us[0] * us[1]), *us, *image.shape[-2:])
-    n = image.ndim
-    image = image.permute(*list(range(n - 4)), n - 2, n - 4, n - 1, n - 3)
-    image = image.reshape(*image.shape[:-4], image.size(-4) * us[0], image.size(-2) * us[1])
-    return image.squeeze(-3)
-
-
-def cfa_collect(image: Ts, unit_size: Size2d = 1) -> Ts:
-    r"""
-    Rearrange all the pixels in an image with shape :math:`(\cdots,H,W)` into channels-wise form
-    :math:`(\cdots,C,H/h,W/w)`, where :math:`C=hw` is the number of channels and :math:`h` and
-    :math:`w` are the size of a unit of a regular `color filter array (CFA)
-    <https://en.wikipedia.org/wiki/Color_filter_array>`_. In this way, the vanilla 2D pixel
-    array is divided into contiguous and non-overlapping pixel groups, or units.
-    'Regular' means all the units have same size.
-
-    The pixels in a unit will be rearranged into a single pixel with :math:`C=hw` channels
-    in a row-major manner.
-
-    .. note::
-
-        This function is similar to :py:func:`~torch.nn.functional.pixel_unshuffle` but
-        adds a new dimension to the input and supports unequal unit height and width.
-
-    :param Tensor image: The image to be rearranged, a tensor shape :math:`(\cdots,H,W)`.
-    :param unit_size: Height and width of a pixel group :math:`(h,w)`. Default: ``(1, 1)``.
-    :type: int or tuple[int, int]
-    :return: Rearranged image with shape :math:`(\cdots,hw,H/h,W/w)`.
-    :rtype: Tensor
+    :param pixel_num: Numbers of pixels in vertical and horizontal directions.
+    :type pixel_num: int or tuple[int, int]
+    :param pixel_size: Height and width of a pixel in meters.
+    :type pixel_size: float or tuple[float, float]
     """
-    us = size2d(unit_size)
-    image = image.unsqueeze(-3)  # ... x 1 x H x W
-    if us[0] == us[1] == 1:
-        return image
-    if us[0] == us[1]:
-        return nn.functional.pixel_unshuffle(image, us[0])
+    def __init__(self, pixel_num: Size2d, pixel_size: Pair[float]):
+        pixel_num = size2d(pixel_num)
+        pixel_size = pair(pixel_size, float)
+        utils.check.positive(pixel_num, 'pixel_num')
+        utils.check.positive(pixel_size, 'pixel_size')
 
-    image = image.reshape(
-        *image.shape[:-2], image.size(-2) // us[0], us[0], image.size(-1) // us[1], us[1]
-    )
-    n = image.ndim
-    image = image.permute(*list(range(n - 4)), n - 3, n - 1, n - 4, n - 2)
-    image = image.reshape(*image.shape[:-5], image.size(-5) * us[0] * us[1], *image.shape[-2:])
-    return image
+        super().__init__()
+        #: Numbers of pixels in vertical and horizontal directions.
+        self.pixel_num: tuple[int, int] = pixel_num
+        #: Height and width of a pixel in meters.
+        self.pixel_size: tuple[float, float] = pixel_size
 
+    def forward(self, radiance: Ts) -> Ts:
+        raise NotImplementedError(f'{type(self).__name__} cannot be used for imaging')
 
-# kornia.color
-def rgb2raw(image: Ts, pattern: BayerPattern) -> Ts:
-    """
-    Convert an RGB image into a single-channel image using Bayer CFA pattern.
+    @property
+    def size(self) -> tuple[float, float]:
+        """
+        Returns the physical size i.e. height and width of the sensor.
 
-    :param Tensor image: The RGB image, a tensor of shape ``(..., 3, H, W)``.
-    :param BayerPattern pattern: Bayer CFA pattern, either ``'RGGB'``, ``'GRBG'``,
-        ``'BGGR'`` or ``'BGRG'``, specifying how are pixels arranged in the order
-        of upper left, upper right, lower left, lower right.
-    :return: A single-channel image with shape ``(..., 1, H, W)``.
-    :rtype: Tensor
-    """
-    output: Ts = image[..., 1:2, :, :].clone()
+        :type: tuple[float, float]
+        """
+        return self.pixel_size[0] * self.pixel_num[0], self.pixel_size[1] * self.pixel_num[1]
 
-    if pattern == 'RGGB':
-        output[..., :, ::2, ::2] = image[..., 0:1, ::2, ::2]  # red
-        output[..., :, 1::2, 1::2] = image[..., 2:3, 1::2, 1::2]  # blue
-    elif pattern == 'GRBG':
-        output[..., :, ::2, 1::2] = image[..., 0:1, ::2, 1::2]  # red
-        output[..., :, 1::2, ::2] = image[..., 2:3, 1::2, ::2]  # blue
-    elif pattern == 'BGGR':
-        output[..., :, 1::2, 1::2] = image[..., 0:1, 1::2, 1::2]  # red
-        output[..., :, ::2, ::2] = image[..., 2:3, ::2, ::2]  # blue
-    elif pattern == 'BGRG':
-        output[..., :, 1::2, ::2] = image[..., 0:1, 1::2, ::2]  # red
-        output[..., :, ::2, 1::2] = image[..., 2:3, ::2, 1::2]  # blue
+    @property
+    def h(self):
+        """Physical height of the sensor in meters.\n\n:type: float"""
+        return self.pixel_size[0] * self.pixel_num[0]
 
-    return output
-
-
-def spectral_integrate_cfa(
-    radiance: Ts,
-    srf: Ts,
-    unit_size: Size2d = 1,
-    channel_dim: bool = False
-) -> Ts:
-    r"""
-    Integrate given radiance field across wavelengths with given spectral response
-    function (SRF).
-
-    This function supports regular `color filter array (CFA)
-    <https://en.wikipedia.org/wiki/Color_filter_array>`_, where the vanilla 2D pixel
-    array is divided into contiguous and non-overlapping pixel groups. 'Regular' means
-    all the pixel groups are identical.
-    See :py:func:`cfa_collect` and :py:func:`cfa_flatten` for more details.
-
-    :param Tensor radiance: A tensor of shape :math:`(\cdots,N_\lambda,H,W)`.
-    :param Tensor srf: A tensor of shape :math:`(N_C, N_\lambda)`.
-    :param unit_size: Height and width of a pixel group, in pixels. Note that
-        their product should be equal to :math:`N_C`.
-        Default: ``(1, 1)``.
-    :type: int or tuple[int, int]
-    :param bool channel_dim: If ``True``, last three dimension of returned tensor will be
-        ``(N_C, H // unit_size[0], W // unit_size[1])``; otherwise ``(H, W)``.
-        Default: ``False``.
-    :return: Integrated radiance field, of shape
-        ``(..., N_C, H // unit_size[0], W // unit_size[1])`` or ``(..., H, W)``.
-    :rtype: Tensor
-    """
-    unit_size = size2d(unit_size)
-    if radiance.size(-3) != srf.size(-1):
-        raise ValueError(f'N_wl of radiance is {radiance.size(-3)} but that of srf is {srf.size(-1)}')
-    if unit_size[0] * unit_size[1] != srf.size(-2):
-        raise ValueError(f'Pixel group size is {unit_size} but number of channels is {srf.size(-2)}')
-    if radiance.size(-2) % unit_size[0] != 0 or radiance.size(-1) % unit_size[1] != 0:
-        raise ValueError(f'Spatial size of radiance ({radiance.shape[-2:]}) '
-                         f'must be divisible by pixel group size ({unit_size})')
-
-    unit_size = size2d(unit_size)
-    radiance = cfa_collect(radiance, unit_size)  # ... x N_wl x N_C x H' x W'
-    radiance = radiance.transpose(-4, -3)  # ... x N_C x N_wl x H' x W'
-    t = torch.einsum('...wij,...w->...ij', radiance, srf)  # ... x N_C x H' x W'
-
-    if channel_dim:
-        return t
-    else:
-        return cfa_flatten(t, unit_size).squeeze(-3)  # ... x H x W
-
-
-def quantize(signal: Ts, levels: int = 256, differentiable: bool = False) -> Ts:
-    """
-    Quantize continuous-valued signal, emulating an analogous-to-digital conversion.
-
-    :param Tensor signal: The signal to be quantized whose value must be
-        in :math:`[0,1]`.
-    :param int levels: Quantization levels. 256 for example, which is the number
-        of levels for most image sensors. Default: 256.
-    :param bool differentiable: Whether to perform quantization
-        in a differentiable manner. Specifically, if ``True``,
-        a quantization noise will be added to signal to simulate quantization.
-        Default: ``False``.
-    :return: Quantized signal.
-    :rtype: Tensor
-    """
-    if signal.min().item() < 0 or signal.max().item() > 1:
-        raise ValueError(f'Value of signal must be in [0, 1]')
-    v_max = levels - 1
-    qt = signal * v_max
-    qt = torch.round(qt) / v_max
-    if differentiable:
-        qt_noise = qt - signal.detach()
-        return signal + qt_noise
-    else:
-        return qt
+    @property
+    def w(self):
+        """Physical width of the sensor in meters.\n\n:type: float"""
+        return self.pixel_size[1] * self.pixel_num[1]
 
 
 class StandardSensor(Sensor):
@@ -260,7 +119,7 @@ class StandardSensor(Sensor):
         max_value: float = 1.,
         _quantize: int = 256,
         differentiable_quant: bool = True,
-    ):
+    ):  # TODO: Gamma correction
         super().__init__(pixel_num, pixel_size)
         self.rgb: bool = rgb  #: RGB sensor or not.
         #: Bayer CFA pattern. See :py:func:`rgb2raw`

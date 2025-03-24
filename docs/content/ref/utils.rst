@@ -24,3 +24,11 @@ Image manipulation
     partition
     partition_padded
     merge_patches
+
+*********************************
+Miscellaneous
+*********************************
+.. autosummary::
+    :toctree: ../generated/utils/misc
+
+    fmt

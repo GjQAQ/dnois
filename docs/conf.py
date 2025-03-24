@@ -13,7 +13,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).parents[1].resolve().joinpath('src')))
 
 project = 'DNOIS'
-copyright = '2024, gjq'
+copyright = '2024, Jiaqi Guo'
 author = 'gjq'
 
 # -- General configuration ---------------------------------------------------

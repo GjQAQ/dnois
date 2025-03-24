@@ -68,6 +68,7 @@ def quantize_depth_map(dmap: Ts, min_depth, max_depth, n: int, binary: bool = Fa
     :type max_depth: float or Tensor
     :param int n: Number of slices i.e. quantization level.
     :param bool binary: Whether to return a binary mask. Default: ``False``.
+    :param float eps: A small number to ensure numerical stability. Default: ``1e-8``.
     :return: A tensor of shape ``(n, ...)`` where the first dimension means different slices.
     """
     dmap = dmap.clamp(min_depth, max_depth)

@@ -5,6 +5,7 @@ from dnois.base.typing import Ts, Any
 
 __all__ = [
     'ImageScene',
+    'PointCloudScene',
     'Scene',
 ]
 
@@ -146,3 +147,40 @@ class ImageScene(Scene):
             return torch.Size([self.height, self.width])
         else:
             return torch.Size([self.batch_size, self.height, self.width])
+
+
+class PointCloudScene(Scene):
+    """
+    .. warning::
+
+        This class is experimental.
+
+    :param Tensor locations: Coordinates of points in :ref:`CCS <guide_imodel_cameras_coordinate_system>`.
+        A tensor of shape ``(N, 3)``.
+    :param Tensor luminance: Luminance of points. A tensor of shape ``(N_wl, N)``.
+    """
+
+    def __init__(self, locations: Ts, luminance: Ts):
+        if not (locations.ndim == 2 and locations.size(-1) == 3):
+            raise ShapeError(f'Locations of shape (N, 3) expected, got {locations.shape}')
+        if not (luminance.ndim == 2 and luminance.size(1) == locations.size(0)):
+            raise ShapeError(f'Luminance of shape (N_wl, {locations.size(0)}) expected, got {luminance.shape}')
+
+        self._locations = locations
+        self._luminance = luminance
+
+    @property
+    def locations(self):
+        return self._locations
+
+    @property
+    def luminance(self):
+        return self._luminance
+
+    @property
+    def n_wl(self):
+        return self.luminance.size(0)
+
+    @property
+    def n_points(self):
+        return self.luminance.size(-1)

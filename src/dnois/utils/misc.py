@@ -9,7 +9,9 @@ __all__ = [
     'subclasses',
     'with_external',
 
-    'CaptureHookMixIn',
+    'VarCollection',
+    'VarHook',
+    'VarHookMixIn',
     'ExternalParamMixIn',
     'FixStateMixIn',
 ]
@@ -23,6 +25,8 @@ def _subclasses(cls: type) -> set[type]:
 
 
 def subclasses(cls: type, _filter: bool = True) -> list[type]:
+    # Returns subclasses of cls recursively
+    # If _filter is True, only non-abstract and non-private (name starting with _) classes are returned
     sub_list = _subclasses(cls)
     if _filter:
         sub_list = list(filter(lambda c: not inspect.isabstract(c) and not c.__name__.startswith('_'), sub_list))
@@ -31,6 +35,13 @@ def subclasses(cls: type, _filter: bool = True) -> list[type]:
 
 
 def fmt(v: float) -> str:
+    """
+    Format a ``float`` according to :data:`dnois.float_print_fmt`.
+
+    :param float v: The ``float`` to be formatted.
+    :return: Formatted string.
+    :rtype: str
+    """
     s = f'{{:{base.float_print_fmt}}}'
     return s.format(v)
 
@@ -69,6 +80,16 @@ class ExternalParamMixIn:
 
 
 def with_external(func: typing.Callable = None, *, exclude: str | typing.Sequence[str] = ()) -> typing.Callable:
+    """
+    A decorator to mark a method as having :doc:`external parameters </content/guide/exparam>`.
+    The decorated method will be called with the actual value of the external parameters
+    if no value is provided (specifically, ``None``).
+
+    .. note::
+        The default value of a parameter of a decorated function is omitted unless it is
+        contained in ``exclude``.
+    """
+
     def decorator(_func: typing.Callable, _exclude: typing.Sequence[str]) -> typing.Callable:
         @functools.wraps(_func)
         def wrapper(self, *args, **kwargs):
@@ -93,7 +114,7 @@ def with_external(func: typing.Callable = None, *, exclude: str | typing.Sequenc
         return decorator(func, ())  # exclude is virtually the decorated function
 
 
-class FixStateMixIn:
+class FixStateMixIn:  # warning: experimental
     _fixed_cache: dict[str, typing.Any] | None
 
     def fix(self):
@@ -116,24 +137,24 @@ class FixStateMixIn:
 
 
 _T = typing.TypeVar('_T')
-CaptureHook = typing.Callable[[_T], _T | None]
+VarHook = typing.Callable[[_T], _T | None]
 
 
-class CaptureHookMixIn:
-    _capture_hooks: dict[str, CaptureHook]
+class VarHookMixIn:  # to be documented
+    _capture_hooks: dict[str, VarHook]
 
-    def register_capture_hook(self, name: str, hook: CaptureHook):
+    def register_variable_hook(self, name: str, hook: VarHook):
         hooks = self._get_capture_hooks(True)
         if name in hooks:
             raise ValueError(f'Capture hook "{name}" for {self.__class__.__name__} already exists')
         hooks[name] = hook
 
-    def remove_capture_hook(self, name: str):
+    def remove_variable_hook(self, name: str):
         hooks = self._get_capture_hooks()
         if hooks is not None:
             hooks.pop(name, None)  # give default to avoid KeyError
 
-    def capture_hook(self, name: str, obj: _T) -> _T:
+    def variable_hook(self, name: str, obj: _T) -> _T:
         hooks = self._get_capture_hooks()
         if hooks is None:
             return obj
@@ -145,8 +166,16 @@ class CaptureHookMixIn:
                 obj = ret
         return obj
 
-    def _get_capture_hooks(self, create: bool = False) -> dict[str, CaptureHook]:
+    def _get_capture_hooks(self, create: bool = False) -> dict[str, VarHook]:
         hooks = getattr(self, '_capture_hooks', None)
         if hooks is None and create:
             self._capture_hooks = hooks = {}
         return hooks
+
+
+class VarCollection(dict[str, typing.Any]):
+    def collector(self, name: str) -> VarHook:
+        def hook(obj):
+            self[name] = obj
+
+        return hook

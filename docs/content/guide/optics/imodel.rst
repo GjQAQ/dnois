@@ -13,6 +13,8 @@ emits a bundle of rays, only the one passing :math:`O` can be seen by the camera
 whose intersection with the image plane is called its **perspective projection** or **image point**.
 In this way, the image points of all object points form an image of the scene.
 
+Pinhole optical system is implemented as :class:`~dnois.optics.PinholeOptics`.
+
 .. _guide_imodel_cameras_coordinate_system:
 
 Camera's coordinate system
@@ -60,11 +62,9 @@ only their FoV angles matter. Hence the coordinates of them in DNOIS are defined
 where :math:`\varphi_x` and :math:`\varphi_y` are the FoV angles. This convention is applicable
 for any CCS coordinate in DNOIS unless otherwise specified.
 
-.. _guide_imodel_standard_optical_system:
-
-************************************
-Standard optical system
-************************************
+*******************************************************
+Imaging simulation based on point spread function
+*******************************************************
 Pinhole camera is only an ideal model of realistic cameras, which suffer from
 various imperfections and aberrations. Specifically, the light wave emitted by
 an object point, through a realistic optical system, typically forms an extended irradiance
@@ -77,13 +77,36 @@ Given some object points :math:`\{P_i(x_i,y_i,z_i)\}_{i=1}^N` whose intensities 
 .. math::
     I(x',y')=\sum_{i=1}^N I_i p(x',y';x_i,y_i,z_i).
 
-Such an optical system is called **standard optical system**.
 Pinhole camera can be regarded as a special case whose PSF is Dirac function.
 
 .. _guide_imodel_ref_model:
 
 Reference Model
 ===================================
-As described above, a standard optical system can be regarded as a pinhole camera
+In fact, most optical system can be modeled as a pinhole camera
 plus its PSF (aberrations). This pinhole camera is called its **reference model**.
 Reference model is required to map image points to object points given depth.
+
+Imaging simulation from images
+==========================================
+The most common form of imaging simulation is to render an image virtually captured
+by a sensor with optical components (e.g. lens) given a *clear* image and PSF.
+By "clear" we mean that it is the perspective projection of a scene free from
+PSF-blurring. Such a scene is represented by :class:`~dnois.scene.ImageScene`.
+In this case, a mapping from pixel locations to object points is
+required to find the sources of corresponding PSFs. As mentioned above,
+this process is well defined for a camera similar to a pinhole camera
+(that is, with a reference model) given depth. Depth can either be a single
+value (as an :ref:`external parameter <guide_exparam_external_parameters>`
+of :class:`~dnois.optics.PsfImagingOptics`) or a pixel-wise depth map.
+Clearly, possible region for object points is a frustum pointed at the
+optical center of reference model, which is symmetric w.r.t. to x and y-axis.
+
+Some optical systems may not behavior like a pinhole camera, whose
+possible region for object points is not a frustum symmetric w.r.t.
+x and y-axis (for example, put a prism before a lens). Therefore
+:class:`~dnois.optics.PsfImagingOptics` defines four properties to represent
+lower and upper limit of x and y FoV angle. These properties can be computed
+in other ways rather than pinhole model in subclasses (for example, by inverse
+ray tracing in :class:`~dnois.optics.rt.CoaxialRayTracing`).
+
