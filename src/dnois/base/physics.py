@@ -97,7 +97,7 @@ def fline(
     return fraunhofer_line(str(symbol), element, alone, unit)
 
 
-def wave_vec(wl: Numeric) -> Numeric:
+def wave_vec(wl: Numeric, n: Numeric = None) -> Numeric:
     r"""
     Computes magnitude of wavelength vector:
 
@@ -105,11 +105,12 @@ def wave_vec(wl: Numeric) -> Numeric:
         k=2\pi/\lambda
 
     :param wl: Wavelength :math:`\lambda`.
-    :type wl: Tensor or float
     :return: Magnitude of wavelength vector.
-    :rtype: same as ``wl``.
     """
-    return torch.pi * 2 / wl
+    k = torch.pi * 2 / wl
+    if n is not None:
+        k = k * n
+    return k
 
 
 def _as_tensor(x, src: Ts) -> Ts:

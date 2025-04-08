@@ -2,4 +2,4 @@
 from .calc import *
 from .module import *
 from .param_transform import *
-from .shape import *
+from .tensor import *

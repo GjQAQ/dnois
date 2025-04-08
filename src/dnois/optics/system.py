@@ -755,7 +755,7 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         elif segments == 'pointwise':
             return self.pointwise_render(scene, **kwargs)
         else:  # tuple[int, int]
-            return self.patchwise_render(scene, segments, **kwargs)
+            return self.patchwise_render(scene, segments=segments, **kwargs)
 
     def render_point_cloud_scene(self, scene: _sc.PointCloudScene, **kwargs) -> Ts:
         raise NotImplementedError()
@@ -863,6 +863,7 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
 
         psf = self.psf(obj_points, psf_size, wl, norm_psf, **kwargs)  # B(1) x N_y x N_x x N_wl x H x W
         psf = _stitch_symmetric(psf, segments[0], segments[1], self.x_symmetric, self.y_symmetric)
+        psf = self.variable_hook('patchwise_render.psf', psf)
 
         psf = psf.permute(0, 3, 1, 2, 4, 5)  # B(1) x N_wl x N_y x N_x x H x W
         image_blur = formation.space_variant(scene.image, psf, pad, linear_conv)  # B x N_wl x H x W

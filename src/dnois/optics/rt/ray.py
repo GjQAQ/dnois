@@ -143,6 +143,14 @@ class BatchedRay(_t.TensorContainerMixIn):
             self._ts[k] = torch.broadcast_to(v, (shape + (3,)) if k in ('o', 'd') else shape)
         return self
 
+    def broadcast(self) -> Self:
+        """
+        Return a copy of this object with tensors broadcast to shape of rays.
+
+        :return: A copy of this object.
+        """
+        return self.clone(False).broadcast_()
+
     def clone(self, deep: bool = False) -> 'BatchedRay':
         """
         Return a copy of this object.
@@ -378,6 +386,28 @@ class BatchedRay(_t.TensorContainerMixIn):
         a_inv_mul_b = torch.linalg.solve(a, b)  # ... x 3
         x = -a_inv_mul_b / 2  # ... x 3
         return x
+
+    def expand_dim(self, dim: int, multiple: int) -> Self:
+        """
+        Expand the shape of rays by repeating bound tensors along given dimension.
+        The tensors whose size in that dimension is 1 will not be repeated.
+
+        :param int dim: The dimension along which the tensors are expanded.
+        :param int multiple: The number of times to repeat the tensors.
+        :return: A new ray object with expanded shape.
+        :rtype: BatchedRay
+        """
+        ray = self.clone(False)
+        rep = [1 for _ in range(ray.ndim)]
+        rep[dim] = multiple
+
+        def _expand(k: str, v: Ts) -> Ts:
+            _rep = rep + [1] if k in ('o', 'd') else rep
+            _rep = _rep[-v.ndim:]
+            return v.repeat(*_rep)
+
+        ray._update_tensor(_expand)
+        return ray
 
     @property
     def shape(self) -> torch.Size:

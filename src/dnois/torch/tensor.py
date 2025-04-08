@@ -1,6 +1,6 @@
 import torch
 
-from ..base import typing, ShapeError
+from ..base import ShapeError
 from ..base.typing import Ts, Sequence, overload
 
 __all__ = [

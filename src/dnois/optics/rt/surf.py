@@ -1,4 +1,5 @@
 import abc
+import functools
 import math
 
 import torch
@@ -15,6 +16,7 @@ __all__ = [
     'Conic',
     'EvenAspherical',
     'Fresnel',
+    'Grating',
     'ParaxialMixIn',
     'PolynomialPhase',
     'Spherical',
@@ -35,11 +37,9 @@ def _conic(r2: Ts, c: Ts, k: Ts = None) -> Ts:
 def _spherical_der_wrt_r2(r2: Ts, c: Ts, k: Ts = None) -> Ts:
     _1 = c.square() if k is None else c.square() * (1 + k)
     _2 = r2 * _1
-    _3 = 1 - _2
-    mask = _3.ge(0)
-    _4 = torch.sqrt(torch.relu(1 - _2))
-    _5 = _4 + 1
-    return torch.where(mask, c / _5 * (1 + _2 / (2 * _4 * _5 + 1e-10)), 0)
+    _3, mask = _t.ssqrt(1 - _2)
+    _4 = _3 + 1
+    return torch.where(mask, c / _4 * (1 + _2 / (2 * _3 * _4 + 1e-10)), 0)
 
 
 class ParaxialMixIn(metaclass=abc.ABCMeta):
@@ -162,7 +162,7 @@ class ThinLens(Planar, CircularSurface, ParaxialMixIn):
             fl2_text = 'identical to fl1'
         else:
             fl2_text = utils.fmt(self.fl2.item())
-        u=base.Length.default()
+        u = base.Length.default()
         return super().extra_repr() + f',\nfl1={utils.fmt(self.fl1.item())}{u}, fl2={fl2_text}{u}'
 
     def refract(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
@@ -482,24 +482,6 @@ class EvenAspherical(_ConicBase):
         return super().px_curvature + 2 * self.a1
 
 
-def _diff(x: Ts, d: float, dim: int) -> Ts:
-    s = x.size(dim)
-    diff_central = (x.narrow(dim, 2, s - 2) - x.narrow(dim, 0, s - 2)) / (2 * d)  # central difference
-    diff_lower = (x.narrow(dim, 1, 1) - x.narrow(dim, 0, 1)) / d  # forward difference
-    diff_upper = (x.narrow(dim, -1, 1) - x.narrow(dim, -2, 1)) / d  # backward difference
-    diff = torch.cat([diff_lower, diff_central, diff_upper], dim)
-    return diff
-
-
-def _coordinate2index(x: Ts, n: int) -> tuple[Ts, Ts]:
-    if n % 2 == 0:  # even
-        x_cell = x.floor() + 0.5  # round to nearest half integers
-    else:  # odd
-        x_cell = x.round()  # round to nearest integers
-    idx = x_cell + (n - 1) / 2
-    return idx.int().clamp(0, n - 1), x - x_cell
-
-
 class PlanarPhase(Planar, metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def phase_grad(self, x: Ts, y: Ts) -> tuple[Ts, Ts]:
@@ -637,6 +619,12 @@ class PolynomialPhase(PlanarPhase, CircularSurface):
         rect_grad_x, rect_grad_y = self._rect_phase_grad(x, y)
         return double_phase_grad_r2 * x + rect_grad_x, double_phase_grad_r2 * y + rect_grad_y
 
+    def to_dict(self, keep_tensor=True) -> dict[str, Any]:
+        d = super().to_dict(keep_tensor)
+        d['a'] = self.a if keep_tensor else [a.item() for a in self.a]
+        d['b'] = self.b if keep_tensor else [b.item() for b in self.b]
+        return d
+
     @property
     def a(self) -> list[nn.Parameter]:
         r"""
@@ -715,3 +703,114 @@ class Fresnel(Planar, EvenAspherical):
             phpx, phpy = torch.where(mask, phpx, 0), torch.where(mask, phpy, 0)
         f_grad = torch.stack((-phpx, -phpy, torch.ones_like(phpx)), dim=-1)
         return f_grad / f_grad.norm(2, -1, True)
+
+
+class Grating(Planar):
+    r"""
+    Grating surface. It is uniformly extended from :math:`-\infty` to :math:`\infty`
+    in its :ref:`local <guide_optics_rt_slcs>` x-coordinate and has periodic structure
+    in its y-coordinate. Hence its normal direction is always in z-direction.
+
+    After a ray transmits through this surface, it is split into multiple rays
+    whose direction is determined by the grating equation. Total number of split rays
+    is the difference of maximum and minimum diffraction order plus 1.
+    As a result, number of rays will be multiplied by this factor.
+
+    .. note::
+
+        The intensities of split rays are assumed to be the same at present.
+
+    See :class:`Planar` for description of other parameters.
+
+    :param: period: Period of the grating.
+    :type: period: float or Tensor
+    :param orders: A 2-tuple of ``int`` representing minimum and maximum diffraction order.
+        If a single ``int`` ``n``, it is interpreted as ``(-n, n)``. Default: ``(-5, 5)``.
+    :type orders: int or tuple[int, int]
+    :param int expand_dim: Dimension to expand the split rays. Default: ``-1``.
+    """
+    period: nn.Parameter  #: Period of the grating.
+
+    def __init__(
+        self,
+        material: mt.Material | str = _surf.DEFAULT_MATERIAL,
+        aperture: Aperture = None,
+        period: Scalar = None,
+        orders: int | typing.Double[int] = 5,
+        expand_dim: int = -1,
+        *,
+        d: Scalar = None
+    ):
+        if period is None:
+            period = base.Length.as_default(1e-5, 'm')
+
+        period = typing.scalar(period)
+        if period.item() < 0:
+            raise ValueError(f'Period must be non-negative, but got {period.item()}')
+        if isinstance(orders, int):
+            if orders < 0:
+                raise ValueError(f'Number of orders must be non-negative, but got {orders}')
+            orders = (-orders, orders)
+        elif orders[1] < orders[0]:
+            raise ValueError(f'Maximum order must be larger than minimum order, but got {orders}')
+
+        super().__init__(material, aperture, False, d=d)
+        self.register_parameter('period', nn.Parameter(period, False))
+        self.orders: tuple[int, int] = orders  #: Minimum and maximum diffraction order.
+        self.expand_dim: int = expand_dim  #: Dimension to expand the split rays.
+
+    def refract(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
+        if not forward:
+            raise NotImplementedError()
+        d_local = self.ctx.g2l(ray.broadcast().d, True)
+        d_x, d_y = d_local[..., :2].unbind(-1)
+        d_inc = ray.wl / (self.period * self.ctx.material_before.n(ray.wl))
+        new_d_y = [d_y + order * d_inc for order in range(self.min_order, self.max_order + 1)]
+        new_d_y = torch.cat(new_d_y, self.expand_dim)
+
+        rep = [1 for _ in range(d_x.ndim)]
+        rep[self.expand_dim] = self.n_order
+        new_d_parallel = torch.stack([d_x.repeat(rep), new_d_y], dim=-1)
+        new_d_vertical, valid = _t.ssqrt(1 - new_d_parallel.square().sum(-1, True))
+        new_d = torch.cat([new_d_parallel, new_d_vertical], dim=-1)
+
+        new_ray = ray.expand_dim(self.expand_dim, self.n_order)
+        new_ray.d = new_d
+        new_ray.update_valid_(valid.squeeze(-1))
+        return new_ray
+
+    def backward_valid(self, valid: Ts) -> Ts:
+        split_valid = valid.chunk(self.n_order, self.expand_dim)
+        valid = functools.reduce(torch.logical_or, split_valid)
+        return valid
+
+    def to_dict(self, keep_tensor=True) -> dict[str, Any]:
+        d = super().to_dict(keep_tensor)
+        d['period'] = self.period if keep_tensor else self.period.item()
+        d['orders'] = self.orders
+        d['expand_dim'] = self.expand_dim
+        return d
+
+    @property
+    def n_order(self):
+        return self.max_order - self.min_order + 1
+
+    @property
+    def min_order(self):
+        return self.orders[0]
+
+    @min_order.setter
+    def min_order(self, value):
+        if value > self.max_order:
+            raise ValueError(f'Minimum order cannot be larger than maximum order ({self.max_order}), but got {value}')
+        self.orders = (value, self.max_order)
+
+    @property
+    def max_order(self):
+        return self.orders[1]
+
+    @max_order.setter
+    def max_order(self, value):
+        if value < self.min_order:
+            raise ValueError(f'Maximum order cannot be smaller than minimum order ({self.min_order}), but got {value}')
+        self.orders = (self.min_order, value)

@@ -17,6 +17,8 @@ __all__ = [
     'BayerPattern',
 ]
 
+BayerPattern = Literal['RGGB', 'GRBG', 'BGGR', 'GBRG']
+
 
 # reference: IEC 61966-2-1
 def linear2srgb(image: Numeric, eps: float = 1e-8) -> float | Ts:
@@ -52,9 +54,6 @@ def srgb2linear(x: Numeric, eps: float = 1e-8) -> float | Ts:
         return torch.where(x <= 0.04045, x / 12.92, ((x + 0.055) / 1.055) ** 2.4)
     else:
         return x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4
-
-
-BayerPattern = Literal['RGGB', 'GRBG', 'BGGR', 'BGRG']
 
 
 def cfa_flatten(image: Ts, unit_size: Size2d = 1) -> Ts:
@@ -136,7 +135,7 @@ def rgb2raw(image: Ts, pattern: BayerPattern) -> Ts:
 
     :param Tensor image: The RGB image, a tensor of shape ``(..., 3, H, W)``.
     :param BayerPattern pattern: Bayer CFA pattern, either ``'RGGB'``, ``'GRBG'``,
-        ``'BGGR'`` or ``'BGRG'``, specifying how are pixels arranged in the order
+        ``'BGGR'`` or ``'GBRG'``, specifying how are pixels arranged in the order
         of upper left, upper right, lower left, lower right.
     :return: A single-channel image with shape ``(..., 1, H, W)``.
     :rtype: Tensor
@@ -152,7 +151,7 @@ def rgb2raw(image: Ts, pattern: BayerPattern) -> Ts:
     elif pattern == 'BGGR':
         output[..., :, 1::2, 1::2] = image[..., 0:1, 1::2, 1::2]  # red
         output[..., :, ::2, ::2] = image[..., 2:3, ::2, ::2]  # blue
-    elif pattern == 'BGRG':
+    elif pattern == 'GBRG':
         output[..., :, 1::2, ::2] = image[..., 0:1, 1::2, ::2]  # red
         output[..., :, ::2, 1::2] = image[..., 2:3, ::2, 1::2]  # blue
 

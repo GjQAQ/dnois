@@ -19,7 +19,7 @@ DEFAULT_FIND_CHIEF_SAMPLES: int = 101
 DEFAULT_SAMPLES: int = 512
 FOV_THRESHOLD4CHIEF_RAY = math.radians(0.01)
 
-PsfCenter = typing.Literal['linear', 'mean', 'chief']
+PsfCenter = typing.Literal['linear', 'mean', 'mean-robust', 'chief']
 PsfType = typing.Literal['inc_rect', 'inc_gaussian', 'coh_kirchoff', 'coh_huygens', 'coh_fraunhofer']
 FovType = typing.Literal['perspective', 'chief', 'average']
 PupilType = typing.Literal['probe', 'trace', 'paraxial']
@@ -54,9 +54,9 @@ def _plot_linestyles(n: int) -> list[str]:
     return lss
 
 
-def _plot_rays_3d(ax, start: Ts, end: Ts, valid: Ts, colors: list[str], lss: list[str]):
+def _plot_rays_3d(ax, ray1: BatchedRay, ray2: BatchedRay, colors: list[str], lss: list[str]):
     # shape: N_fov x N_wl x N_spp x 3
-    for ls, fov_slc1, fov_slc2, v in zip(lss, start, end, valid):  # N_wl x N_spp x 3
+    for ls, fov_slc1, fov_slc2, v in zip(lss, ray1.o, ray2.o, ray1.valid):  # N_wl x N_spp x 3
         for clr, wl_slc1, wl_slc2, vv in zip(colors, fov_slc1, fov_slc2, v):  # N_spp x 3
             ax.plot(
                 (utils.t4plot(wl_slc1[:, 2][vv]), utils.t4plot(wl_slc2[:, 2][vv])),
@@ -165,7 +165,7 @@ if ext.vis.mpl_available():
             legend: bool = True,
         ) -> tuple[plt.Figure, plt.Axes]:
             self._check_circ_aperture()
-            self._check_circ_surf()
+            # self._check_circ_surf()
 
             if torch.is_tensor(depth) and depth.numel() > 1:
                 raise RuntimeError('Cross section figure for multiple depths is not implemented yet')
@@ -271,15 +271,20 @@ if ext.vis.mpl_available():
             if isinf:
                 ray.broadcast_().march_to_(ray.new_tensor(0.))
 
-            rays_record = [ray.broadcast_()]
-            for sf in self.surfaces:
-                out_ray = sf(ray)
-                rays_record.append(out_ray.broadcast_())
-                ray = out_ray
-            out_ray = ray.march_to(self.surfaces.total_length)
-            rays_record.append(out_ray.broadcast_())
-            for ray, next_ray in zip(rays_record[:-1], rays_record[1:]):
-                _plot_rays_3d(ax, ray.o, next_ray.o, out_ray.valid, colors, lss)
+            rays = [ray.broadcast_()]
+            intercepted_rays = []
+            for s in self.surfaces:
+                s.register_variable_hook('forward.intercepted', intercepted_rays.append)
+                s.register_variable_hook('forward.interacted', rays.append)
+            intercepted_rays.append(self.trace_ray(ray).broadcast_())
+            for s in self.surfaces:
+                s.remove_variable_hook('forward.intercepted')
+                s.remove_variable_hook('forward.interacted')
+
+            for i in reversed(list(range(len(rays) - 1))):
+                rays[i].valid = self.surfaces[i].backward_valid(rays[i + 1].valid)
+            for ray1, ray2 in zip(rays, intercepted_rays):
+                _plot_rays_3d(ax, ray1, ray2, colors, lss)
 
             if legend:
                 import matplotlib.lines
@@ -351,7 +356,11 @@ class CoaxialRayTracing(
             PSFs are centered around ideal image points thus realistic distortion is simulated.
 
         ``'mean'``
-            PSFs are centered around their "center of gravity".
+            PSFs are centered around their "center of mass".
+
+        ``'mean-robust'``
+            Similar to ``'mean'`` but iteratively computes center and then weeds out outliers.
+            This is slower than ``'mean'`` but more robust.
 
         ``'chief'``
             PSFs are centered around the intersections of corresponding chief rays and image plane.
@@ -398,6 +407,8 @@ class CoaxialRayTracing(
         random sampler (see :meth:`~surf.Aperture.sampler`) with few sampling points,
         run rendering ``repetitions`` times and get their average to get rendered image
         with virtually many sampling points while memory footprint is reduced. Default: ``1``.
+    :param float robust_mean_center_threshold: Threshold for robust mean center.
+        Only used when :attr:`.psf_center` is ``'mean-robust'``. Default: ``0.7``.
     :param kwargs: Additional keyword arguments passed to :class:`PsfImagingOptics`.
 
     .. [#yang2023aberration] Yang, X., Fu, Q., Elhoseiny, M., & Heidrich, W. (2023).
@@ -433,6 +444,7 @@ class CoaxialRayTracing(
         wl_reduction: WlReduction = 'mean',
         pupil_type: PupilType = 'paraxial',
         repetitions: int = 1,
+        robust_mean_center_threshold: float = 0.7,
         **kwargs
     ):
         if imaging_model == 'backward':
@@ -451,6 +463,7 @@ class CoaxialRayTracing(
         self.wl_reduction: WlReduction = wl_reduction  #: See :class:`CoaxialRayTracing`.
         self.pupil_type: PupilType = pupil_type  #: See :class:`CoaxialRayTracing`.
         self.repetitions: int = repetitions  #: See :class:`CoaxialRayTracing`.
+        self.robust_mean_center_threshold: float = robust_mean_center_threshold  #: See :class:`CoaxialRayTracing`.
         self.imaging_model: ImagingModel = imaging_model  #: See :class:`CoaxialRayTracing`.
 
         if self.sampler is None and len(self.surfaces) > 0:
@@ -554,14 +567,6 @@ class CoaxialRayTracing(
         return xy_on_sensor
 
     def trace_ray(self, ray: BatchedRay) -> BatchedRay:
-        """
-        Trace a group of rays through surfaces until the image plane.
-        If you want to trace rays until the last surface, call ``self.surfaces(ray)``.
-
-        :param BatchedRay ray: Rays to trace.
-        :return: Rays after tracing. Their origins are located at the image plane.
-        :rtype: BatchedRay
-        """
         out_ray: BatchedRay = self.surfaces(ray)
         ref_idx = self.surfaces.last.material.n(out_ray.wl)
         out_ray = out_ray.march_to(self.surfaces.total_length, ref_idx)
@@ -845,7 +850,7 @@ class CoaxialRayTracing(
         Create a chief ray, i.e. one that passes through the center of entrance or exit pupil,
         originated from ``point``.
 
-        :param Tensor point: Coordinate of the ray's origin in :ref:`LCS <guide_optics_rt_lcs>`.
+        :param Tensor point: Coordinate of the ray's origin in :ref:`CCS <guide_imodel_cameras_coordinate_system>`.
             A tensor of shape ``(..., 3)``.
         :param wl: Wavelengths. Default: :attr:`.wl`.
         :type wl: float | Sequence[float] | Tensor
@@ -863,7 +868,7 @@ class CoaxialRayTracing(
             raise ValueError(f'Side of chief ray must be obj, object, img or image, but got {side}')
         zero = torch.zeros_like(ap_z)
         chief_point = torch.stack([zero, zero, ap_z])  # 3
-        d, _ = _make_direction(chief_point, point)  # ... x 3
+        d, _ = _make_direction(chief_point, self.cam2lens(point))  # ... x 3
         chief = BatchedRay(chief_point, d.unsqueeze(-2), wl)  # ... x N_wl
         return chief
 
@@ -1072,15 +1077,43 @@ class CoaxialRayTracing(
         ray.march_(length2rs, ref_idx)
         return chief_ray, ray, rs_roc, exit_pupil_distance  # ... x N_wl x N_spp
 
+    def _rectification_center(self, rectification: str, origins: Ts, wl: Ts, shape: typing.Double[int]) -> Ts | None:
+        if rectification is None or rectification == 'none':
+            return None
+        elif rectification == 'chief':
+            chief = self.chief_ray(origins, wl, 'obj')  # (B, H*W, N_wl)
+            out_chief = self.trace_ray(chief)  # (B, H*W, N_wl)
+            xy_chief = out_chief.o[..., None, :2]  # (B, H*W, N_wl, 1, 2)
+            y, x = utils.grid(
+                shape, self._sensor().pixel_num,
+                symmetric=True, broadcast=True, device=self.device, dtype=self.dtype
+            )
+            xy_grid = torch.stack([x, y], -1)  # (H, W, 2)
+            xy_chief -= xy_grid.flatten(0, 1)[:, None, None, :, :]  # (B, H*W, N_wl, 1, 2)
+            return xy_chief
+        else:
+            raise ValueError(f'Unknown rectification type: {rectification}')
+
     def _find_xy_center(self, psf_center, origins, out_ray, wl, wl_reduction: WlReduction):
         if psf_center == 'linear':
             xy_center = self.obj_proj_lens(origins)[..., None, None, :]  # ... x 1 x 1 x 2
-        elif psf_center == 'mean':
-            xy_center = out_ray.o[..., :2]  # ... x N_wl x N_spp x 2
+        elif psf_center == 'mean' or psf_center == 'mean-robust':
+            xy = out_ray.o[..., :2]  # ... x N_wl x N_spp x 2
             valid = out_ray.valid.unsqueeze(-1)  # ... x N_wl x N_spp x 1
-            xy_center = torch.where(valid, xy_center, 0).sum(-2, True) / valid.sum(-2, True)  # ... x N_wl x 1 x 2
+            xy_center = torch.where(valid, xy, 0).sum(-2, True) / valid.sum(-2, True)  # ... x N_wl x 1 x 2
+            if psf_center == 'mean-robust':
+                while True:
+                    xy = out_ray.o[..., :2] - xy_center  # (..., N_wl, N_spp, 2)
+                    d2 = torch.where(valid, xy, float('nan')).square().sum(-1)  # (..., N_wl, N_spp)
+                    q = torch.nanquantile(d2, self.new_tensor([0.25, 0.75]), -1, True)  # (2, ..., N_wl, 1)
+                    q1, q3 = q.unbind(0)  # (..., N_wl, 1)
+                    non_outlier = d2 < q3 + self.robust_mean_center_threshold * (q3 - q1)  # (..., N_wl, N_spp)
+                    if torch.all(~valid.squeeze(-1) | non_outlier):
+                        break
+                    valid = valid & non_outlier.unsqueeze(-1)  # (..., N_wl, N_spp, 1)
+                    # (..., N_wl, N_spp, 2)
+                    xy_center = torch.where(valid, out_ray.o[..., :2], 0).sum(-2, True) / valid.sum(-2, True)
         elif psf_center == 'chief':
-            origins = self.cam2lens(origins)
             chief = self.chief_ray(origins, wl, 'obj')  # ... x N_wl
             out_chief = self.trace_ray(chief)
             xy_center = out_chief.o[..., None, :2]  # ... x N_wl x 1 x 2
@@ -1259,7 +1292,6 @@ class CoaxialRayTracing(
             raise ValueError(f'Unsupported PSF center type for wavefront PSF: {psf_center}')
 
         chief_ray, ray, rs_roc, exit_pupil_distance = self._trace_opl_with_chief(origins, wl, samples, 'rect')
-        exit_pupil_distance = exit_pupil_distance.detach()  # TODO: bug to fix
 
         ref_idx = self.surfaces.mt_tail.n(ray.wl)
         opd = chief_ray.march(-rs_roc, ref_idx).opl - ray.opl  # ... x N_wl x N_spp

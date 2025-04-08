@@ -600,7 +600,7 @@ class CircularAperture(Aperture):
 
 
 # TODO: ray validity check
-class Surface(_t.EnhancedModule, metaclass=abc.ABCMeta):
+class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
     r"""
     Base class for optical surfaces in a group of lens.
 
@@ -733,10 +733,13 @@ class Surface(_t.EnhancedModule, metaclass=abc.ABCMeta):
         :rtype: BatchedRay
         """
         ray = self.intercept(ray)
+        ray = self.variable_hook('forward.intercepted', ray)
         if self.reflective:
-            return self.reflect(ray)
+            ray = self.reflect(ray)
         else:
-            return self.refract(ray, forward)
+            ray = self.refract(ray, forward)
+        ray = self.variable_hook('forward.interacted', ray)
+        return ray
 
     def intercept(self, ray: BatchedRay) -> BatchedRay:
         """
@@ -899,6 +902,10 @@ class Surface(_t.EnhancedModule, metaclass=abc.ABCMeta):
             if sub.__name__ == ty:
                 return typing.cast(type[Surface], sub).from_dict(d)  # calling eponymous method of subclass
         raise RuntimeError(f'Unknown surface type: {ty}. Available: {surface_types(True)}')
+
+    @staticmethod
+    def backward_valid(valid: Ts) -> Ts:
+        return valid
 
     def _f(self, ray: BatchedRay) -> Ts:
         return self.h_extended(ray.x, ray.y) - ray.z

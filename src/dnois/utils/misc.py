@@ -10,6 +10,7 @@ __all__ = [
     'with_external',
 
     'VarCollection',
+    'VarDict',
     'VarHook',
     'VarHookMixIn',
     'ExternalParamMixIn',
@@ -160,6 +161,8 @@ class VarHookMixIn:  # to be documented
             return obj
 
         hook = hooks.get(name, None)
+        if hook is None:
+            hook = hooks.get('*', None)
         if hook is not None:
             ret = hook(obj)
             if ret is not None:
@@ -173,9 +176,12 @@ class VarHookMixIn:  # to be documented
         return hooks
 
 
-class VarCollection(dict[str, typing.Any]):
+class VarDict(dict[str, typing.Any]):
     def collector(self, name: str) -> VarHook:
         def hook(obj):
             self[name] = obj
 
         return hook
+
+
+VarCollection=VarDict

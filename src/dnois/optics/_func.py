@@ -182,7 +182,7 @@ def norm_psf(psf: Ts, dims: tuple[int, int] = (-2, -1)) -> Ts:
     Normalizes PSF so that all its pixels sum up to 1.
 
     :param Tensor psf: PSF to normalize. It cannot be complex of have negative elements.
-    :param dims: Indices of spatial dimensions of ``psf``. Default: (-2, -1).
+    :param dims: Indices of spatial dimensions of ``psf``. Default: ``(-2, -1)``.
     :type dims: tuple[int, int]
     :return: Normalized PSF.
     :rtype: Tensor

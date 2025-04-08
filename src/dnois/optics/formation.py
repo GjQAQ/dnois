@@ -163,14 +163,15 @@ def space_variant(
     # ... x N_h x N_w x H_p x W_p
     patches = torch.stack([torch.stack(cast(list[Ts], row), -3) for row in patches], -4)
     if psf.size(-2) > patches.size(-2) or psf.size(-1) > patches.size(-1):
+        warnings.warn(f'Spatial size of PSF ({psf.shape[-2:]}) is larger than that of patches {patches.shape[-2:]}')
         psf = utils.resize(psf, (min(psf.size(-2), patches.size(-2)), min(psf.size(-1), patches.size(-1))))
 
     wh = torch.linspace(0, 1, pad[0] * 2, device=obj.device, dtype=obj.dtype)[:, None]
     ww = torch.linspace(0, 1, pad[1] * 2, device=obj.device, dtype=obj.dtype)[None, :]
     patches[..., 1:, :, :pad[0] * 2, :] *= wh
     patches[..., :-1, :, -pad[0] * 2:, :] *= wh.flip(0)
-    patches[..., 1:, :, :pad[1] * 2] *= ww
-    patches[..., :-1, :, -pad[1] * 2:] *= ww.flip(1)
+    patches[..., :, 1:, :, :pad[1] * 2] *= ww
+    patches[..., :, :-1, :, -pad[1] * 2:] *= ww.flip(1)
 
     if linear_conv:
         padding = 'linear'

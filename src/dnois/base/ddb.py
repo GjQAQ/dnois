@@ -40,6 +40,7 @@ def grad_hook_check_peculiar(name: str, msg: str = None) -> Callable[[Ts], None]
     :return: The hook function.
     :rtype: Callable[[Tensor], None]
     """
+
     def _check_peculiar(grad: Ts):
         n_nan = grad.isnan().sum()
         n_inf = grad.isinf().sum()
@@ -52,3 +53,8 @@ def grad_hook_check_peculiar(name: str, msg: str = None) -> Callable[[Ts], None]
             raise RuntimeError(text)
 
     return _check_peculiar
+
+
+def check_peculiar(x: Ts, name: str, msg: str = None):
+    if x.requires_grad:
+        x.register_hook(grad_hook_check_peculiar(name, msg))

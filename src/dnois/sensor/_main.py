@@ -23,7 +23,7 @@ def _make_srf(srf: Ts | tuple[Ts, Ts, Ts], pattern: BayerPattern) -> Ts | None:
         srf = (g, r, b, g)
     elif pattern == 'BGGR':
         srf = (b, g, g, r)
-    elif pattern == 'BGRG':
+    elif pattern == 'GBRG':
         srf = (g, b, r, g)
     else:
         raise ValueError(f'Wrong bayer pattern: {pattern}')
