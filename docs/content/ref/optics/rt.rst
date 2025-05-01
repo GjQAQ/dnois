@@ -43,10 +43,10 @@ Specific surface types
     Conic
     EvenAspherical
     Fresnel
+    Grating
     Planar
     PolynomialPhase
     Spherical
-    Standard
     Stop
 
 ************************************

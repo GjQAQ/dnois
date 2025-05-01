@@ -154,15 +154,16 @@ class ParamTransformModule(nn.Module):
         :param Parameter param: Latent :class:`torch.nn.Parameter` instance to be registered.
         :param Transform transform: Transformation object.
         """
+        lt_name = self._latent_name(name)
         param_obj = getattr(self, name, _unset)
+        latent_param_obj = getattr(self, lt_name, _unset)
         if param_obj is not _unset:
-            if not isinstance(param_obj, torch.nn.Parameter):
+            if not isinstance(param_obj, nn.Parameter) and not isinstance(latent_param_obj, nn.Parameter):
                 raise AttributeError(
-                    f'Attribute {name} of class {self.__class__.__name__} is not a torch.nn.Parameter'
+                    f'Attribute {name} of class {self.__class__.__name__} is not a parameter'
                 )
             delattr(self, name)
 
-        lt_name = self._latent_name(name)
         super().register_parameter(lt_name, param)
 
         transforms = self._get_transforms_dict()
@@ -178,11 +179,7 @@ class ParamTransformModule(nn.Module):
         :param str name: Name of the parameter.
         :param Transform transform: Transformation object.
         """
-        transforms = self._get_transforms_dict()
-        if name in transforms:
-            lt_name = self._latent_name(name)
-            return self.register_latent_parameter(name, getattr(self, lt_name), transform)
-        return self.register_parameter(name, getattr(self, name), transform)
+        return self.register_parameter(name, nn.Parameter(getattr(self, name)), transform)
 
     @property
     def nominal_values(self) -> dict[str, Ts]:
@@ -418,7 +415,9 @@ class EnhancedModule(
             cls.from_dict = classmethod(wraps(original_from_dict)(_wrapped_from_dict))
 
     def __setattr__(self, key, value):
-        params:dict|object = self.__dict__.get('_parameters', _unset)
+        # allows modification to parameters whose value is None or scalar tensor by attribute assignment
+        # rather than fussy register_parameter call
+        params: dict | object = self.__dict__.get('_parameters', _unset)
         if params is _unset:
             return super().__setattr__(key, value)
         if key in params and (params[key] is None or params[key].ndim == 0):

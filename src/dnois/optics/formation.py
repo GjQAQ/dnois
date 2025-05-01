@@ -126,7 +126,19 @@ def superpose(obj: Ts, psf: Ts) -> Ts:
     :return: A tensor of shape :math:`(\cdots,H_o,W_o)`.
     :rtype: Tensor
     """
-    raise NotImplementedError()
+    image = torch.zeros_like(obj)
+    for i in range(obj.size(-2)):
+        for j in range(obj.size(-1)):
+            upper1 = max(0, i - psf.size(-2) // 2)
+            lower1 = min(obj.size(-2) - 1, i + (psf.size(-2) - 1) // 2)
+            left1 = max(0, j - psf.size(-1) // 2)
+            right1 = min(obj.size(-1) - 1, j + (psf.size(-1) - 1) // 2)
+            upper2 = max(0, psf.size(-2) // 2 - i)
+            left2 = max(0, psf.size(-1) // 2 - j)
+            image[..., upper1:lower1 + 1, left1:right1 + 1] += (
+                obj[..., i, j] * psf[..., i, j, upper2 + (lower1 - upper1), left2 + (right1 - left1)]
+            )
+    return image
 
 
 def space_variant(
@@ -162,16 +174,15 @@ def space_variant(
     patches = utils.partition_padded(obj, psf.shape[-4:-2], pad, 'replicate')
     # ... x N_h x N_w x H_p x W_p
     patches = torch.stack([torch.stack(cast(list[Ts], row), -3) for row in patches], -4)
-    if psf.size(-2) > patches.size(-2) or psf.size(-1) > patches.size(-1):
-        warnings.warn(f'Spatial size of PSF ({psf.shape[-2:]}) is larger than that of patches {patches.shape[-2:]}')
-        psf = utils.resize(psf, (min(psf.size(-2), patches.size(-2)), min(psf.size(-1), patches.size(-1))))
 
     wh = torch.linspace(0, 1, pad[0] * 2, device=obj.device, dtype=obj.dtype)[:, None]
     ww = torch.linspace(0, 1, pad[1] * 2, device=obj.device, dtype=obj.dtype)[None, :]
-    patches[..., 1:, :, :pad[0] * 2, :] *= wh
-    patches[..., :-1, :, -pad[0] * 2:, :] *= wh.flip(0)
-    patches[..., :, 1:, :, :pad[1] * 2] *= ww
-    patches[..., :, :-1, :, -pad[1] * 2:] *= ww.flip(1)
+    if pad[0] != 0:
+        patches[..., 1:, :, :pad[0] * 2, :] *= wh
+        patches[..., :-1, :, -pad[0] * 2:, :] *= wh.flip(0)
+    if pad[1] != 0:
+        patches[..., :, 1:, :, :pad[1] * 2] *= ww
+        patches[..., :, :-1, :, -pad[1] * 2:] *= ww.flip(1)
 
     if linear_conv:
         padding = 'linear'
@@ -205,14 +216,13 @@ def spots2image(size: Size2d, r: Ts, c: Ts, value: Ts, mask: Ts = None):
     :type size: int | tuple[int, int]
     :param Tensor r: Row indices of the spots. A tensor of shape ``(..., N, spp)``.
     :param Tensor c: Column indices of the spots. A tensor of shape ``(..., N, spp)``.
-    :param Tensor value: Values of the spots. A tensor of shape ``(..., N)``.
+    :param Tensor value: Values of the spots. A tensor of shape ``(..., N, spp)``.
     :param Tensor mask: A validity mask with same shape as ``r`` and ``c``.
         If not given, all spots are considered valid.
     :return: Formed image. A tensor of shape ``(..., H, W)``.
     :rtype: Tensor
     """
     size = size2d(size)
-    value = value.unsqueeze(-1)
     if mask is None:
         broadcastable = _t.broadcastable(r, c, value)
         pre_shape = torch.broadcast_shapes(r.shape, c.shape, value.shape)[:-2]
@@ -242,7 +252,7 @@ def spots2image(size: Size2d, r: Ts, c: Ts, value: Ts, mask: Ts = None):
         _t.as1d(torch.arange(dim_size, device=value.device), len(pre_shape) + 2, i)
         for i, dim_size in enumerate(pre_shape)
     ]  # (..., N, spp)
-    image = value.new_zeros(pre_shape + (size[0] + 2, size[1] + 2))  # (..., H+2, W+2)
+    image = value.new_zeros(pre_shape + (h + 2, w + 2))  # (..., H+2, W+2)
     v1 = value * w_c  # (..., N, spp)
     v2 = value * iw_c
     image.index_put_(pre_idx + [r_as, c_as], torch.where(mask, v1 * w_r, 0), True)  # top left

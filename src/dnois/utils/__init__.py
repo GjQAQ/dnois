@@ -9,4 +9,4 @@ from .image import *
 from .misc import *
 from .vis import *
 
-from . import check, grid, image, vis
+from . import check, image, vis

@@ -2,6 +2,7 @@ import math
 
 import torch
 
+from .. import utils
 from ..base.typing import Numeric, Ts, overload
 
 __all__ = [
@@ -25,6 +26,9 @@ def circle_of_confusion(pupil_diameter: Numeric, sensor_distance: Numeric, image
 def circle_of_confusion(pupil_diameter: Numeric, fl: Numeric, d: Numeric, focal_d: Numeric = None) -> Numeric:
     r"""
     Returns the diameter of circle of confusion :math:`D_\text{COC}`.
+
+    .. warning::
+        The behavior of this function when any of the arguments is infinite is undefined.
 
     Thin function has two overloaded forms:
 
@@ -87,6 +91,12 @@ def objd(img_d: Numeric, fl_obj: Numeric, fl_img: Numeric = None, diopter: Numer
         .. math::
             s=\frac{fs'}{s'-f'}
 
+        .. note::
+            ``fl_obj`` will be returned if ``img_d`` is infinite.
+
+        .. warning::
+            The behavior of this function when ``fl_obj`` or ``fl_img`` is infinite is undefined.
+
         :param img_d: Image distance :math:`s'`.
         :type img_d: float or Tensor
         :param fl_obj: Object focal length :math:`f`.
@@ -94,11 +104,16 @@ def objd(img_d: Numeric, fl_obj: Numeric, fl_img: Numeric = None, diopter: Numer
         :param fl_img: Image focal length :math:`f'`. Default: identical to ``fl_obj``.
         :type fl_img: float or Tensor
 
+    -------------------
+
     .. function:: objd(img_d, n_obj, n_img, diopter)
         :no-index:
 
         .. math::
             s=\frac{n_1s'}{\phi s'-n_2}
+
+        .. note::
+            ``n_obj / diopter`` will be returned if ``img_d`` is infinite.
 
         :param img_d: Image distance :math:`s'`.
         :type img_d: float or Tensor
@@ -112,13 +127,19 @@ def objd(img_d: Numeric, fl_obj: Numeric, fl_img: Numeric = None, diopter: Numer
     :return: Object distance :math:`s`.
     :rtype: float or Tensor
     """
-    if diopter is None:
+    if diopter is None:  # given two focal lengths
         if fl_img is None:
             fl_img = fl_obj
-        return fl_obj / (1 - fl_img / img_d)
-    else:
+        return utils.InfinityCond(
+            lambda x: fl_obj * x / (x - fl_img),
+            lambda x: fl_obj,
+        )(img_d)
+    else:  # given two refractive indices and diopter
         n_obj, n_img = fl_obj, fl_img
-        return n_obj * img_d / (diopter * img_d - n_img)
+        return utils.InfinityCond(
+            lambda x: n_obj * x / (diopter * x - n_img),
+            lambda x: n_obj / diopter,
+        )(img_d)
 
 
 @overload
@@ -143,6 +164,12 @@ def imgd(obj_d: Numeric, fl_obj: Numeric, fl_img: Numeric = None, diopter: Numer
         .. math::
             s'=\frac{f's}{s-f}
 
+        .. note::
+            ``fl_img`` will be returned if ``obj_d`` is infinite.
+
+        .. warning::
+            The behavior of this function when ``fl_obj`` or ``fl_img`` is infinite is undefined.
+
         :param obj_d: Object distance :math:`s`.
         :type obj_d: float or Tensor
         :param fl_obj: Object focal length :math:`f`.
@@ -150,11 +177,17 @@ def imgd(obj_d: Numeric, fl_obj: Numeric, fl_img: Numeric = None, diopter: Numer
         :param fl_img: Image focal length :math:`f'`. Default: identical to ``fl_obj``.
         :type fl_img: float or Tensor
 
+    -------------------------
+
     .. function:: imgd(obj_d, n_obj, n_img, diopter)
         :no-index:
 
         .. math::
             s'=\frac{n_2s}{\phi s-n_1}
+
+        .. note::
+            ``n_img / diopter`` will be returned if ``obj_d`` is infinite.
+
 
         :param obj_d: Object distance :math:`s`.
         :type obj_d: float or Tensor

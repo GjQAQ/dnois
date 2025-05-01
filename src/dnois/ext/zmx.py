@@ -17,6 +17,18 @@ class ZmxParsingError(RuntimeError):
 
 
 def slist_from_zmx(file: str | Path | typing.TextIO) -> rt.CoaxialSurfaceList:
+    """
+    Parse a ZMX file and return a :class:`~dnois.optics.rt.CoaxialSurfaceList` object.
+
+    .. warning::
+        This function is experimental and is subject to change.
+
+    :param file: The ZMX file to be parsed. Can be either a file path (``str`` or ``pathlib.Path``),
+        or a file-like object (implementing ``readlines()``).
+    :type file: str | Path | typing.TextIO
+    :return: A :class:`~dnois.optics.rt.CoaxialSurfaceList` object.
+    :rtype: ~dnois.optics.rt.CoaxialSurfaceList
+    """
     if isinstance(file, str):
         file = Path(file)
     if isinstance(file, Path):
@@ -44,6 +56,7 @@ def slist_from_zmx(file: str | Path | typing.TextIO) -> rt.CoaxialSurfaceList:
 
             if len(line) > 4 and line[4] != ' ':
                 raise ZmxParsingError(f'Undefined format({line_num}): {line}')
+            # one line in a surface context, example: TYPE STANDARD
             zmx_surf_list[current_surf_idx].append(line.split(' ', 1))
         else:  # without indentation
             if line.startswith('SURF'):  # start of a surface
@@ -69,7 +82,9 @@ def _surface_from_zmx_segment(segments: list[list[str]], idx: int, unit: str) ->
     else:
         raise ZmxParsingError(f'Type not found for surface {idx}')
 
-    if stype == 'PARAXIAL':
+    if stype == 'DGRATING':
+        surf = rt.Grating(**_parse_surface_args(segments, _parse_grating_segment, unit))
+    elif stype == 'PARAXIAL':
         surf = rt.ThinLens(**_parse_surface_args(segments, _parse_thin_lens_segment, unit), fl_equal=True)
     elif stype == 'STANDARD':
         surf = rt.Conic(**_parse_surface_args(segments, _parse_conic_segment, unit))
@@ -89,18 +104,6 @@ def _parse_surface_args(segments: list[list[str]], segment_parser, unit: str) ->
     return args
 
 
-def _parse_thin_lens_segment(segment: list[str], unit: str) -> tuple[str | None, typing.Any]:
-    key, value = segment
-    if key == 'PARM':
-        param_n, param_v = value.split(' ', 1)
-        if param_n == '1':
-            return 'fl1', base.Length.as_default(float(param_v), unit)
-        else:
-            return None, None
-    else:
-        return _parse_segment_common(segment, unit)
-
-
 def _parse_conic_segment(segment: list[str], unit: str) -> tuple[str | None, typing.Any]:
     key, value = segment
     if key == 'CURV':
@@ -109,6 +112,33 @@ def _parse_conic_segment(segment: list[str], unit: str) -> tuple[str | None, typ
         except ZeroDivisionError:
             roc = float('inf')
         return 'roc', base.Length.as_default(roc, unit)
+    else:
+        return _parse_segment_common(segment, unit)
+
+
+def _parse_grating_segment(segment: list[str], unit: str) -> tuple[str | None, typing.Any]:
+    key, value = segment
+    if key == 'PARM':
+        param_n, param_v = value.split(' ', 1)
+        if param_n == '1':
+            return 'period', base.Length.as_default(1 / float(param_v), 'um')
+        elif param_n == '2':
+            order = int(param_v)
+            return 'orders', (order, order)
+        else:
+            return None, None
+    else:
+        return _parse_segment_common(segment, unit)
+
+
+def _parse_thin_lens_segment(segment: list[str], unit: str) -> tuple[str | None, typing.Any]:
+    key, value = segment
+    if key == 'PARM':
+        param_n, param_v = value.split(' ', 1)
+        if param_n == '1':
+            return 'fl1', base.Length.as_default(float(param_v), unit)
+        else:
+            return None, None
     else:
         return _parse_segment_common(segment, unit)
 

@@ -1,4 +1,5 @@
 import abc
+import copy
 import collections.abc
 import functools
 import warnings
@@ -61,6 +62,9 @@ def _rotation_mat(angles: Ts) -> Ts:
         torch.stack([-s[2] * c[1] * c[0] - c[2] * s[0], -s[2] * c[1] * s[0] + c[2] * c[0], s[2] * s[1]]),
         torch.stack([s[1] * c[0], s[1] * s[0], c[1]]),
     ])
+
+
+Sampler = typing.Callable[[], tuple[Ts, Ts]]
 
 
 class Context(_t.EnhancedModule):
@@ -339,14 +343,14 @@ class CoaxialContext(Context):
     def g2l(self, x: Ts, direction: bool = False) -> Ts:
         if not direction:
             x = x.clone()
-            x[..., 2] -= self.baseline
+            x = torch.cat([x[..., :2], x[..., [2]] - self.baseline], dim=-1)
         return super().g2l(x, direction)
 
     def l2g(self, x: Ts, direction: bool = False) -> Ts:
         x = super().l2g(x, direction)
         if not direction:
             x = x.clone()
-            x[..., 2] += self.baseline
+            x = torch.cat([x[..., :2], x[..., [2]] + self.baseline], dim=-1)
         return x
 
     def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
@@ -368,9 +372,6 @@ class CoaxialContext(Context):
         for s in self.surface_list[1:idx]:
             z = z + s.context.distance
         return z
-
-
-Sampler = typing.Callable[[], tuple[Ts, Ts]]
 
 
 class Aperture(_t.EnhancedModule, metaclass=abc.ABCMeta):
@@ -446,6 +447,15 @@ class Aperture(_t.EnhancedModule, metaclass=abc.ABCMeta):
             raise ValueError(f'Unknown sampling mode for {self.__class__.__name__}: {mode}')
         return meth(*args, **kwargs)
 
+    def sample_center(self) -> tuple[Ts, Ts]:
+        """
+        Return the central point of the aperture.
+
+        :return: Two ``[0.]`` tensors.
+        :rtype: tuple[Tensor, Tensor]
+        """
+        return self.new_tensor([0.]), self.new_tensor([0.])
+
     def sampler(self, mode: str, *args, **kwargs) -> Sampler:
         """
         Returns a callable object that can be used to sample points on this aperture.
@@ -472,7 +482,7 @@ class Aperture(_t.EnhancedModule, metaclass=abc.ABCMeta):
             if sub.__name__ == ty:
                 return typing.cast(type[Aperture], sub).from_dict(d)  # Calling eponymous method of subclass
         aperture_types = [sub.__name__ for sub in subs]
-        raise RuntimeError(f'Unknown aperture type: {ty}. Available: {aperture_types}')
+        raise RuntimeError(utils.invalid_option_msg('aperture type', ty, aperture_types))
 
 
 class CircularAperture(Aperture):
@@ -660,6 +670,12 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
         self._nt_threshold_strict = newton_config.get('threshold_strict', NT_THRESHOLD_STRICT)
         self._nt_update_bound = newton_config.get('update_bound', NT_UPDATE_BOUND)
         self._nt_epsilon = newton_config.get('epsilon', NT_EPSILON)
+
+    def __deepcopy__(self, memo):
+        copied = super().__deepcopy__(memo)
+        if mt.registered(self.material.name):  # to avoid the materials registered globally to be deeply copied
+            copied.material = self.material
+        return copied
 
     @abc.abstractmethod
     def h(self, x: Ts, y: Ts) -> Ts:
@@ -901,7 +917,7 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
         for sub in subs:
             if sub.__name__ == ty:
                 return typing.cast(type[Surface], sub).from_dict(d)  # calling eponymous method of subclass
-        raise RuntimeError(f'Unknown surface type: {ty}. Available: {surface_types(True)}')
+        raise RuntimeError(utils.invalid_option_msg('surface type', ty, surface_types(True)))
 
     @staticmethod
     def backward_valid(valid: Ts) -> Ts:
@@ -950,6 +966,12 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
 
 
 class Planar(Surface):
+    """
+    Planar surface.
+
+    See :class:`Surface` for description of parameters.
+    """
+
     def __init__(
         self,
         material: mt.Material | str = DEFAULT_MATERIAL,
@@ -988,7 +1010,17 @@ class Planar(Surface):
 
 
 class Stop(Planar):
-    def __init__(self, aperture: Aperture = None, move_ray: bool = True, *, d: Scalar = None):
+    """
+    This type of surfaces only blocks rays outside the aperture and does not change their
+    energy or direction.
+
+    See :class:`Surface` for description of more parameters.
+
+    :param bool move_ray: If ``True``, rays output by this surface (through ``forward`` method)
+        will be moved to the surface. Otherwise, their origins are kept. Default: ``False``.
+    """
+
+    def __init__(self, aperture: Aperture = None, move_ray: bool = False, *, d: Scalar = None):
         super().__init__('vacuum', aperture, False, d=d)  # material is ignored
         self._move_ray = move_ray
 
@@ -1155,6 +1187,15 @@ class CircularSurface(Surface, metaclass=abc.ABCMeta):
 
 
 class CircularStop(Stop, CircularSurface):
+    """
+    Stops whose aperture is circularly symmetric.
+
+    See :class:`Stop` for description of more parameters.
+
+    :param aperture: Diameter of the aperture. Default: infinity.
+    :type aperture: float or 0D Tensor
+    """
+
     def __init__(self, aperture: Scalar = DEFAULT_APERTURE_D, *, d: Scalar = None):
         if isinstance(aperture, float):
             aperture = CircularAperture(aperture)
@@ -1208,11 +1249,24 @@ class SurfaceList(nn.ModuleList, collections.abc.MutableSequence, utils.VarHookM
         """:meta private:"""
         return self._slist.__contains__(item)
 
-    def __delitem__(self, key):
+    def __delitem__(self, key: int | slice):
         """:meta private:"""
+        stop = self.stop
+
         super().__delitem__(key)
-        self._slist.__getitem__(key).context = None
+        if isinstance(key, slice):
+            self._discard(*self._slist[key])
+        elif isinstance(key, int):
+            self._discard(self._slist[key])
+        else:
+            raise TypeError(f'key must be int or slice, got {type(key).__name__}')
         self._slist.__delitem__(key)
+
+        if stop is not None:
+            if stop in self:
+                self._stop_idx = self.index(stop)
+            else:
+                self._stop_idx = None
 
     def __getitem__(self, item) -> Surface | list[Surface]:
         """:meta private:"""
@@ -1220,10 +1274,16 @@ class SurfaceList(nn.ModuleList, collections.abc.MutableSequence, utils.VarHookM
 
     def __iadd__(self, other: Sequence[Surface]) -> Self:
         """:meta private:"""
+        if isinstance(other, SurfaceList):
+            if other.mt_head != self.mt_tail:
+                warnings.warn(f'The last material of former surface list {self.mt_tail.name} is different from '
+                              f'the first material of latter surface list {other.mt_head.name}.')
+            if self._stop_idx is not None and other._stop_idx is not None:
+                warnings.warn(f'Two stop exist. The former one is used.')
         self.extend(other)
         return self
 
-    def __iter__(self):
+    def __iter__(self) -> typing.Iterator[Surface]:
         """:meta private:"""
         return self._slist.__iter__()
 
@@ -1231,33 +1291,40 @@ class SurfaceList(nn.ModuleList, collections.abc.MutableSequence, utils.VarHookM
         """:meta private:"""
         return self._slist.__len__()
 
-    def __reversed__(self) -> 'SurfaceList':
+    def __reversed__(self) -> Self:
         """:meta private:"""
-        return SurfaceList(list(self._slist.__reversed__()), self.mt_head)
+        sl = copy.deepcopy(self)
+        sl.reverse()
+        return sl
 
     def __setitem__(self, key: int, value: Surface):
         """:meta private:"""
         self._welcome(value)
         super().__setitem__(key, value)
         self._slist.__setitem__(key, value)
+        if key == self.stop_idx:
+            warnings.warn(f'The surface {key} which is the stop is modified. Please make sure the new surface '
+                          f'is still stop or re-specify a stop.')
 
-    def __add__(self, other: Sequence[Surface]) -> 'SurfaceList':
+    def __add__(self, other: Sequence[Surface]) -> Self:
         """:meta private:"""
-        return SurfaceList(self._slist + list(other), self.mt_head)
+        copied = copy.deepcopy(self)
+        copied.extend(other)
+        return copied
 
     def __dir__(self):
         """:meta private:"""
-        return super().__dir__() + ['env_material']
+        return super().__dir__() + ['env_material', 'stop_idx']
 
     def append(self, surface: Surface):
         """:meta private:"""
+        # self._slist.append cannot be called because of the same reason in extend()
         self._welcome(surface)
         super().append(surface)
 
     def clear(self):
         """:meta private:"""
-        for s in self._slist:
-            s.context = None
+        self._discard(*self._slist)
         self._slist.clear()
         self._super_clear()
 
@@ -1267,6 +1334,8 @@ class SurfaceList(nn.ModuleList, collections.abc.MutableSequence, utils.VarHookM
 
     def extend(self, surfaces: Sequence[Surface]):
         """:meta private:"""
+        # self._slist.extend cannot be called here because super().extend() calls add_module()
+        # where the new surfaces will be added to self._slist
         self._welcome(*surfaces)
         super().extend(surfaces)
 
@@ -1280,13 +1349,14 @@ class SurfaceList(nn.ModuleList, collections.abc.MutableSequence, utils.VarHookM
     def insert(self, index: int, surface: Surface):
         """:meta private:"""
         self._welcome(surface)
-        super().insert(index, surface)
+        # self._slist.insert must be called because super().insert() does not call add_module()
         self._slist.insert(index, surface)
+        super().insert(index, surface)
 
     def pop(self, index: int = -1) -> Surface:
         """:meta private:"""
         s = super().pop(index)
-        s.context = None
+        self._discard(s)
         return s
 
     def remove(self, value: Surface):
@@ -1296,10 +1366,13 @@ class SurfaceList(nn.ModuleList, collections.abc.MutableSequence, utils.VarHookM
 
     def reverse(self):
         """:meta private:"""
-        ss = self._slist.copy()
-        self._slist.clear()
-        self._super_clear()
-        self.extend(ss)
+        sl = list(reversed(self._slist))
+        stop_idx = None if self.stop_idx is None else sl.index(self.stop)
+        m = self.mt_tail
+        self.clear()
+        self.extend(sl)
+        self.mt_head = m
+        self._stop_idx = stop_idx
 
     def extra_repr(self) -> str:
         return f'foremost_material={self.mt_head.name}, stop_idx={self.stop_idx}'
@@ -1338,23 +1411,57 @@ class SurfaceList(nn.ModuleList, collections.abc.MutableSequence, utils.VarHookM
             'stop_idx': self._stop_idx,
         }
 
+    def slice(self, ids: slice | Sequence[int]) -> Self:
+        if isinstance(ids, slice):
+            s = self._slist[ids]
+        else:
+            s = [self._slist[idx] for idx in ids]
+        cls = self.__class__  # compatible with the coaxial subclass
+        if len(s) == 0:
+            return cls([])
+
+        cloned = [copy.deepcopy(surf) for surf in s]
+        self._discard(*cloned)
+        m = self._slist[s[0].index].context.material_before
+        if self.stop is not None and self.stop in s:
+            stop_idx = s.index(self.stop)
+        else:
+            stop_idx = None
+        return cls(cloned, m, stop_idx)
+
     @property
     def first(self) -> Surface:
         """
-        Returns the first surface.
+        Returns the first surface. This property can be set or deleted.
 
         :type: :class:`Surface`.
         """
         return self[0]
 
+    @first.setter
+    def first(self, surface: Surface):
+        self[0] = surface
+
+    @first.deleter
+    def first(self):
+        del self[0]
+
     @property
     def last(self) -> Surface:
         """
-        Returns the last surface.
+        Returns the last surface. This property can be set or deleted.
 
         :type: :class:`Surface`.
         """
         return self[-1]
+
+    @last.setter
+    def last(self, surface: Surface):
+        self[-1] = surface
+
+    @last.deleter
+    def last(self):
+        del self[-1]
 
     @property
     def is_empty(self) -> bool:
@@ -1426,6 +1533,11 @@ class SurfaceList(nn.ModuleList, collections.abc.MutableSequence, utils.VarHookM
     def _make_ctx(self, s):
         return Context(s, self)
 
+    @classmethod
+    def _discard(cls, *old: Surface):
+        for surface in old:
+            surface.context = None
+
 
 class CoaxialSurfaceList(SurfaceList):
     """A subclass of :class:`SurfaceList` to contain coaxial surfaces."""
@@ -1459,6 +1571,12 @@ class CoaxialSurfaceList(SurfaceList):
         if d is not None:
             del s._distance  # noqa
         return CoaxialContext(s, self, d)
+
+    @classmethod
+    def _discard(cls, *old: Surface):
+        for s in old:
+            s._distance = s.ctx.distance
+        super()._discard(*old)
 
 
 def surface_types(name_only: bool = False) -> list[type[Surface]] | list[str]:

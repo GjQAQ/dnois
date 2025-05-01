@@ -51,6 +51,7 @@ Accessing materials
     is_available
     list_all
     register
+    registered
     remove
     update
 

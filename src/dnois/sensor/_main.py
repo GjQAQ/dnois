@@ -2,7 +2,7 @@ import torch
 
 from ._func import *
 from .noise import gaussian
-from .. import utils
+from .. import utils, isp
 from ..base.typing import Pair, Size2d, Ts, size2d, pair
 
 __all__ = [
@@ -39,6 +39,7 @@ class Sensor(torch.nn.Module):
     :param pixel_size: Height and width of a pixel in meters.
     :type pixel_size: float or tuple[float, float]
     """
+
     def __init__(self, pixel_num: Size2d, pixel_size: Pair[float]):
         pixel_num = size2d(pixel_num)
         pixel_size = pair(pixel_size, float)
@@ -101,6 +102,7 @@ class StandardSensor(Sensor):
     :param float max_value: Maximum possible value of output signal. Default: 1.
     :param int _quantize: Quantization level. The output signal will not be
         quantized if a negative or zero value is given. Default: 256.
+    :param bool linear2srgb: Whether to convert linear RGB to sRGB. Default: ``True``.
     :param bool differentiable_quant: See :py:func:`quantize`. Default: ``True``.
     """
 
@@ -118,8 +120,9 @@ class StandardSensor(Sensor):
         noise_std: float | tuple[float, float] = 0.,
         max_value: float = 1.,
         _quantize: int = 256,
+        linear2srgb: bool = True,
         differentiable_quant: bool = True,
-    ):  # TODO: Gamma correction
+    ):
         super().__init__(pixel_num, pixel_size)
         self.rgb: bool = rgb  #: RGB sensor or not.
         #: Bayer CFA pattern. See :py:func:`rgb2raw`
@@ -127,6 +130,7 @@ class StandardSensor(Sensor):
         self.noise_std: float | tuple[float, float] = noise_std  #: Standard deviation of Gaussian noise.
         self.max_value: float = max_value  #: Maximum possible value of signal.
         self.quantize: int = _quantize  #: Quantization level.
+        self.linear2srgb: bool = linear2srgb  #: Whether to convert linear RGB to sRGB.
         #: Whether to perform differentiable quantization.
         self.differentiable_quantization: bool = differentiable_quant
 
@@ -179,6 +183,9 @@ class StandardSensor(Sensor):
 
         signal = gaussian(transmitted, self.noise_std)
         signal = signal.clip(0., self.max_value)
+
+        if self.linear2srgb:
+            signal = isp.linear2srgb(signal / self.max_value) * self.max_value
 
         if self.quantize <= 0:
             return signal

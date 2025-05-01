@@ -14,9 +14,21 @@ __all__ = [
     'Angle',
 ]
 
+float_print_fmt: str = '.6g'
+
+
+def fmt(v: float) -> str:  # this function is not public and hence without docstring
+    s = f'{{:{float_print_fmt}}}'
+    return s.format(v)
+
 
 class Unit(Enum):
-    """Base class of all units."""
+    """
+    Base class of all units.
+
+    :param str symbol: Symbol of this unit, e.g. ``'m'`` for meter.
+    :param float scale: Scale factor to convert this unit to another unit of the same type.
+    """
 
     def __init__(self, symbol: str, scale: float):
         self.symbol: str = symbol  #: Symbol of this unit.
@@ -63,7 +75,7 @@ class Unit(Enum):
         return [member.name for member in cls] + [member.symbol for member in cls]
 
     @classmethod
-    def from_str(cls, name: str):
+    def from_str(cls, name: str) -> typing.Self:
         """
         Retrieve unit by name.
 
@@ -110,6 +122,8 @@ class Unit(Enum):
         :param default_unit: Default unit to be set. Default: do not set.
         :return: Current global default unit.
         """
+        if cls == Unit:
+            raise TypeError(f'Cannot call {cls.default.__name__} on base class {cls.__name__}')
         if default_unit is not None:
             if not isinstance(default_unit, Unit):
                 default_unit = cls.from_str(default_unit)
@@ -137,6 +151,38 @@ class Unit(Enum):
         :return: Converted quantity.
         """
         return cls.convert(value, _default_units[cls.type()], to_unit)
+
+    @classmethod
+    def fmt(cls, value: int | float, unit: str | typing.Self = None) -> str:
+        """
+        Format a value with unit.
+
+        .. testsetup::
+
+            import dnois
+            dnois.Length.default('m')
+
+        >>> from dnois import Length
+        >>> Length.fmt(1)
+        1m
+        >>> Length.fmt(1, 'cm')
+        1cm
+        >>> Length.fmt(float('inf'))
+        inf
+
+        :param value: The value to be formatted.
+        :param unit: Unit of ``value``. Default: use global default unit.
+        :return: Formatted string.
+        """
+        if value == float('inf') or value == float('-inf'):
+            return str(value)
+        if value == float('nan'):
+            return 'nan'
+        if unit is None:
+            unit = cls.default()
+        if not isinstance(unit, Unit):
+            unit = cls.from_str(unit)
+        return fmt(value) + unit.symbol
 
 
 class Length(Unit):

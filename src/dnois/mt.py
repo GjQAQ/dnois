@@ -30,6 +30,7 @@ __all__ = [
     'list_all',
     'refractive_index',
     'register',
+    'registered',
     'remove',
 
     'Cauchy',
@@ -471,6 +472,20 @@ def get(name: str, default_none: bool = False) -> Union[Material, None]:
             return None
         raise KeyError(f'Unknown material: {name}')
     return m
+
+
+def registered(name: str) -> bool:
+    """
+    Check if a material is registered in material library by name.
+
+    .. warning::
+        Materials with the same name are seen as identical by this function.
+
+    :param str name: Name of the material.
+    :return: If the material is registered.
+    :rtype: bool
+    """
+    return name in _lib
 
 
 def search(pattern: str | re.Pattern) -> list[Material]:

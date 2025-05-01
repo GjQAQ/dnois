@@ -103,7 +103,8 @@ class ObjectSpaceMixIn(_t.TensorContainerMixIn):
         :ref:`guide_imodel_ccs_inf`.
 
         :param tanfov: Tangents of FoV angles of points in radians. A tensor with shape ``(..., 2)``
-            where the last dimension indicates x and y FoV angles.
+            where the last dimension indicates x and y FoV angles. A list of 2-tuples of ``float``
+            is seen as a tensor with shape ``(N, 2)``.
         :type tanfov: Sequence[tuple[float, float]] or Tensor
         :param depth: Depths of points. A tensor with any shape that is
             broadcastable with ``tanfov`` other than its last dimension.
@@ -425,7 +426,6 @@ class RenderImageSceneMixIn(PerspectiveMixIn, metaclass=abc.ABCMeta):
           where :math:`t` is drawn uniformly from :math:`[0,1]`. An optional ``sampling_curve``
           (denoted by :math:`\Gamma`) can be given to control its values.
           By default, :math:`\Gamma` is constructed so that the inverse of depth is evenly spaced.
-        - If a 0D tensor, returns it but as a 1D tensor with length one.
         - If a 1D tensor, returns it as-is.
 
         :param depth: See the eponymous argument of :class:`PsfImagingOptics` for details.
@@ -817,6 +817,7 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         depth: Vector | Double[Ts] = None,
         psf_size: Size2d = None,
         norm_psf: bool = None,
+        point_by_point: bool = False,
         **kwargs
     ) -> Ts:
         r"""
@@ -837,6 +838,10 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         :param depth: See :class:`PsfImagingOptics`. Default: :attr:`.depth`.
         :param psf_size: See :class:`PsfImagingOptics`. Default: :attr:`.psf_size`.
         :param bool norm_psf: See :class:`PsfImagingOptics`. Default: :attr:`.norm_psf`.
+        :param bool point_by_point: This method may take up huge amount of memory when
+            ``segments`` is large. If ``point_by_point`` is ``True``, the method will
+            compute PSFs of all patches one-by-one to ensure feasibility at the cost
+            of computational efficiency. Default: ``False``.
         :param kwargs: Additional keyword arguments passed to :meth:`.psf`.
         :return: Computed :ref:`imaged radiance field <guide_overview_irf>`.
             A tensor of shape :math:`(B, N_\lambda, H, W)`.
@@ -854,15 +859,27 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
                           f'for {self.patchwise_render.__qualname__}')
 
         scene = scene.batch()
-        n_b, n_wl, n_h, n_w = scene.image.shape
         if not (torch.is_tensor(depth) and depth.numel() == 1):
-            depth = torch.stack([self.random_depth(depth) for _ in range(n_b)])  # B(1)
+            depth = torch.stack([self.random_depth(depth) for _ in range(scene.image.size(0))])  # B(1)
         # B(1) x N_y x N_x x 3
         obj_points = self.points_grid(cast(Double[int], segments), depth.flatten())
         obj_points = _symmetric_patch(obj_points, self.x_symmetric, self.y_symmetric)
 
-        psf = self.psf(obj_points, psf_size, wl, norm_psf, **kwargs)  # B(1) x N_y x N_x x N_wl x H x W
-        psf = _stitch_symmetric(psf, segments[0], segments[1], self.x_symmetric, self.y_symmetric)
+        psf_cache = kwargs.pop('_psf_cache', None)  # experimental feature
+        if psf_cache is not None:
+            psf = psf_cache
+        else:
+            if point_by_point:
+                psf = torch.stack([
+                    torch.stack([
+                        torch.stack([
+                            self.psf(p3, psf_size, wl, norm_psf, **kwargs) for p3 in p2.unbind()  # (3,)
+                        ]) for p2 in p1.unbind()  # (N_x, 3)
+                    ]) for p1 in obj_points.unbind()  # (N_y, N_x, 3)
+                ])  # B(1) x N_y x N_x x N_wl x H x W
+            else:
+                psf = self.psf(obj_points, psf_size, wl, norm_psf, **kwargs)  # B(1) x N_y x N_x x N_wl x H x W
+            psf = _stitch_symmetric(psf, segments[0], segments[1], self.x_symmetric, self.y_symmetric)
         psf = self.variable_hook('patchwise_render.psf', psf)
 
         psf = psf.permute(0, 3, 1, 2, 4, 5)  # B(1) x N_wl x N_y x N_x x H x W

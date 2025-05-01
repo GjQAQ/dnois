@@ -23,6 +23,7 @@ PsfCenter = typing.Literal['linear', 'mean', 'mean-robust', 'chief']
 PsfType = typing.Literal['inc_rect', 'inc_gaussian', 'coh_kirchoff', 'coh_huygens', 'coh_fraunhofer']
 FovType = typing.Literal['perspective', 'chief', 'average']
 PupilType = typing.Literal['probe', 'trace', 'paraxial']
+FlType = typing.Literal['paraxial']
 ChiefSide = typing.Literal['obj', 'img', 'object', 'image']
 WlReduction = typing.Literal['none', 'mean', 'center']
 PupilSpec = typing.Double[Ts]  # radius, z-coordinate
@@ -65,7 +66,9 @@ def _plot_rays_3d(ax, ray1: BatchedRay, ray2: BatchedRay, colors: list[str], lss
             )
 
 
-def _make_direction(sampled_point: Ts, origin: Ts, normalize: bool = False) -> tuple[Ts, Ts | None]:
+def _make_direction(
+    sampled_point: Ts, origin: Ts, normalize: bool = False, forward: bool = True
+) -> tuple[Ts, Ts | None]:
     # Typically, to create rays, some origins in object space are selected
     # and some points are sampled on the first surface in a system. The directions
     # of rays are thus the vectors pointing to sampled points from origins.
@@ -73,17 +76,10 @@ def _make_direction(sampled_point: Ts, origin: Ts, normalize: bool = False) -> t
     # y coordinates of origins are assumed to be finite and serve as the tangents
     # of x and y FoV, respectively
     # sampled_point and origin are all assumed to be in LCS
-    is_inf = origin[..., 2].isinf()
-    if is_inf.all():
-        d = torch.cat([-origin[..., :2], torch.ones_like(origin[..., [2]])], -1)
-    else:
-        d = sampled_point - origin
-        if is_inf.any():
-            d = torch.where(
-                is_inf.unsqueeze(-1),
-                torch.cat([-origin[..., :2], torch.ones_like(origin[..., [2]])], -1),
-                d
-            )
+    d = utils.InfinityCond(
+        lambda _: sampled_point - origin,
+        lambda z: torch.cat([-origin[..., :2], torch.ones_like(z)], -1) * (1 if forward else -1)
+    )(origin[..., [2]])
     if normalize:
         length = d.norm(2, -1)
         return d / length.unsqueeze(-1), length
@@ -223,7 +219,11 @@ if ext.vis.mpl_available():
         ) -> plt.Figure:
             pass
 
-        def _plot_components(self: 'CoaxialRayTracing', ax, points: int = 100):
+        def _plot_components(
+            self: 'CoaxialRayTracing',
+            ax,
+            points: int = 100,
+        ):  # TODO: handle infinite radius
             edge_z = []
             for sf in self.surfaces:  # surfaces
                 sf: surf.CircularSurface
@@ -234,13 +234,13 @@ if ext.vis.mpl_available():
                     ax.plot(
                         [[z, z, z - length / 2, z - length / 2], [z, z, z + length / 2, z + length / 2]],
                         [[r, -r, r, -r], [r + length, -r - length, r, -r]],
-                        color='black', linewidth=1
+                        **self._ls_surf
                     )
                     edge_z.append(None)
                 else:
                     y = torch.linspace(-sf.apt.radius, sf.apt.radius, points, device=self.device)
                     z = sf.h_extended(torch.zeros_like(y), y) + sf.ctx.baseline
-                    ax.plot(utils.t4plot(z), utils.t4plot(y), color='black', linewidth=1)
+                    ax.plot(utils.t4plot(z), utils.t4plot(y), **self._ls_surf)
                     edge_z.append(z[-1].item())
             for i in range(len(self.surfaces) - 1):  # edges
                 if self.surfaces[i].material.name == 'vacuum':
@@ -294,7 +294,7 @@ if ext.vis.mpl_available():
                 if isinf:
                     fov_labels = [fr'${utils.fmt(math.degrees(math.atan(-h)))}^\circ$' for h in height.tolist()]
                 else:
-                    fov_labels = [fr'${utils.fmt(h)}{base.Length.default()}$' for h in height.tolist()]
+                    fov_labels = [fr'${base.Length.fmt(h)}$' for h in height.tolist()]
                 ax.legend(color_lines + fov_lines, color_labels + fov_labels)
 
 else:
@@ -409,6 +409,7 @@ class CoaxialRayTracing(
         with virtually many sampling points while memory footprint is reduced. Default: ``1``.
     :param float robust_mean_center_threshold: Threshold for robust mean center.
         Only used when :attr:`.psf_center` is ``'mean-robust'``. Default: ``0.7``.
+    :param bool intensity_aware: Whether to compute PSFs in intensity-aware manner. Default: ``False``.
     :param kwargs: Additional keyword arguments passed to :class:`PsfImagingOptics`.
 
     .. [#yang2023aberration] Yang, X., Fu, Q., Elhoseiny, M., & Heidrich, W. (2023).
@@ -426,7 +427,7 @@ class CoaxialRayTracing(
         'psf_type', 'psf_center',
         'coherent_tracing_samples', 'coherent_tracing_sampling_pattern',
         'fov_type', 'sampler', 'wl_reduction',
-        'repetitions'
+        'repetitions', 'intensity_aware',
     ]
 
     def __init__(
@@ -441,10 +442,11 @@ class CoaxialRayTracing(
         sampler: surf.Sampler = None,
         coherent_tracing_samples: int = 512,
         coherent_tracing_sampling_pattern: str = 'quadrapolar',
-        wl_reduction: WlReduction = 'mean',
+        wl_reduction: WlReduction = 'center',
         pupil_type: PupilType = 'paraxial',
         repetitions: int = 1,
         robust_mean_center_threshold: float = 0.7,
+        intensity_aware: bool = False,
         **kwargs
     ):
         if imaging_model == 'backward':
@@ -465,9 +467,7 @@ class CoaxialRayTracing(
         self.repetitions: int = repetitions  #: See :class:`CoaxialRayTracing`.
         self.robust_mean_center_threshold: float = robust_mean_center_threshold  #: See :class:`CoaxialRayTracing`.
         self.imaging_model: ImagingModel = imaging_model  #: See :class:`CoaxialRayTracing`.
-
-        if self.sampler is None and len(self.surfaces) > 0:
-            self.sampler = self.surfaces.first.aperture.sampler('random', 256)
+        self.intensity_aware: bool = intensity_aware  #: See :class:`CoaxialRayTracing`.
 
     @utils.with_external
     def render_image_scene(self, scene: _sc.ImageScene, imaging_model: ImagingModel = 'psf', **kwargs) -> Ts:
@@ -566,18 +566,32 @@ class CoaxialRayTracing(
         xy_on_sensor[..., 0] = -xy_on_sensor[..., 0]
         return xy_on_sensor
 
-    def trace_ray(self, ray: BatchedRay) -> BatchedRay:
-        out_ray: BatchedRay = self.surfaces(ray)
-        ref_idx = self.surfaces.last.material.n(out_ray.wl)
-        out_ray = out_ray.march_to(self.surfaces.total_length, ref_idx)
+    def trace_ray(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
+        out_ray: BatchedRay = self.surfaces(ray, forward)
+        if forward:
+            ref_idx = self.last.material.n(out_ray.wl)
+            out_ray = out_ray.march_to(self.surfaces.total_length, ref_idx)
         return out_ray
 
     @utils.with_external
-    def trace_point(self, point: Ts, wl: Vector = None, sampler: surf.Sampler = None) -> BatchedRay:
-        sampled = self.surfaces.first.sample(sampler)  # N_spp x 3
-        d, _ = _make_direction(sampled, self.cam2lens(point).unsqueeze(-2))  # ... x N_spp|1 x 3
-        ray = BatchedRay(sampled, d.unsqueeze(-3), wl.unsqueeze(-1))  # ... x N_wl x N_spp x 3
-        out_ray = self.trace_ray(ray)  # ... x N_wl x N_spp
+    def trace_point(
+        self,
+        point: Ts,
+        wl: Vector = None,
+        sampler: surf.Sampler = None,
+        intensity_aware: bool = None,
+        forward: bool = True,
+    ) -> BatchedRay:
+        if forward:
+            sampled = self.first.sample(sampler)  # N_spp x 3
+        else:
+            sampled = self.last.sample(sampler)  # N_spp x 3
+        d, _ = _make_direction(sampled, self.cam2lens(point).unsqueeze(-2), forward)  # ... x N_spp|1 x 3
+        ray = BatchedRay(
+            sampled, d.unsqueeze(-3), wl.unsqueeze(-1),
+            init_intensity=1. if intensity_aware else None
+        )  # ... x N_wl x N_spp x 3
+        out_ray = self.trace_ray(ray, forward)  # ... x N_wl x N_spp
         return out_ray
 
     @torch.no_grad()
@@ -642,6 +656,58 @@ class CoaxialRayTracing(
             psf = _func.norm_psf(psf)
         return psf
 
+    @utils.with_external
+    def focal_length1(
+        self, fl_type: FlType = 'paraxial', wl: Vector = None, wl_reduction: WlReduction = None, **kwargs
+    ):
+        """
+        Returns object focal length of the system.
+
+        :param str fl_type: The method to determine focal length.
+        :param wl: Wavelengths to compute. Focal length depends on wavelength because refractive indices do.
+        :type wl: float | Sequence[float] | Tensor
+        :param str wl_reduction: The way to reduce wavelength dimension. See :class:`CoaxialRayTracing`.
+        :return: Object focal length. A 0D tensor.
+        :rtype: Tensor
+        """
+        return self._focal_length(True, fl_type, wl, typing.cast(WlReduction, wl_reduction), **kwargs)
+
+    @utils.with_external
+    def focal_length2(
+        self, fl_type: FlType = 'paraxial', wl: Vector = None, wl_reduction: WlReduction = None, **kwargs
+    ):
+        """
+        Returns image focal length of the system.
+
+        :param str fl_type: The method to determine focal length.
+        :param wl: Wavelengths to compute. Focal length depends on wavelength because refractive indices do.
+        :type wl: float | Sequence[float] | Tensor
+        :param str wl_reduction: The way to reduce wavelength dimension. See :class:`CoaxialRayTracing`.
+        :return: Image focal length. A 0D tensor.
+        :rtype: Tensor
+        """
+        return self._focal_length(False, fl_type, wl, typing.cast(WlReduction, wl_reduction), **kwargs)
+
+    @utils.with_external
+    def focal_length_paraxial(self, obj_side: bool, wl: Vector = None) -> Ts:
+        """
+        Returns focal length of the system according to paraxial optics.
+
+        :param bool obj_side: Whether to find focal length of object side or image side otherwise.
+        :param wl: Wavelengths to compute. Focal length depends on wavelength because refractive indices do.
+        :type wl: float | Sequence[float] | Tensor
+        :return: Focal length. A 0D tensor.
+        :rtype: Tensor
+        """
+        paraxial = self.surfaces.first.paraxialize(wl)
+        for s in self.surfaces[1:]:
+            if isinstance(s, surf.Stop):
+                continue
+            if not surf.is_paraxializable(s):
+                raise RuntimeError(f'Surface {s.ctx.index} ({type(s).__name__}) is not paraxializable')
+            paraxial = paraxial.composite(s.paraxialize(wl))
+        return paraxial.fl1 if obj_side else paraxial.fl2
+
     def find_stop(
         self,
         depth: Scalar = float('inf'),
@@ -690,11 +756,7 @@ class CoaxialRayTracing(
 
     @utils.with_external
     def entr_pupil(
-        self,
-        pupil_type: PupilType = 'paraxial',
-        wl: Vector = None,
-        wl_reduction: WlReduction = None,
-        **kwargs
+        self, pupil_type: PupilType = 'paraxial', wl: Vector = None, wl_reduction: WlReduction = None, **kwargs
     ) -> PupilSpec:
         """
         Finds the entrance pupil of the system.
@@ -711,11 +773,7 @@ class CoaxialRayTracing(
 
     @utils.with_external
     def exit_pupil(
-        self,
-        pupil_type: PupilType = 'paraxial',
-        wl: Vector = None,
-        wl_reduction: WlReduction = None,
-        **kwargs
+        self, pupil_type: PupilType = 'paraxial', wl: Vector = None, wl_reduction: WlReduction = None, **kwargs
     ) -> PupilSpec:
         """
         Finds the exit pupil of the system.
@@ -765,8 +823,8 @@ class CoaxialRayTracing(
         # chief_ray = BatchedRay(points_chief, d_chief, wl, 0.)  # ... x N_wl x 1
         raise NotImplementedError()
 
-    @utils.with_external(exclude='sampler')
-    def pupil_trace(self, entr: bool, wl: Vector = None, sampler: surf.Sampler = None) -> PupilSpec:
+    @utils.with_external
+    def pupil_trace(self, entr: bool, wl: Vector = None) -> PupilSpec:
         """
         Finds pupils by tracing a bundle of rays emitted from a point located at the edge of stop.
         The focus of them is considered as a point on the edge of pupils.
@@ -774,7 +832,6 @@ class CoaxialRayTracing(
         :param bool entr: Whether to find entrance pupil or exit pupil otherwise.
         :param wl: Wavelengths to compute. Pupils depend on wavelength because refractive indices do.
         :type wl: float | Sequence[float] | Tensor
-        :param Callable sampler: See :class:`CoaxialRayTracing`.
         :return: Radius and z-coordinate in :ref:`LCS <guide_optics_rt_lcs>` of pupils.
             A 2-tuple of tensors of shape ``(N_wl,)``.
         :rtype: tuple[Tensor, Tensor]
@@ -786,10 +843,7 @@ class CoaxialRayTracing(
             return point[1], point[2]  # 0d
 
         adjacent = self.surfaces[stop_idx - 1] if entr else self.surfaces[stop_idx + 1]
-        if sampler is None:
-            end_points = adjacent.sample('unipolar')  # N_spp x 3
-        else:
-            end_points = adjacent.sample(sampler)  # N_spp x 3
+        end_points = adjacent.sample('unipolar')  # N_spp x 3
         d = end_points - point  # N_spp x 3
         ray = BatchedRay(end_points, d, wl.unsqueeze(-1))  # N_wl x N_spp
 
@@ -814,7 +868,7 @@ class CoaxialRayTracing(
         point, sublist = self._pupil_prepare(entr)
 
         for s in sublist:
-            if not isinstance(s, surf.ParaxialMixIn):
+            if not surf.is_paraxializable(s):
                 raise RuntimeError(f'Paraxial behavior of surface {s.ctx.index} ({type(s).__name__}) is not defined')
             point = s.px_image_point(wl, point, not entr)  # (N_wl x )3
         r, z = point[..., 1], point[..., 2]  # N_wl or 0d
@@ -880,7 +934,10 @@ class CoaxialRayTracing(
         if self.fov_type == 'perspective':
             return super().fov_x_lower
         elif self.fov_type == 'chief':
-            raise NotImplementedError()
+            sensor = self._sensor()
+            src = self.new_tensor([sensor.w / 2, 0, self.surfaces.total_length.item()])  # (3,)
+            ray = self.chief_ray(src, side='img')
+            out_ray = self.trace_ray(ray, False)
         elif self.fov_type == 'average':
             raise NotImplementedError()
         else:
@@ -920,14 +977,6 @@ class CoaxialRayTracing(
             raise ValueError(f'Unknown FoV type: {self.fov_type}')
 
     @property
-    def focal1(self) -> Ts:
-        raise NotImplementedError()
-
-    @property
-    def focal2(self) -> Ts:
-        raise NotImplementedError()
-
-    @property
     def principal1(self) -> Ts:
         # TODO: currently depth=0 plane is assumed to be z=0 plane, while incorrect
         return self.new_tensor(0.)
@@ -935,6 +984,18 @@ class CoaxialRayTracing(
     @property
     def principal2(self) -> Ts:
         raise NotImplementedError()
+
+    @property
+    def first(self) -> surf.Surface:
+        """The first optical surface.\n\n:type: surf.Surface"""
+        self._check_sl_nonempty()
+        return self.surfaces.first
+
+    @property
+    def last(self) -> surf.Surface:
+        """The last optical surface.\n\n:type: surf.Surface"""
+        self._check_sl_nonempty()
+        return self.surfaces.last
 
     def _check_circ_aperture(self):
         for s in self.surfaces:
@@ -953,6 +1014,10 @@ class CoaxialRayTracing(
                     f'A function called requires all the surfaces to be circularly symmetric, '
                     f'which is not satisfied for surface {s.ctx.index}'
                 )
+
+    def _check_sl_nonempty(self):
+        if self.surfaces.is_empty:
+            raise RuntimeError('No optical surface available')
 
     # Serialization
     # ===========================
@@ -1077,19 +1142,20 @@ class CoaxialRayTracing(
         ray.march_(length2rs, ref_idx)
         return chief_ray, ray, rs_roc, exit_pupil_distance  # ... x N_wl x N_spp
 
-    def _rectification_center(self, rectification: str, origins: Ts, wl: Ts, shape: typing.Double[int]) -> Ts | None:
+    def _rectification_center(self, rectification: str, origins: Ts, wl: Ts) -> Ts | None:
         if rectification is None or rectification == 'none':
             return None
         elif rectification == 'chief':
             chief = self.chief_ray(origins, wl, 'obj')  # (B, H*W, N_wl)
             out_chief = self.trace_ray(chief)  # (B, H*W, N_wl)
             xy_chief = out_chief.o[..., None, :2]  # (B, H*W, N_wl, 1, 2)
+            xy_chief = xy_chief.transpose(1, 2)  # (B, N_wl, H*W, 1, 2)
             y, x = utils.grid(
-                shape, self._sensor().pixel_num,
+                self._sensor().pixel_num, self._sensor().pixel_size,
                 symmetric=True, broadcast=True, device=self.device, dtype=self.dtype
             )
-            xy_grid = torch.stack([x, y], -1)  # (H, W, 2)
-            xy_chief -= xy_grid.flatten(0, 1)[:, None, None, :, :]  # (B, H*W, N_wl, 1, 2)
+            xy_grid = torch.stack([-x, y], -1)  # (H, W, 2)
+            xy_chief -= xy_grid.flatten(0, 1)[None, None, :, None, :]  # (B, N_wl, H*W, 1, 2)
             return xy_chief
         else:
             raise ValueError(f'Unknown rectification type: {rectification}')
@@ -1141,12 +1207,11 @@ class CoaxialRayTracing(
         sampler: surf.Sampler = None,
         wl_reduction: WlReduction = 'center',
     ) -> Ts:
-        sampler = self.pick('sampler', sampler)
         f_name = self._psf_inc_rect.__name__
 
         out_ray = self.trace_point(origins, wl, sampler)  # ... x N_wl x N_spp
         out_ray.update_valid_(~out_ray.x.isnan() & ~out_ray.y.isnan())  # TODO:?
-        out_ray = self.variable_hook(f'{f_name}.out_ray', out_ray)
+        out_ray: BatchedRay = self.variable_hook(f'{f_name}.out_ray', out_ray)
         n_spp = out_ray.shape[-1]
 
         xy_center = self._find_xy_center(psf_center, origins, out_ray, wl, wl_reduction)
@@ -1159,7 +1224,7 @@ class CoaxialRayTracing(
         x, y = xy.unbind(-1)  # ... x N_wl x N_spp
         # if PSF size is odd, the center is N/2, relative positions are -N//2, ..., N//2
         # if PSF size is even, the center is (N+1)/2, relative positions are -N//2, ..., N//2-1
-        x, y = x + (psf_size[1] // 2), y + (psf_size[0] // 2)
+        x, y = x + (psf_size[1] / 2), y + (psf_size[0] / 2)
         c_a, r_a = torch.floor(x.detach() + 0.5).long(), torch.floor(y.detach() + 0.5).long()
 
         in_region = c_a.ge(0) & c_a.le(psf_size[1]) & r_a.ge(0) & r_a.le(psf_size[0])  # ... x N_wl x N_spp
@@ -1171,6 +1236,10 @@ class CoaxialRayTracing(
         c_as, r_as = c_a - 1, r_a - 1
         w_c, w_r = c_a - x + 0.5, r_a - y + 0.5
         iw_c, iw_r = 1 - w_c, 1 - w_r
+        if out_ray.recording_intensity:
+            w_c = w_c * out_ray.intensity
+            iw_c = iw_c * out_ray.intensity
+
         psf = self.new_zeros(out_ray.shape[:-1] + (psf_size[0] + 2, psf_size[1] + 2))  # ... x N_wl x (H+2) x (W+2)
         pre_idx = [
             _t.as1d(torch.arange(dim_size, device=self.device), mask.ndim, i)
@@ -1187,6 +1256,7 @@ class CoaxialRayTracing(
         psf = psf / n_spp  # total energy of each ray is 1
         return psf
 
+    @utils.with_external
     def _psf_inc_gaussian(
         self,
         origins: Ts,  # ... x 3
@@ -1196,8 +1266,6 @@ class CoaxialRayTracing(
         sampler: surf.Sampler = None,
         wl_reduction: WlReduction = 'center',
     ) -> Ts:
-        sampler = self.pick('sampler', sampler)
-
         out_ray = self.trace_point(origins, wl, sampler)  # ... x N_wl x N_spp
         out_ray.update_valid_(~out_ray.x.isnan() & ~out_ray.y.isnan())  # TODO:?
 
@@ -1378,9 +1446,9 @@ class CoaxialRayTracing(
         elif pupil_type == 'trace':
             r, z = self.pupil_trace(entr, wl, **kwargs)
         else:
-            raise ValueError(f'Unknown pupil type: {pupil_type}, '
-                             f'available: {", ".join(typing.get_args(PupilType))}')
+            raise ValueError(utils.invalid_option_msg('pupil type', pupil_type, PupilType))
 
+        # r, z: () or (N_wl,)
         if r.ndim == z.ndim == 0 or wl_reduction == 'none':
             return r, z
         elif wl_reduction == 'mean':
@@ -1388,8 +1456,7 @@ class CoaxialRayTracing(
         elif wl_reduction == 'center':
             return r[wl.size(0) // 2], z[wl.size(0) // 2]
         else:
-            raise ValueError(f'Unknown wl_reduction: {wl_reduction}, '
-                             f'available: {", ".join(typing.get_args(WlReduction))}')
+            raise ValueError(utils.invalid_option_msg('wavelength reduction', wl_reduction, WlReduction))
 
     def _pupil_prepare(self, entr: bool) -> tuple[Ts, list[surf.Surface]]:
         self._check_circ_aperture()
@@ -1410,3 +1477,21 @@ class CoaxialRayTracing(
         else:
             sublist = self.surfaces[idx + 1:]
         return point, sublist
+
+    def _focal_length(
+        self, obj_side: bool, fl_type: FlType, wl: Vector, wl_reduction: WlReduction, **kwargs
+    ):
+        if fl_type == 'paraxial':
+            fl = self.focal_length_paraxial(obj_side, wl)
+        else:
+            raise ValueError(utils.invalid_option_msg('focal length type', fl_type, FlType))
+
+        # fl: () or (N_wl,)
+        if fl.ndim == 0 or wl_reduction == 'none':
+            return fl
+        elif wl_reduction == 'mean':
+            return fl.mean()
+        elif wl_reduction == 'center':
+            return fl[wl.size(0) // 2]
+        else:
+            raise ValueError(utils.invalid_option_msg('wavelength reduction', wl_reduction, WlReduction))

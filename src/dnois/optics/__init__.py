@@ -14,6 +14,7 @@ systems.
 """
 from ._func import *
 from .formation import *
+from .paraxial import *
 from .system import *
 
-from . import reg, df, formation, rt, system
+from . import reg, df, formation, paraxial, rt, system

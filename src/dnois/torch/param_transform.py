@@ -76,7 +76,7 @@ class Transform(AsJsonMixIn):
             if sub.__name__ == ty:
                 return cast(type[Transform], sub).from_dict(d)
         types = [sub.__name__ for sub in subs]
-        raise RuntimeError(f'Unknown transform type: {ty}. Available: {types}')
+        raise RuntimeError(utils.invalid_option_msg('transform type', ty, types))
 
     @staticmethod
     def scale(s: Numeric) -> 'Transform':

@@ -92,6 +92,8 @@ class BatchedRay(_t.TensorContainerMixIn):
 
     __slots__ = ('_o_modified', '_ts',)
 
+    _3d = ('o', 'd')
+
     def __init__(
         self,
         origin: Ts,
@@ -99,6 +101,7 @@ class BatchedRay(_t.TensorContainerMixIn):
         wl: float | Ts,
         init_opl: float | Ts = None,
         init_phase: float | Ts = None,
+        init_intensity: float | Ts = None,
         *,
         d_normed: bool = False
     ):
@@ -109,12 +112,14 @@ class BatchedRay(_t.TensorContainerMixIn):
             )
 
         device, dtype = _get_dd(
-            origin=origin, direction=direction, wl=wl, init_opl=init_opl, init_phase=init_phase
+            origin=origin, direction=direction, wl=wl,
+            init_opl=init_opl, init_phase=init_phase, init_intensity=init_intensity
         )
         wl = _2tensor(wl, device, dtype)
         init_opl = _2tensor(init_opl, device, dtype)
         init_phase = _2tensor(init_phase, device, dtype)
-        _check_shape_compatible(origin[..., 0], direction[..., 0], wl, init_opl, init_phase)
+        init_intensity = _2tensor(init_intensity, device, dtype)
+        _check_shape_compatible(origin[..., 0], direction[..., 0], wl, init_opl, init_phase, init_intensity)
         self._ts: dict[str, Ts | None] = {
             'o': origin,
             'd': direction if d_normed else _normalize(direction),
@@ -122,12 +127,16 @@ class BatchedRay(_t.TensorContainerMixIn):
             'v': torch.tensor(True, dtype=torch.bool, device=device),
             'opl': init_opl,
             'ph': init_phase,
+            'i': init_intensity,
         }
         self._o_modified = False
 
     def __repr__(self):
-        shape, recording_opl, recording_phase = self.shape, self.recording_opl, self.recording_phase
-        return f'BatchedRay({shape=}, {recording_opl=}, {recording_phase=})'
+        shape = self.shape
+        recording_opl = self.recording_opl
+        recording_phase = self.recording_phase
+        recording_intensity = self.recording_intensity
+        return f'BatchedRay({shape=}, {recording_opl=}, {recording_phase=}, {recording_intensity=})'
 
     def broadcast_(self) -> Self:
         """
@@ -140,7 +149,7 @@ class BatchedRay(_t.TensorContainerMixIn):
             v = self._ts[k]
             if v is None:
                 continue
-            self._ts[k] = torch.broadcast_to(v, (shape + (3,)) if k in ('o', 'd') else shape)
+            self._ts[k] = torch.broadcast_to(v, (shape + (3,)) if k in self._3d else shape)
         return self
 
     def broadcast(self) -> Self:
@@ -191,7 +200,7 @@ class BatchedRay(_t.TensorContainerMixIn):
             raise NoValidRayError(f'There is no valid ray before discarding')
 
         def _discard(k: str, ts: Ts) -> Ts:
-            additional_dim = 1 if k in ('o', 'd') else 0
+            additional_dim = 1 if k in self._3d else 0
             if ts.ndim == additional_dim or ts.size(0) == 1:  # ([3, ]) or (1[, 3])
                 return ts
             return ts[valid]
@@ -208,7 +217,7 @@ class BatchedRay(_t.TensorContainerMixIn):
         shape = self.shape
 
         def _flatten(k: str, v: Ts) -> Ts:
-            if k in ('o', 'd'):
+            if k in self._3d:
                 return torch.flatten(v.broadcast_to(shape + (3,)), 0, -2)
             else:
                 return torch.flatten(v.broadcast_to(shape))
@@ -236,7 +245,7 @@ class BatchedRay(_t.TensorContainerMixIn):
         def _copy(k: str, ts: Ts) -> Ts | None:
             if k == 'v':  # do not copy validity
                 return None
-            elif k in ('o', 'd'):
+            elif k in self._3d:
                 ts = ts.broadcast_to(v.shape + (3,))
                 return torch.where(v.unsqueeze(-1), ts, ts[*idx].clone())
             else:
@@ -390,7 +399,7 @@ class BatchedRay(_t.TensorContainerMixIn):
     def expand_dim(self, dim: int, multiple: int) -> Self:
         """
         Expand the shape of rays by repeating bound tensors along given dimension.
-        The tensors whose size in that dimension is 1 will not be repeated.
+        The tensors whose size in that dimension is 1 (i.e. broadcastable) will not be repeated.
 
         :param int dim: The dimension along which the tensors are expanded.
         :param int multiple: The number of times to repeat the tensors.
@@ -402,8 +411,13 @@ class BatchedRay(_t.TensorContainerMixIn):
         rep[dim] = multiple
 
         def _expand(k: str, v: Ts) -> Ts:
-            _rep = rep + [1] if k in ('o', 'd') else rep
+            if v.ndim == 0:
+                return v
+            _rep = rep + [1] if k in self._3d else rep
             _rep = _rep[-v.ndim:]
+            for i, r in enumerate(_rep):
+                if v.size(i) == 1:
+                    _rep[i] = 1
             return v.repeat(*_rep)
 
         ray._update_tensor(_expand)
@@ -417,7 +431,7 @@ class BatchedRay(_t.TensorContainerMixIn):
         :type: torch.Size
         """
         shapes = [
-            ts.shape[:-1] if k in ('o', 'd') else ts.shape
+            ts.shape[:-1] if k in self._3d else ts.shape
             for k, ts in self._ts.items() if ts is not None
         ]
         return torch.broadcast_shapes(*shapes)
@@ -543,6 +557,24 @@ class BatchedRay(_t.TensorContainerMixIn):
             self._ts['ph'] = value
 
     @property
+    def intensity(self) -> Ts | None:
+        """
+        The intensities of the rays which is always positive.
+        This property is ``None`` if intensity is not recorded.
+
+        :type: Tensor
+        """
+        return self._ts['i']
+
+    @intensity.setter
+    def intensity(self, value: Ts | None):
+        if value is None:
+            self._ts['i'] = None
+        else:
+            self._check_shape(value.shape, 'i')
+            self._ts['i'] = self._cast(value)
+
+    @property
     def with_wl(self) -> bool:
         """
         Whether wavelengths are set.
@@ -568,6 +600,15 @@ class BatchedRay(_t.TensorContainerMixIn):
         :type: bool
         """
         return self._ts['ph'] is not None
+
+    @property
+    def recording_intensity(self) -> bool:
+        """
+        Whether intensities are recorded.
+
+        :type: bool
+        """
+        return self._ts['i'] is not None
 
     @property
     def x(self) -> Ts:

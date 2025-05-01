@@ -7,20 +7,20 @@ from torch import nn
 
 from . import _surf
 from ._surf import *
-from .. import _func
+from .. import _func, paraxial
 from ... import base, mt, torch as _t, utils
 from ...base.typing import Any, Ts, Scalar, Sequence
 from ...base import typing
 
 __all__ = [
+    'is_paraxializable',
+
     'Conic',
     'EvenAspherical',
     'Fresnel',
     'Grating',
-    'ParaxialMixIn',
     'PolynomialPhase',
     'Spherical',
-    'Standard',
     'ThinLens',
 ]
 __all__ += _surf.__all__
@@ -42,7 +42,12 @@ def _spherical_der_wrt_r2(r2: Ts, c: Ts, k: Ts = None) -> Ts:
     return torch.where(mask, c / _4 * (1 + _2 / (2 * _3 * _4 + 1e-10)), 0)
 
 
-class ParaxialMixIn(metaclass=abc.ABCMeta):
+def is_paraxializable(surface: Surface | type[Surface]) -> bool:
+    """Return whether a surface type can be modeled by paraxial optics.\n\n:rtype: bool"""
+    return isinstance(surface, ParaxializableMixIn) or issubclass(surface, ParaxializableMixIn)
+
+
+class ParaxializableMixIn(Surface, metaclass=abc.ABCMeta):
     @property
     @abc.abstractmethod
     def px_curvature(self) -> Ts:
@@ -66,6 +71,8 @@ class ParaxialMixIn(metaclass=abc.ABCMeta):
         :return: Coordinates of image points in LCS. A tensor of shape ``(..., 3)``.
         :rtype: Tensor
         """
+        if not isinstance(self.context, CoaxialContext):
+            raise RuntimeError(f'A {CoaxialContext.__name__} is required to compute paraxial image point')
         n_obj = self.ctx.material_before.n(wl)  # ...
         n_img = self.material.n(wl)  # ...
         z0 = self.ctx.baseline  # 0d
@@ -86,8 +93,13 @@ class ParaxialMixIn(metaclass=abc.ABCMeta):
         xy = point[..., :2] * lateral_amplification.unsqueeze(-1)  # ... x 2
         return torch.cat([xy, z.unsqueeze(-1)], -1)  # ... x 3
 
+    def paraxialize(self, wl: typing.Numeric) -> paraxial.ParaxialSystem:
+        z = self.context.baseline if isinstance(self.context, CoaxialContext) else None
+        n1, n2 = self.context.material_before.n(wl), self.material.n(wl)
+        return paraxial.ParaxialSystem.from_interface(1 / self.px_curvature, n1, n2, z)
 
-class ThinLens(Planar, CircularSurface, ParaxialMixIn):
+
+class ThinLens(Planar, CircularSurface, ParaxializableMixIn):
     """
     A model for thin lens. See :class:`Planar` for more description of arguments.
 
@@ -158,12 +170,12 @@ class ThinLens(Planar, CircularSurface, ParaxialMixIn):
         return torch.zeros_like(r2)
 
     def extra_repr(self) -> str:
+        u = base.Length.default()
         if self._fl_equal:
             fl2_text = 'identical to fl1'
         else:
-            fl2_text = utils.fmt(self.fl2.item())
-        u = base.Length.default()
-        return super().extra_repr() + f',\nfl1={utils.fmt(self.fl1.item())}{u}, fl2={fl2_text}{u}'
+            fl2_text = utils.fmt(self.fl2.item()) + str(u)
+        return super().extra_repr() + f',\nfl1={utils.fmt(self.fl1.item())}{u}, fl2={fl2_text}'
 
     def refract(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
         ray = ray.clone(False)
@@ -205,12 +217,16 @@ class ThinLens(Planar, CircularSurface, ParaxialMixIn):
         xy = point[..., :2] * lateral_amplification.unsqueeze(-1)  # ... x 2
         return torch.cat([xy, z.unsqueeze(-1)], -1)  # ... x 3
 
+    def paraxialize(self, wl: typing.Numeric) -> paraxial.ParaxialSystem:
+        z = self.context.baseline if isinstance(self.context, CoaxialContext) else None
+        return paraxial.FiniteParaxialSystem(z, z, fl1=self.fl1, fl2=self.fl2)
+
     @property
     def px_curvature(self) -> Ts:
         raise RuntimeError(f'There is no curvature for {self.__class__.__name__}')
 
 
-class _SphericalBase(CircularSurface, ParaxialMixIn, metaclass=abc.ABCMeta):  # docstring for Spherical
+class _SphericalBase(CircularSurface, ParaxializableMixIn, metaclass=abc.ABCMeta):  # docstring for Spherical
     r"""
     Spherical surfaces.
 
@@ -251,12 +267,20 @@ class _SphericalBase(CircularSurface, ParaxialMixIn, metaclass=abc.ABCMeta):  # 
         return d
 
     @property
-    def c(self):
+    def c(self) -> nn.Parameter:
         return self.curvature
 
+    @c.setter
+    def c(self, value: Scalar):
+        self.curvature = value
+
     @property
-    def roc(self):
+    def roc(self) -> Ts:
         return 1 / self.curvature
+
+    @roc.setter
+    def roc(self, value: Scalar):
+        self.curvature = 1 / value
 
     @property
     def geo_radius(self) -> Ts:
@@ -362,10 +386,10 @@ class Conic(_ConicBase):
         o_hat = torch.cat([ray.o[..., :2], ray.z.unsqueeze(-1)], -1) * self.c
         qc_a = 1 + self.conic * ray.d_z.square()  # quadratic coefficient: a
         _1 = o_hat * ray.d
-        _1[..., 2] = _1[..., 2] * (self.conic + 1)
+        _1[..., 2] *= (self.conic + 1)
         qc_b = _1.sum(-1) - ray.d_z  # quadratic coefficient: b
         _2 = o_hat.square()
-        _2[..., 2] = _2[..., 2] * (self.conic + 1)
+        _2[..., 2] *= (self.conic + 1)
         qc_c = _2.sum(-1) - 2 * o_hat[..., 2]  # quadratic coefficient: c
         q_sqrt_delta = torch.sqrt(qc_b.square() - qc_a * qc_c)
         q_sqrt_delta = torch.copysign(q_sqrt_delta, ray.d_z)
@@ -377,10 +401,6 @@ class Conic(_ConicBase):
             h_ext_value = self.roc
             t = torch.where(nan_mask, (h_ext_value - ray.z) / ray.d_z, t)
         return t
-
-
-class Standard(Conic):
-    """Alias for :py:class:`~Conic`. This name complies with the convention of Zemax."""
 
 
 class EvenAspherical(_ConicBase):
@@ -511,7 +531,8 @@ class PlanarPhase(Planar, metaclass=abc.ABCMeta):
         :math:`n_1` and :math:`n_2` are refractive indices before and behind this surface,
         :math:`\lambda` is the wavelength in vacuum, :math:`\phi` is imparted phase
         and :math:`(x_0,y_0)` is the ray-surface intersection. Both direction vectors
-        have length 1.
+        have length 1. Note that this formula holds in both forward and backward directions,
+        except that refractive indices are exchanged.
 
         :param BatchedRay ray: Incident rays.
         :param bool forward: Whether the incident rays propagate along positive-z direction.
@@ -525,17 +546,24 @@ class PlanarPhase(Planar, metaclass=abc.ABCMeta):
         """
         n1 = self.context.material_before.n(ray.wl)
         n2 = self.material.n(ray.wl)
-        inv_k = ray.wl / (2 * torch.pi)
-        phase_x, phase_y = self.phase_grad(ray.x, ray.y)
+        if not forward:
+            n1, n2 = n2, n1
+        ray_local = self.ctx.g2l_ray(ray)
+        inv_k = ray_local.wl / (2 * torch.pi)
+        phase_x, phase_y = self.phase_grad(ray_local.x, ray_local.y)
 
-        ndx = (n1 * ray.d_x + inv_k * phase_x) / n2
-        ndy = (n1 * ray.d_y + inv_k * phase_y) / n2
-        ndz2 = 1 - ndx.square() - ndy.square()
-        new_d = torch.stack([ndx, ndy, ndz2.relu().sqrt()], dim=-1)
+        ndx = (n1 * ray_local.d_x + inv_k * phase_x) / n2
+        ndy = (n1 * ray_local.d_y + inv_k * phase_y) / n2
+        ndz, valid = _t.ssqrt(1 - ndx.square() - ndy.square())
+        new_d = torch.stack([ndx, ndy, ndz], dim=-1)
+        new_d = self.ctx.l2g(new_d, True)
 
         ray.d = new_d
-        ray.update_valid_(ndz2 >= 0)
+        ray.update_valid_(valid)
         return ray
+
+    def reflect(self, ray: BatchedRay) -> BatchedRay:
+        raise NotImplementedError()
 
 
 def _term_grad(x_exp: int, y_exp: int, x: Ts, y: Ts) -> Ts:
@@ -691,6 +719,12 @@ class Fresnel(Planar, EvenAspherical):
     def h_derivative_r2(self, r2: Ts) -> Ts:
         return torch.zeros_like(r2)
 
+    def expand(self) -> EvenAspherical:
+        return EvenAspherical(
+            self.roc, self.conic, self.coefficients, self.material, self.aperture, self.reflective,
+            d=self.ctx.distance if self.ctx is not None and isinstance(self.ctx, CoaxialContext) else None
+        )
+
     def _optical_normal(self, x: Ts, y: Ts) -> Ts:
         r2 = x.square() + y.square()
         lim2 = self.geo_radius.square()
@@ -703,6 +737,18 @@ class Fresnel(Planar, EvenAspherical):
             phpx, phpy = torch.where(mask, phpx, 0), torch.where(mask, phpy, 0)
         f_grad = torch.stack((-phpx, -phpy, torch.ones_like(phpx)), dim=-1)
         return f_grad / f_grad.norm(2, -1, True)
+
+
+def _check_coefficients(c: typing.Vector, name: str, length: int) -> Ts | None:
+    if c is None:
+        return c
+    else:
+        c = typing.vector(c)
+    if c.lt(0.).any():
+        raise ValueError(f'{name} cannot be negative, but got {c}')
+    if c.size(0) != length:
+        raise ValueError(f'{name} must have length {length}, but got {c.size(0)}')
+    return c
 
 
 class Grating(Planar):
@@ -737,6 +783,8 @@ class Grating(Planar):
         aperture: Aperture = None,
         period: Scalar = None,
         orders: int | typing.Double[int] = 5,
+        transmittance: typing.Vector = None,
+        reflectance: typing.Vector = None,
         expand_dim: int = -1,
         *,
         d: Scalar = None
@@ -753,15 +801,33 @@ class Grating(Planar):
             orders = (-orders, orders)
         elif orders[1] < orders[0]:
             raise ValueError(f'Maximum order must be larger than minimum order, but got {orders}')
+        transmittance = _check_coefficients(transmittance, 'Transmittance', orders[1] - orders[0] + 1)
+        reflectance = _check_coefficients(reflectance, 'Reflectance', orders[1] - orders[0] + 1)
 
         super().__init__(material, aperture, False, d=d)
         self.register_parameter('period', nn.Parameter(period, False))
+        self.register_buffer('T', transmittance)
+        self.register_buffer('R', reflectance)
         self.orders: tuple[int, int] = orders  #: Minimum and maximum diffraction order.
         self.expand_dim: int = expand_dim  #: Dimension to expand the split rays.
 
+    def extra_repr(self) -> str:
+        s = super().extra_repr()
+        s += f',\nperiod={utils.fmt(self.period.item())}{base.Length.default()}'
+        s += f', orders={self.orders}'
+        if self.transmittance is not None:
+            s += ',\ntransmittance=[' + ', '.join(
+                f'{utils.fmt(t)}' for i, t in enumerate(self.transmittance.tolist())
+            ) + ']'
+        if self.reflectance is not None:
+            s += ',\nreflectance=[' + ', '.join(
+                f'{utils.fmt(r)}' for i, r in enumerate(self.reflectance.tolist())
+            ) + ']'
+        return s
+
     def refract(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
         if not forward:
-            raise NotImplementedError()
+            raise NotImplementedError(f'{self.__class__.__name__} cannot be used in backward ray tracing')
         d_local = self.ctx.g2l(ray.broadcast().d, True)
         d_x, d_y = d_local[..., :2].unbind(-1)
         d_inc = ray.wl / (self.period * self.ctx.material_before.n(ray.wl))
@@ -773,10 +839,19 @@ class Grating(Planar):
         new_d_parallel = torch.stack([d_x.repeat(rep), new_d_y], dim=-1)
         new_d_vertical, valid = _t.ssqrt(1 - new_d_parallel.square().sum(-1, True))
         new_d = torch.cat([new_d_parallel, new_d_vertical], dim=-1)
+        new_d = self.ctx.l2g(new_d, True)
 
         new_ray = ray.expand_dim(self.expand_dim, self.n_order)
         new_ray.d = new_d
         new_ray.update_valid_(valid.squeeze(-1))
+
+        if new_ray.recording_intensity:
+            t: Ts = self.transmittance
+            if t is None:
+                return new_ray
+            t = t.repeat_interleave(d_x.shape[self.expand_dim])  # d_x is already broadcast
+            t = _t.as1d(t, d_x.ndim, self.expand_dim)
+            new_ray.intensity = new_ray.intensity * t
         return new_ray
 
     def backward_valid(self, valid: Ts) -> Ts:
@@ -814,3 +889,37 @@ class Grating(Planar):
         if value < self.min_order:
             raise ValueError(f'Maximum order cannot be smaller than minimum order ({self.min_order}), but got {value}')
         self.orders = (self.min_order, value)
+
+    @property
+    def transmittance(self) -> Ts | None:
+        """Transmittance corresponding to each order.\n\n:type: Tensor or None"""
+        return self.T
+
+    @transmittance.setter
+    def transmittance(self, value: typing.Vector | None):
+        if value is None:
+            self.register_buffer('T', None)
+        else:
+            value = _check_coefficients(value, 'Transmittance', self.n_order)
+            self.register_buffer('T', value)
+
+    @transmittance.deleter
+    def transmittance(self):
+        self.register_buffer('T', None)
+
+    @property
+    def reflectance(self) -> Ts | None:
+        """Reflectance corresponding to each order.\n\n:type: Tensor or None"""
+        return self.R
+
+    @reflectance.setter
+    def reflectance(self, value: typing.Vector | None):
+        if value is None:
+            self.register_buffer('R', None)
+        else:
+            value = _check_coefficients(value, 'Reflectance', self.n_order)
+            self.register_buffer('R', value)
+
+    @reflectance.deleter
+    def reflectance(self):
+        self.register_buffer('R', None)

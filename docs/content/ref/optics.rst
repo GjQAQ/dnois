@@ -37,6 +37,20 @@ The following content implements :ref:`abstract_models` in these two ways.
     optics/df
     optics/rt
 
+Paraxial optics
+=====================================
+
+Behavior of an optical system under paraxial approximation is modeled by :class:`ParaxialSystem`.
+It is an abstract class but typically you need only to instantiate it with
+:func:`ParaxialSystem.from_interface` rather than explicitly instantiating its subclass.
+
+.. autosummary::
+    :toctree: ../generated/optics/paraxial
+
+    ParaxialSystem
+    FiniteParaxialSystem
+    InfiniteParaxialSystem
+
 .. _image_formation:
 
 ***********************************

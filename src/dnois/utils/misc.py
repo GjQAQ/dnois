@@ -1,20 +1,24 @@
 import functools
 import inspect
 
-from .. import base
-from ..base import typing
+import torch
+
+from ..base import typing, unit
 
 __all__ = [
     'fmt',
+    'invalid_option_msg',
     'subclasses',
     'with_external',
 
+    'ExternalParamMixIn',
+    'FixStateMixIn',
+    'Conditional',
+    'InfinityCond',
     'VarCollection',
     'VarDict',
     'VarHook',
     'VarHookMixIn',
-    'ExternalParamMixIn',
-    'FixStateMixIn',
 ]
 
 
@@ -43,8 +47,7 @@ def fmt(v: float) -> str:
     :return: Formatted string.
     :rtype: str
     """
-    s = f'{{:{base.float_print_fmt}}}'
-    return s.format(v)
+    return unit.fmt(v)
 
 
 _unset = object()
@@ -184,4 +187,68 @@ class VarDict(dict[str, typing.Any]):
         return hook
 
 
-VarCollection=VarDict
+VarCollection = VarDict
+
+
+def invalid_option_msg(name: str, value, literals: type[typing.Literal] | list[str]) -> str:
+    if not isinstance(literals, list):
+        literals = typing.get_args(literals)
+    return f'Unknown {name}: {value}, available: {", ".join(literals)}'
+
+
+class Conditional:
+    Cond = typing.Callable[[typing.Numeric], bool | torch.BoolTensor]
+    Expr = typing.Callable[[typing.Numeric], typing.Any]
+
+    def __init__(
+        self,
+        condition: Cond,
+        expr_finite: Expr,
+        expr_infinite: Expr,
+        condition_tensor: Cond = None,
+        expr_finite_tensor: Expr = None,
+        expr_infinite_tensor: Expr = None,
+    ):
+        if condition_tensor is None:
+            condition_tensor = condition
+        if expr_finite_tensor is None:
+            expr_finite_tensor = expr_finite
+        if expr_infinite_tensor is None:
+            expr_infinite_tensor = expr_infinite
+
+        self.condition = condition
+        self.condition_tensor = condition_tensor
+        self.expr_finite = expr_finite
+        self.expr_infinite = expr_infinite
+        self.expr_finite_tensor = expr_finite_tensor
+        self.expr_infinite_tensor = expr_infinite_tensor
+
+    def __call__(self, value: typing.Numeric) -> typing.Any:
+        if torch.is_tensor(value):
+            condition = self.condition_tensor(value)
+            if condition.all():
+                return self.expr_infinite_tensor(value)
+            else:
+                result = self.expr_finite_tensor(value)
+                if condition.any():
+                    result = torch.where(condition, self.expr_infinite_tensor(value), result)
+                return result
+        else:
+            if self.condition(value):
+                return self.expr_infinite(value)
+            else:
+                return self.expr_finite(value)
+
+
+class InfinityCond(Conditional):
+    def __init__(
+        self,
+        expr_finite: Conditional.Expr,
+        expr_infinite: Conditional.Expr,
+        expr_finite_tensor: Conditional.Expr = None,
+        expr_infinite_tensor: Conditional.Expr = None
+    ):
+        super().__init__(
+            lambda x: x == float('inf'), expr_finite, expr_infinite,
+            lambda x: x.isinf(), expr_finite_tensor, expr_infinite_tensor
+        )

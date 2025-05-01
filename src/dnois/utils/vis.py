@@ -17,7 +17,9 @@ def t4plot(tensor: Ts) -> Ts:
 
 def wl2rgb(wl: float, gamma: float = 0.8, output_format: RGBFormat = 'floats') -> RGBTriplet:
     wl = base.Length.default_to(wl, 'nm')
-    if 380 <= wl <= 440:
+    if wl < 380:
+        red, green, blue = 1., 0., 1.
+    elif 380 <= wl <= 440:
         red, green, blue = -(wl - 440) / (440 - 380), 0., 1.
     elif 440 <= wl <= 490:
         red, green, blue = 0.0, (wl - 440) / (490 - 440), 1.
@@ -27,12 +29,12 @@ def wl2rgb(wl: float, gamma: float = 0.8, output_format: RGBFormat = 'floats') -
         red, green, blue = (wl - 510) / (580 - 510), 1., 0.
     elif 580 <= wl <= 645:
         red, green, blue = 1.0, -(wl - 645) / (645 - 580), 0.
-    elif 645 <= wl <= 780:
-        red, green, blue = 1.0, 0., 0.
     else:
-        red, green, blue = 0.0, 0., 0.
+        red, green, blue = 1.0, 0., 0.
 
-    if 380 <= wl <= 420:
+    if wl < 380:
+        factor = 0.3
+    elif 380 <= wl <= 420:
         factor = 0.3 + 0.7 * (wl - 380) / (420 - 380)
     elif 420 <= wl <= 700:
         factor = 1.0
