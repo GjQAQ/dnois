@@ -7,12 +7,16 @@ from . import unit as u
 from .typing import Numeric, Ts, overload
 
 __all__ = [
+    'c',
     'fline',
     'fraunhofer_line',
+    'k',
     'reflect',
     'refract',
-    'wave_vec',
+    'wave_vector',
 ]
+
+c: float = 299_792_458.  #: Speed of light in vacuum.
 
 with importlib.resources.open_text(__package__, 'fl.csv') as f:
     _fraunhofer_line_db = [(line[0], line[1], float(line[2]) * 1e-9) for line in csv.reader(f)]
@@ -97,20 +101,29 @@ def fline(
     return fraunhofer_line(str(symbol), element, alone, unit)
 
 
-def wave_vec(wl: Numeric, n: Numeric = None) -> Numeric:
+def wave_vector(wl: Numeric, n: Numeric = None) -> Numeric:
     r"""
     Computes magnitude of wavelength vector:
 
     .. math::
-        k=2\pi/\lambda
+        k=2\pi n/\lambda
 
-    :param wl: Wavelength :math:`\lambda`.
+    where :math:`n` is refractive index and :math:`\lambda` is wavelength in vacuum.
+
+    :param wl: Wavelength in vacuum :math:`\lambda` if ``n`` is given, or wavelength
+        in medium :math:`\lambda/n` otherwise.
+    :param n: Refractive index :math:`n`. Default: ``None``.
     :return: Magnitude of wavelength vector.
     """
-    k = torch.pi * 2 / wl
+    return k(wl, n)
+
+
+def k(wl: Numeric, n: Numeric = None) -> Numeric:
+    """Alias for :func:`wave_vec`."""
+    _k = torch.pi * 2 / wl
     if n is not None:
-        k = k * n
-    return k
+        _k = _k * n
+    return _k
 
 
 def _as_tensor(x, src: Ts) -> Ts:

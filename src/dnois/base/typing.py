@@ -8,6 +8,7 @@
 # as the lower case of corresponding type alias.
 
 import numbers
+from numbers import *
 import typing
 from typing import *
 
@@ -41,6 +42,7 @@ __all__ = [
     'Vector',
 ]
 __all__ += typing.__all__
+__all__ += numbers.__all__
 
 _T = TypeVar('_T')
 
@@ -51,10 +53,10 @@ Device = Union[str, int, _dev]  # as same as torch.DeviceLikeType
 # tensor-like
 Ts = Tensor
 Spacing = Union[float, Ts]  # delta (grid spacing) type
-Numeric = Union[numbers.Real, Ts]  # support numeric operation
+Numeric = Union[Real, Ts]  # support numeric operation
 NumInv = TypeVar('NumInv', bound=Numeric)  # invariant numeric type
-Scalar = Union[float, Ts]  # can be converted to 0d tensor
-Vector = Union[float, Sequence[float], Ts]  # can be converted to 1d tensor
+Scalar = Union[Real, Ts]  # can be converted to 0d tensor
+Vector = Union[Real, Sequence[Real], Ts]  # can be converted to 1d tensor
 
 Pair = Union[_T, tuple[_T, _T]]
 Size2d = Pair[int]
@@ -107,9 +109,9 @@ def vector(arg: Vector, dtype: _dty = None, device: Device = None, **kwargs) -> 
         cfg['dtype'] = dtype
     if device is not None:
         cfg['device'] = device
-    if isinstance(arg, float):
+    if isinstance(arg, Real):
         return torch.tensor([arg], **cfg)
-    elif isinstance(arg, Sequence) and all(isinstance(item, float) for item in arg):
+    elif isinstance(arg, Sequence) and all(isinstance(item, Real) for item in arg):
         return torch.tensor(arg, **cfg)
     elif is_tensor(arg):
         if arg.ndim == 0:
@@ -118,7 +120,7 @@ def vector(arg: Vector, dtype: _dty = None, device: Device = None, **kwargs) -> 
             raise ShapeError(f'Trying to convert a tensor with shape {arg.shape} to a vector')
         return arg.to(**cfg, **kwargs)
     else:
-        raise TypeError(f'A float, a sequence of float or a 1d tensor expected, got {type(arg)}')
+        raise TypeError(f'A float, int, a sequence of them or a 1d tensor expected, got {type(arg)}')
 
 
 def scalar(arg: Scalar, dtype: _dty = None, device: Device = None, **kwargs) -> Ts:
@@ -127,15 +129,15 @@ def scalar(arg: Scalar, dtype: _dty = None, device: Device = None, **kwargs) -> 
         cfg['dtype'] = dtype
     if device is not None:
         cfg['device'] = device
-    if isinstance(arg, float):
+    if isinstance(arg, Real):
         return torch.tensor(arg, **cfg)
     elif is_tensor(arg):
         if arg.ndim != 0:
             raise ShapeError(f'Trying to convert a tensor with shape {arg.shape} to a scalar')
         return arg.to(**cfg, **kwargs)
     else:
-        raise TypeError(f'A float or a 0d tensor is expected, got {type(arg)}')
+        raise TypeError(f'A float, int or a 0d tensor is expected, got {type(arg)}')
 
 
 def is_scalar(arg: Any) -> bool:
-    return isinstance(arg, float) or (is_tensor(arg) and arg.ndim == 0)
+    return isinstance(arg, Real) or (is_tensor(arg) and arg.ndim == 0)

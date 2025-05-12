@@ -1,5 +1,5 @@
 ############################
-Optical systems
+Optics
 ############################
 TODO
 
@@ -7,4 +7,5 @@ TODO
     :maxdepth: 2
 
     optics/imodel
+    optics/paraxial
     optics/rt

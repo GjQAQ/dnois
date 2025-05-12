@@ -2,7 +2,7 @@ import torch
 
 from ._func import *
 from .noise import gaussian
-from .. import utils, isp
+from .. import base, utils, isp
 from ..base.typing import Pair, Size2d, Ts, size2d, pair
 
 __all__ = [
@@ -53,7 +53,54 @@ class Sensor(torch.nn.Module):
         self.pixel_size: tuple[float, float] = pixel_size
 
     def forward(self, radiance: Ts) -> Ts:
-        raise NotImplementedError(f'{type(self).__name__} cannot be used for imaging')
+        r"""
+        Returns the input radiance field reaching the sensor plane instantaneously.
+
+        :param Tensor radiance: Radiance field of shape :math:`(\ldots, N_\text{wl}, H, W)`.
+        :return: ``radiance`` itself.
+        :rtype: Tensor
+        """
+        return radiance
+
+    def extra_repr(self) -> str:
+        txt = ', '.join(base.Length.fmt(v) for v in self.pixel_size)
+        return f'resolution={self.pixel_num}, pixel_size=({txt})'
+
+    @property
+    def pixel_h(self) -> float:
+        """Height of a pixel.\n\n:type: float"""
+        return self.pixel_size[0]
+
+    @pixel_h.setter
+    def pixel_h(self, value: float):
+        self.pixel_size = (value, self.pixel_size[1])
+
+    @property
+    def pixel_w(self) -> float:
+        """Width of a pixel.\n\n:type: float"""
+        return self.pixel_size[1]
+
+    @pixel_w.setter
+    def pixel_w(self, value: float):
+        self.pixel_size = (self.pixel_size[0], value)
+
+    @property
+    def res_h(self) -> int:
+        """Number of pixels in vertical direction.\n\n:type: int"""
+        return self.pixel_num[0]
+
+    @res_h.setter
+    def res_h(self, value: int):
+        self.pixel_num = (value, self.pixel_num[1])
+
+    @property
+    def res_w(self) -> int:
+        """Number of pixels in horizontal direction.\n\n:type: int"""
+        return self.pixel_num[1]
+
+    @res_w.setter
+    def res_w(self, value: int):
+        self.pixel_num = (self.pixel_num[0], value)
 
     @property
     def size(self) -> tuple[float, float]:
@@ -62,7 +109,7 @@ class Sensor(torch.nn.Module):
 
         :type: tuple[float, float]
         """
-        return self.pixel_size[0] * self.pixel_num[0], self.pixel_size[1] * self.pixel_num[1]
+        return self.h, self.w
 
     @property
     def h(self):
@@ -73,6 +120,14 @@ class Sensor(torch.nn.Module):
     def w(self):
         """Physical width of the sensor in meters.\n\n:type: float"""
         return self.pixel_size[1] * self.pixel_num[1]
+
+    @property
+    def resolution(self) -> tuple[int, int]:
+        return self.pixel_num
+
+    @resolution.setter
+    def resolution(self, value: Size2d):
+        self.pixel_num = size2d(value)
 
 
 class StandardSensor(Sensor):
@@ -192,3 +247,15 @@ class StandardSensor(Sensor):
         return quantize(
             signal.detach() / self.max_value, self.quantize, self.differentiable_quantization
         )
+
+    def extra_repr(self) -> str:
+        info = super().extra_repr() + ',\n'
+        info += f'rgb={self.rgb}, '
+        info += f'bayer_pattern={self.bayer_pattern}, '
+        info += f'noise_std={self.noise_std}, '
+        info += f'max_value={self.max_value}, '
+        info += f'quantize={self.quantize} (differentiable={self.differentiable_quantization}), '
+        info += f'linear2srgb={self.linear2srgb}'
+        if self.srf is not None:
+            info += f', srf.shape={self.srf.shape}'
+        return info

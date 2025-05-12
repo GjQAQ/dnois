@@ -1,6 +1,6 @@
 import torch
 
-from dnois.base.typing import Ts, Spacing, Sequence
+from ..base.typing import Ts, Spacing, Sequence
 
 
 def _check_dim(name: str, shape: Sequence[int], dims: tuple[int, ...], **deltas: Spacing):

@@ -1,6 +1,7 @@
 import abc
 import copy
 import collections.abc
+import dataclasses
 import functools
 import warnings
 
@@ -13,12 +14,6 @@ from ...base import typing
 from ...base.typing import Sequence, Ts, Any, Callable, Scalar, Self, Size2d
 
 __all__ = [
-    'NT_EPSILON',
-    'NT_MAX_ITERATION',
-    'NT_THRESHOLD',
-    'NT_THRESHOLD_STRICT',
-    'NT_UPDATE_BOUND',
-
     'surface_types',
 
     'Aperture',
@@ -29,18 +24,13 @@ __all__ = [
     'CoaxialContext',
     'CoaxialSurfaceList',
     'Context',
+    'IntersectionConfig',
     'Planar',
     'Sampler',
     'Stop',
     'Surface',
     'SurfaceList',
 ]
-
-NT_MAX_ITERATION: int = 10
-NT_THRESHOLD: float = 20e-9
-NT_THRESHOLD_STRICT: float = NT_THRESHOLD
-NT_UPDATE_BOUND: float = 5.
-NT_EPSILON: float = 1e-9
 
 EDGE_CUTTING: float = 1 - 1e-6
 DETECTION_RADIUS_EPS: float = 1e-5
@@ -98,7 +88,7 @@ class Context(_t.EnhancedModule):
 
     def __setattr__(self, key, value):
         if key in {'surface', 'surface_list'}:
-            self.__dict__[key] = value  # avoid these two are registered as submodule
+            self.__dict__[key] = value  # avoid these two to be registered as submodule
         else:
             return super().__setattr__(key, value)
 
@@ -108,8 +98,9 @@ class Context(_t.EnhancedModule):
             params = self.__dict__['_parameters']
             for name in self._transform_params:
                 if name in params:
-                    unit = base.get_default('length' if name in 'xyz' else 'angle')
-                    ret.append(f'{name}={utils.fmt(params[name].item())}{unit}')
+                    value = params[name].item()
+                    txt = base.Length.fmt(value) if name in 'xyz' else base.Angle.fmt(value)
+                    ret.append(f'{name}={txt}')
         return ', '.join(ret)
 
     def g2l(self, x: Ts, direction: bool = False) -> Ts:
@@ -330,14 +321,15 @@ class CoaxialContext(Context):
         super().__init__(surface, surface_list)
         if distance is None:
             distance = 0.
-        self.register_parameter('distance', nn.Parameter(typing.scalar(distance)))
+        distance = typing.scalar(distance, dtype=torch.get_default_dtype())
+        self.register_parameter('distance', nn.Parameter(distance))
 
     def extra_repr(self) -> str:
         r = super().extra_repr()
         if len(r) > 0:
             r += ',\n'
         d = self.distance
-        r += f'distance={utils.fmt(d if d is None else d.item())}{base.Length.default()}'
+        r += f'distance={base.Length.fmt(d.item())}'
         return r
 
     def g2l(self, x: Ts, direction: bool = False) -> Ts:
@@ -499,7 +491,9 @@ class CircularAperture(Aperture):
             raise ValueError('radius must be positive')
 
         self.register_parameter('radius', None)
-        self.radius: nn.Parameter = nn.Parameter(typing.scalar(diameter) / 2, False)  #: Radius of the aperture.
+        #: Radius of the aperture.
+        radius = typing.scalar(diameter, dtype=torch.get_default_dtype()) / 2
+        self.radius: nn.Parameter = nn.Parameter(radius, False)
 
     def extra_repr(self) -> str:
         return f'radius={utils.fmt(self.radius.item())}{base.Length.default()}'
@@ -609,6 +603,36 @@ class CircularAperture(Aperture):
         return self.radius * (1 + DETECTION_RADIUS_EPS)
 
 
+class _DefaultMixIn:
+    default: Self  #: Default configuration.
+
+
+@dataclasses.dataclass
+class IntersectionConfig(base.AsJsonMixIn, _DefaultMixIn):
+    """
+    Configuration for intersection-determination algorithm.
+    """
+
+    #: Number of maximum iterations in Newton's method.
+    max_iteration: int = 10
+    #:Threshold for residual error in Newton's method.
+    threshold: float = 20e-9
+    #: Similar to :attr:`.threshold`, but used in validity check of rays.
+    threshold_strict: float = 20e-9
+    #: Maximum absolute update to the variable to be solved in Newton's method.
+    update_bound: float = 5.
+    #: A small value to avoid division by zero.
+    epsilon: float = 1e-9
+    #: Whether to mark rays whose origins are not before (after) the surface as invalid
+    #: in intersection-determination during forward (backward) ray tracing.
+    force_before: bool = True
+    #: Whether to mark rays whose marching distance are negative as invalid in intersection-determination.
+    force_non_negative: bool = False
+
+
+IntersectionConfig.default = IntersectionConfig()
+
+
 # TODO: ray validity check
 class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
     r"""
@@ -634,24 +658,26 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
         instance or a str representing the name of a registered material.
     :type material: :py:class:`~dnois.mt.Material` or str
     :param Aperture aperture: :class:`Aperture` of this surface.
-    :param dict newton_config: Configuration for Newton's method.
+    :param dict intersection_config: Configuration for Newton's method.
         See :ref:`configuration_for_newtons_method` for details.
     """
 
     def __init__(
         self,
         material: mt.Material | str = DEFAULT_MATERIAL,
-        aperture: Aperture = None,
+        aperture: Aperture | Scalar = None,
         reflective: bool = False,
-        newton_config: dict[str, Any] = None,
+        intersection_config: IntersectionConfig = IntersectionConfig.default,
         *,
         d: Scalar = None,
     ):
         super().__init__()
         if aperture is None:
             aperture = CircularAperture()
-        if newton_config is None:
-            newton_config = {}
+        elif typing.is_scalar(aperture):
+            aperture = CircularAperture(aperture)
+        if intersection_config is None:
+            intersection_config = {}
         #: Material following the surface.
         self.material: mt.Material = material if isinstance(material, mt.Material) else mt.get(material)
         #: :class:`Aperture` of this surface.
@@ -665,11 +691,7 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
         if d is not None:
             self._distance = typing.scalar(d, dtype=self.dtype, device=self.device)
 
-        self._nt_max_iteration = newton_config.get('max_iteration', NT_MAX_ITERATION)
-        self._nt_threshold = newton_config.get('threshold', NT_THRESHOLD)
-        self._nt_threshold_strict = newton_config.get('threshold_strict', NT_THRESHOLD_STRICT)
-        self._nt_update_bound = newton_config.get('update_bound', NT_UPDATE_BOUND)
-        self._nt_epsilon = newton_config.get('epsilon', NT_EPSILON)
+        self._cfg = intersection_config
 
     def __deepcopy__(self, memo):
         copied = super().__deepcopy__(memo)
@@ -776,7 +798,7 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
         ray_in_local = self.context.g2l_ray(ray)
         ray.update_valid_(
             self.aperture.pass_ray(ray_in_local) &
-            (self._f(ray_in_local).abs() < self._nt_threshold_strict)
+            (self._f(ray_in_local).abs() < self._cfg.threshold_strict)
         )
         return ray
 
@@ -820,8 +842,9 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
             mu = self.material.n(ray.wl) / self.context.material_before.n(ray.wl)
             normal = -normal
         refractive = base.refract(ray.d, normal, mu)
-        ray.d = torch.where(refractive.isnan().any(-1).unsqueeze(-1), refractive.new_tensor([0, 0, 1]), refractive)
-        ray.update_valid_(~refractive.isnan().any(-1))
+        mask = refractive.isnan().any(-1)
+        ray.d = torch.where(mask.unsqueeze(-1), refractive.new_tensor([0, 0, 1]), refractive)
+        ray.update_valid_(~mask)
         return ray
 
     def reflect(self, ray: BatchedRay) -> BatchedRay:
@@ -896,6 +919,12 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
 
     @property
     def distance(self) -> Ts:
+        """
+        Attribute :attr:`CoaxialContext.distance` of associated context.
+
+        :type: Tensor
+        :raises RuntimeError: If the context associated to self is not a coaxial context.
+        """
         d = getattr(self, '_distance', None)
         if d is not None:
             return d
@@ -932,8 +961,8 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
 
     def _newton_descent(self, ray: BatchedRay, f_value: Ts) -> Ts:
         derivative_value = torch.sum(ray.d * self._f_grad(ray), dim=-1)
-        descent = f_value / (derivative_value + self._nt_epsilon)
-        descent = torch.clip(descent, -self._nt_update_bound, self._nt_update_bound)
+        descent = f_value / (derivative_value + self._cfg.epsilon)
+        descent = torch.clip(descent, -self._cfg.update_bound, self._cfg.update_bound)
         return descent
 
     def _solve_t(self, ray: BatchedRay) -> Ts:
@@ -946,7 +975,7 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
             while True:
                 new_ray.o = ray.o + new_ray.d * t.unsqueeze(-1)  # do not compute opl for root finder
                 f_value = self._f(new_ray)
-                if torch.all(f_value.abs() < self._nt_threshold) or cnt >= self._nt_max_iteration:
+                if torch.all(f_value.abs().lt(self._cfg.threshold)) or cnt >= self._cfg.max_iteration:
                     break
 
                 t = t - self._newton_descent(new_ray, f_value)
@@ -975,12 +1004,12 @@ class Planar(Surface):
     def __init__(
         self,
         material: mt.Material | str = DEFAULT_MATERIAL,
-        aperture: Aperture = None,
+        aperture: Aperture | Scalar = None,
         reflective: bool = False,
         *,
         d: Scalar = None
     ):
-        super().__init__(material, aperture, reflective, None, d=d)
+        super().__init__(material, aperture, reflective, d=d)
 
     def h(self, x: Ts, y: Ts) -> Ts:
         return self.new_zeros(torch.broadcast_shapes(x.shape, y.shape))
@@ -1020,7 +1049,7 @@ class Stop(Planar):
         will be moved to the surface. Otherwise, their origins are kept. Default: ``False``.
     """
 
-    def __init__(self, aperture: Aperture = None, move_ray: bool = False, *, d: Scalar = None):
+    def __init__(self, aperture: Aperture | Scalar = None, move_ray: bool = False, *, d: Scalar = None):
         super().__init__('vacuum', aperture, False, d=d)  # material is ignored
         self._move_ray = move_ray
 
@@ -1074,22 +1103,20 @@ class CircularSurface(Surface, metaclass=abc.ABCMeta):
     :param aperture: Aperture of this surface. If a float, the aperture will be a
         :class:`CircularAperture` whose diameter is the given value. Default: infinity.
     :type aperture: Aperture or float
-    :param dict newton_config: Configuration for Newton's method.
+    :param dict intersection_config: Configuration for Newton's method.
         See :ref:`configuration_for_newtons_method` for details.
     """
 
     def __init__(
         self,
         material: mt.Material | str = DEFAULT_MATERIAL,
-        aperture: Aperture | float = DEFAULT_APERTURE_D,
+        aperture: Aperture | Scalar = DEFAULT_APERTURE_D,
         reflective: bool = False,
-        newton_config: dict[str, Any] = None,
+        intersection_config: IntersectionConfig = IntersectionConfig.default,
         *,
         d: Scalar = None
     ):
-        if isinstance(aperture, float):
-            aperture = CircularAperture(aperture)
-        super().__init__(material, aperture, reflective, newton_config, d=d)
+        super().__init__(material, aperture, reflective, intersection_config, d=d)
 
     @abc.abstractmethod
     def h_r2(self, r2: Ts) -> Ts:
@@ -1208,7 +1235,13 @@ class CircularStop(Stop, CircularSurface):
         return torch.zeros_like(r2)
 
 
-class SurfaceList(nn.ModuleList, collections.abc.MutableSequence, utils.VarHookMixIn, base.AsJsonMixIn):
+class SurfaceList(
+    nn.ModuleList,
+    collections.abc.MutableSequence,
+    utils.VarHookMixIn,
+    base.AsJsonMixIn,
+    _t.FreezeParamMixIn,
+):
     """
     A sequential container of surfaces. This class is derived from
     :py:class:`torch.nn.ModuleList` and implements

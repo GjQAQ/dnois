@@ -77,6 +77,10 @@ Here are some useful functions for optical calculation.
     imgd
     objd
     norm_psf
+    fresnel_st
+    fresnel_sr
+    fresnel_pt
+    fresnel_pr
 
 **************************************
 Regularization

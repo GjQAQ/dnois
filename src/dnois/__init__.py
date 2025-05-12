@@ -1,5 +1,5 @@
 """
-TODO: Description
+Package ``dnois`` provides some commonly used or basic functions and classes.
 """
 
 from . import (
@@ -17,8 +17,8 @@ from . import (
 )
 from .base import *
 from .camera import *
-
 from .torch.calc import *
+from .utils import fmt
 
 #: Default format to print float numbers.
 float_print_fmt: str

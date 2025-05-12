@@ -120,7 +120,7 @@ class ThinLens(Planar, CircularSurface, ParaxializableMixIn):
         self,
         fl1: Scalar,
         material: mt.Material | str = _surf.DEFAULT_MATERIAL,
-        aperture: Aperture = None,
+        aperture: Aperture | Scalar = None,
         fl2: Scalar = None,
         reflective: bool = False,
         fl_equal: bool = True,
@@ -131,9 +131,11 @@ class ThinLens(Planar, CircularSurface, ParaxializableMixIn):
             fl2 = fl1
 
         super().__init__(material, aperture, reflective, d=d)
-        self.fl1: nn.Parameter = nn.Parameter(typing.scalar(fl1))  #: Object focal length.
+        #: Object focal length.
+        self.fl1: nn.Parameter = nn.Parameter(typing.scalar(fl1, dtype=torch.get_default_dtype()))
         if not fl_equal:
-            self.fl2: nn.Parameter = nn.Parameter(typing.scalar(fl2))  #: Image focal length.
+            #: Image focal length.
+            self.fl2: nn.Parameter = nn.Parameter(typing.scalar(fl2, dtype=torch.get_default_dtype()))
         self.eps: float = eps  #: See :class:`ThinLens`.
         self._fl_equal = fl_equal
 
@@ -178,6 +180,8 @@ class ThinLens(Planar, CircularSurface, ParaxializableMixIn):
         return super().extra_repr() + f',\nfl1={utils.fmt(self.fl1.item())}{u}, fl2={fl2_text}'
 
     def refract(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
+        # note that the direction of the ray passing optical center changes
+        # if two focal lengths are not equal
         ray = ray.clone(False)
         local_origin = self.new_tensor([0, 0, 0])
         optical_center = self.ctx.l2g(local_origin)  # 3
@@ -188,16 +192,32 @@ class ThinLens(Planar, CircularSurface, ParaxializableMixIn):
         else:
             fl_obj, fl_img = self.fl2, self.fl1  # 0d
             axis_vec = self.new_tensor([0, 0, -1])
+        if self.ctx.rotated:
+            axis_vec = self.ctx.l2g(axis_vec, True)  # 3
 
-        dp = torch.sum(ray.d * axis_vec, -1)  # ...
+        original_d = ray.d
+        dp = torch.sum(original_d * axis_vec, -1)  # ...
         valid = dp.ge(self.eps)  # ...
         dp = torch.where(valid, dp, self.eps).unsqueeze(-1)  # ... x 1
-        intersection = optical_center + ray.d * fl_obj / dp + (fl_img - fl_obj) * axis_vec  # ... x 3
+        intersection = optical_center + original_d * fl_obj / dp + (fl_img - fl_obj) * axis_vec  # ... x 3
         if forward:
             d = intersection - ray.o
         else:
             d = ray.o - intersection
         ray.d = d
+        ray = ray.update_valid(valid)
+        if not ray.coherent:
+            return ray
+
+        # TODO: imparted phase of thin lens
+        # n1, n2 = self.ctx.material_before.n(ray.wl), self.material.n(ray.wl)
+        # if not forward:
+        #     n1, n2 = n2, n1
+        # refracted_opl = n2 * (self.fl2 - torch.norm(d, dim=-1))
+        # if ray.recording_opl:
+        #     ray.opl = refracted_opl
+        # if ray.recording_phase:
+        #     ray.phase = refracted_opl * base.wave_vec(ray.wl)
         return ray
 
     def px_image_point(self, wl: typing.Numeric, point: Ts, forward: bool = True) -> Ts:
@@ -247,14 +267,15 @@ class _SphericalBase(CircularSurface, ParaxializableMixIn, metaclass=abc.ABCMeta
     def __init__(
         self, roc: Scalar = DEFAULT_ROC,
         material: mt.Material | str = _surf.DEFAULT_MATERIAL,
-        aperture: Aperture | float = _surf.DEFAULT_APERTURE_D,
+        aperture: Aperture | Scalar = _surf.DEFAULT_APERTURE_D,
         reflective: bool = False,
-        newton_config: dict[str, Any] = None,
+        intersection_config: IntersectionConfig = IntersectionConfig.default,
         *,
         d: Scalar = None
     ):
-        super().__init__(material, aperture, reflective, newton_config, d=d)
-        self.curvature: nn.Parameter = nn.Parameter(1 / typing.scalar(roc))  #: Curvature.
+        super().__init__(material, aperture, reflective, intersection_config, d=d)
+        roc = typing.scalar(roc, dtype=torch.get_default_dtype())
+        self.curvature: nn.Parameter = nn.Parameter(1 / roc)  #: Curvature. One of optimizable parameters.
 
     def extra_repr(self) -> str:
         r = super().extra_repr()
@@ -343,14 +364,15 @@ class _ConicBase(_SphericalBase, metaclass=abc.ABCMeta):  # docstring for Conic
         self, roc: Scalar = DEFAULT_ROC,
         conic: Scalar = DEFAULT_K,
         material: mt.Material | str = _surf.DEFAULT_MATERIAL,
-        aperture: Aperture | float = _surf.DEFAULT_APERTURE_D,
+        aperture: Aperture | Scalar = _surf.DEFAULT_APERTURE_D,
         reflective: bool = False,
-        newton_config: dict[str, Any] = None,
+        intersection_config: IntersectionConfig = IntersectionConfig.default,
         *,
         d: Scalar = None
     ):
-        super().__init__(roc, material, aperture, reflective, newton_config, d=d)
-        self.conic: nn.Parameter = nn.Parameter(typing.scalar(conic))  #: Conic coefficient.
+        super().__init__(roc, material, aperture, reflective, intersection_config, d=d)
+        k = typing.scalar(conic, dtype=torch.get_default_dtype())
+        self.conic: nn.Parameter = nn.Parameter(k)  #: Conic coefficient. One of optimizable parameters.
 
     def extra_repr(self) -> str:
         r = super().extra_repr()
@@ -431,15 +453,15 @@ class EvenAspherical(_ConicBase):
         conic: Scalar = DEFAULT_K,
         coefficients: Sequence[Scalar] = (),
         material: mt.Material | str = _surf.DEFAULT_MATERIAL,
-        aperture: Aperture | float = _surf.DEFAULT_APERTURE_D,
+        aperture: Aperture | Scalar = _surf.DEFAULT_APERTURE_D,
         reflective: bool = False,
-        newton_config: dict[str, Any] = None,
+        intersection_config: IntersectionConfig = IntersectionConfig.default,
         *,
         d: Scalar = None
     ):
-        super().__init__(roc, conic, material, aperture, reflective, newton_config, d=d)
+        super().__init__(roc, conic, material, aperture, reflective, intersection_config, d=d)
         for i, a in enumerate(coefficients):
-            self.register_parameter(f'a{i + 1}', nn.Parameter(typing.scalar(a)))
+            self.register_parameter(f'a{i + 1}', nn.Parameter(typing.scalar(a, dtype=torch.get_default_dtype())))
         self._n = len(coefficients)
 
     def extra_repr(self) -> str:
@@ -455,9 +477,12 @@ class EvenAspherical(_ConicBase):
 
     def h_derivative_r2(self, r2: Ts) -> Ts:
         s_der = _spherical_der_wrt_r2(r2, self.c, self.conic)
-        a_der = 0
+        a_der = None
         for i in range(len(self.coefficients), 0, -1):
-            a_der = a_der * r2 + self.coefficients[i - 1] * i
+            if a_der is None:
+                a_der = self.coefficients[i - 1] * i
+            else:
+                a_der = a_der * r2 + self.coefficients[i - 1] * i
         return s_der + a_der
 
     def to_dict(self, keep_tensor=True) -> dict[str, Any]:
@@ -616,7 +641,7 @@ class PolynomialPhase(PlanarPhase, CircularSurface):
         a: Sequence[Scalar],
         b: Sequence[Scalar],
         material: mt.Material | str,
-        aperture: Aperture | float = None,
+        aperture: Aperture | Scalar = None,
         reflective: bool = False,
         *,
         d: Scalar = None
@@ -624,10 +649,10 @@ class PolynomialPhase(PlanarPhase, CircularSurface):
         CircularSurface.__init__(self, material, aperture, reflective, d=d)
 
         for i, _a in enumerate(a):
-            self.register_parameter(f'a{i + 1}', nn.Parameter(typing.scalar(_a)))
+            self.register_parameter(f'a{i + 1}', nn.Parameter(typing.scalar(_a, dtype=torch.get_default_dtype())))
         self.n: int = len(a)  #: Number of radial coefficients :math:`n`.
         for i, _b in enumerate(b):
-            self.register_parameter(f'b{i + 1}', nn.Parameter(typing.scalar(_b)))
+            self.register_parameter(f'b{i + 1}', nn.Parameter(typing.scalar(_b, dtype=torch.get_default_dtype())))
         self.m: int = len(b)  #: Number of rectangular coefficients :math:`m`.
 
     def extra_repr(self) -> str:
@@ -703,7 +728,7 @@ class Fresnel(Planar, EvenAspherical):
         conic: Scalar = DEFAULT_K,
         coefficients: Sequence[Scalar] = (),
         material: mt.Material | str = _surf.DEFAULT_MATERIAL,
-        aperture: Aperture | float = _surf.DEFAULT_APERTURE_D,
+        aperture: Aperture | Scalar = _surf.DEFAULT_APERTURE_D,
         reflective: bool = False,
         *,
         d: Scalar = None
@@ -775,12 +800,12 @@ class Grating(Planar):
     :type orders: int or tuple[int, int]
     :param int expand_dim: Dimension to expand the split rays. Default: ``-1``.
     """
-    period: nn.Parameter  #: Period of the grating.
+    period: nn.Parameter  #: Period of the grating. It is not optimizable by default.
 
     def __init__(
         self,
         material: mt.Material | str = _surf.DEFAULT_MATERIAL,
-        aperture: Aperture = None,
+        aperture: Aperture | Scalar = None,
         period: Scalar = None,
         orders: int | typing.Double[int] = 5,
         transmittance: typing.Vector = None,
@@ -792,7 +817,7 @@ class Grating(Planar):
         if period is None:
             period = base.Length.as_default(1e-5, 'm')
 
-        period = typing.scalar(period)
+        period = typing.scalar(period, dtype=torch.get_default_dtype())
         if period.item() < 0:
             raise ValueError(f'Period must be non-negative, but got {period.item()}')
         if isinstance(orders, int):

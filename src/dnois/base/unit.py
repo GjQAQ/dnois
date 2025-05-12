@@ -17,7 +17,9 @@ __all__ = [
 float_print_fmt: str = '.6g'
 
 
-def fmt(v: float) -> str:  # this function is not public and hence without docstring
+def fmt(v: float | typing.Ts) -> str:  # this function is not public and hence without docstring
+    if typing.is_tensor(v):
+        return str(v)
     s = f'{{:{float_print_fmt}}}'
     return s.format(v)
 
@@ -34,6 +36,9 @@ class Unit(Enum):
         self.symbol: str = symbol  #: Symbol of this unit.
         #: Scale factor to convert this unit to another unit of the same type.
         self.scale: float = scale
+
+    def __repr__(self):
+        return self.symbol
 
     def __str__(self):
         return self.symbol
@@ -153,7 +158,7 @@ class Unit(Enum):
         return cls.convert(value, _default_units[cls.type()], to_unit)
 
     @classmethod
-    def fmt(cls, value: int | float, unit: str | typing.Self = None) -> str:
+    def fmt(cls, value: int | float | typing.Ts, unit: str | typing.Self = None) -> str:
         """
         Format a value with unit.
 
@@ -164,24 +169,26 @@ class Unit(Enum):
 
         >>> from dnois import Length
         >>> Length.fmt(1)
-        1m
+        '1m'
         >>> Length.fmt(1, 'cm')
-        1cm
+        '100cm'
         >>> Length.fmt(float('inf'))
-        inf
+        'inf'
 
-        :param value: The value to be formatted.
-        :param unit: Unit of ``value``. Default: use global default unit.
+        :param value: The value to be formatted. It is assumed to be in default unit.
+        :param unit: Unit of ``value``. If given, ``value`` will be converted to that unit and formatted.
         :return: Formatted string.
         """
-        if value == float('inf') or value == float('-inf'):
-            return str(value)
-        if value == float('nan'):
-            return 'nan'
+        if not typing.is_tensor(value):
+            if value == float('inf') or value == float('-inf'):
+                return str(value)
+            if value == float('nan'):
+                return 'nan'
         if unit is None:
             unit = cls.default()
         if not isinstance(unit, Unit):
             unit = cls.from_str(unit)
+        value = cls.default_to(value, unit)
         return fmt(value) + unit.symbol
 
 

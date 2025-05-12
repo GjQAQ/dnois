@@ -14,13 +14,25 @@ are listed in :ref:`ref_dnois_units`.
 
 DNOIS maintains a global **default unit list** for all physical quantities.
 For example, the default unit for length is meter and the default unit for angle is radian.
-Default units can be accessed via :func:`dnois.get_default` and :func:`dnois.set_default`.
+Default units can be accessed via :func:`dnois.get_default` and :func:`dnois.set_default`
+or overridden methods of :class:`dnois.Unit.default`.
 Units of quantities in DNOIS is the corresponding default unit if not specified otherwise.
+
+>>> import dnois
+>>> dnois.get_default('length')
+'m'
+>>> dnois.Length.default()
+m
+>>> _ = dnois.Length.default('mm')
+>>> dnois.Length.default()
+mm
+>>> dnois.Length.fmt(1.)
+'1mm'
 
 Note that changing the default unit does not affect quantities already created.
 It dictates only how DNOIS interprets given numerics. For example, assuming one creates a
-:class:`~dnois.optics.rt.Spherical` with ``roc=1.`` when default unit for length is meter
-and then modifies the default unit to millimeter, its ROC will not be ``0.001`` but still ``1.``.
+:class:`~dnois.optics.rt.Spherical` with ``roc=1.0`` when default unit for length is meter
+and then modifies the default unit to millimeter, its ROC will not be ``0.001`` but still ``1.0``.
 However, its interpretation will change from ``1m`` to ``1mm``.
 
 .. caution::
@@ -31,7 +43,7 @@ it is hard to maintain a unit for all ``float`` and ``torch.Tensor``.
 With global default units, all quantities with same dimension are assumed to have the same unit.
 For example, all lengths are assumed to be in meter, or millimeter, etc.
 One counterexample is wavelengths in :mod:`dnois.mt`, because dispersion equations
-are calculated in unified unit. As a result, units of wavelengths c
+are calculated in micro meters.
 
 Lastly, units of same dimension can be converted to each other via :func:`dnois.convert`.
 If two units with different dimensions are given, an :exc:`ValueError` will be raised.

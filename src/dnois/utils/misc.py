@@ -8,35 +8,17 @@ from ..base import typing, unit
 __all__ = [
     'fmt',
     'invalid_option_msg',
-    'subclasses',
     'with_external',
 
+    'Conditional',
     'ExternalParamMixIn',
     'FixStateMixIn',
-    'Conditional',
+    'GenericCompute',
     'InfinityCond',
-    'VarCollection',
     'VarDict',
     'VarHook',
     'VarHookMixIn',
 ]
-
-
-def _subclasses(cls: type) -> set[type]:
-    subs = set(cls.__subclasses__())  # use set to avoid duplicates
-    for sub in subs.copy():
-        subs = subs | _subclasses(sub)
-    return subs
-
-
-def subclasses(cls: type, _filter: bool = True) -> list[type]:
-    # Returns subclasses of cls recursively
-    # If _filter is True, only non-abstract and non-private (name starting with _) classes are returned
-    sub_list = _subclasses(cls)
-    if _filter:
-        sub_list = list(filter(lambda c: not inspect.isabstract(c) and not c.__name__.startswith('_'), sub_list))
-    sub_list = sorted(sub_list, key=lambda c: c.__name__)
-    return sub_list
 
 
 def fmt(v: float) -> str:
@@ -187,9 +169,6 @@ class VarDict(dict[str, typing.Any]):
         return hook
 
 
-VarCollection = VarDict
-
-
 def invalid_option_msg(name: str, value, literals: type[typing.Literal] | list[str]) -> str:
     if not isinstance(literals, list):
         literals = typing.get_args(literals)
@@ -203,41 +182,41 @@ class Conditional:
     def __init__(
         self,
         condition: Cond,
-        expr_finite: Expr,
-        expr_infinite: Expr,
+        expr_true: Expr,
+        expr_false: Expr,
         condition_tensor: Cond = None,
-        expr_finite_tensor: Expr = None,
-        expr_infinite_tensor: Expr = None,
+        expr_true_tensor: Expr = None,
+        expr_false_tensor: Expr = None,
     ):
         if condition_tensor is None:
             condition_tensor = condition
-        if expr_finite_tensor is None:
-            expr_finite_tensor = expr_finite
-        if expr_infinite_tensor is None:
-            expr_infinite_tensor = expr_infinite
+        if expr_true_tensor is None:
+            expr_true_tensor = expr_true
+        if expr_false_tensor is None:
+            expr_false_tensor = expr_false
 
         self.condition = condition
         self.condition_tensor = condition_tensor
-        self.expr_finite = expr_finite
-        self.expr_infinite = expr_infinite
-        self.expr_finite_tensor = expr_finite_tensor
-        self.expr_infinite_tensor = expr_infinite_tensor
+        self.expr_true = expr_true
+        self.expr_false = expr_false
+        self.expr_true_tensor = expr_true_tensor
+        self.expr_false_tensor = expr_false_tensor
 
     def __call__(self, value: typing.Numeric) -> typing.Any:
         if torch.is_tensor(value):
             condition = self.condition_tensor(value)
             if condition.all():
-                return self.expr_infinite_tensor(value)
+                return self.expr_false_tensor(value)
             else:
-                result = self.expr_finite_tensor(value)
+                result = self.expr_true_tensor(value)
                 if condition.any():
-                    result = torch.where(condition, self.expr_infinite_tensor(value), result)
+                    result = torch.where(condition, self.expr_false_tensor(value), result)
                 return result
         else:
             if self.condition(value):
-                return self.expr_infinite(value)
+                return self.expr_false(value)
             else:
-                return self.expr_finite(value)
+                return self.expr_true(value)
 
 
 class InfinityCond(Conditional):
@@ -252,3 +231,21 @@ class InfinityCond(Conditional):
             lambda x: x == float('inf'), expr_finite, expr_infinite,
             lambda x: x.isinf(), expr_finite_tensor, expr_infinite_tensor
         )
+
+
+class GenericCompute:
+    def __init__(
+        self,
+        func: typing.Callable[[typing.Number], typing.Any] | typing.Callable[[typing.Ts | typing.Number], typing.Any],
+        func_tensor: typing.Callable[[typing.Ts], typing.Any] = None,
+    ):
+        if func_tensor is None:
+            func_tensor = func
+        self.func = func
+        self.func_tensor = func_tensor
+
+    def __call__(self, value: typing.Number | typing.Ts) -> typing.Any:
+        if torch.is_tensor(value):
+            return self.func_tensor(value)
+        else:
+            return self.func(value)

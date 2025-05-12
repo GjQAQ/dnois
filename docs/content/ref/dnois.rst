@@ -19,11 +19,13 @@ Physics
 .. autosummary::
     :toctree: ../generated/dnois/physics
 
+    c
     fline
     fraunhofer_line
+    k
     reflect
     refract
-    wave_vec
+    wave_vector
 
 *********************************
 Debugging
@@ -66,4 +68,5 @@ Miscellaneous
     :toctree: ../generated/dnois/misc
 
     float_print_fmt
+    fmt
 

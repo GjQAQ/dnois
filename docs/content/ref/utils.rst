@@ -25,10 +25,30 @@ Image manipulation
     partition_padded
     merge_patches
 
-*********************************
-Miscellaneous
-*********************************
+*********************************************
+External parameters
+*********************************************
 .. autosummary::
-    :toctree: ../generated/utils/misc
+    :toctree: ../generated/utils/exparam
 
-    fmt
+    with_external
+    ExternalParamMixIn
+
+********************************************
+Variable hook
+********************************************
+.. autosummary::
+    :toctree: ../generated/utils/hook
+
+    VarHookMixIn
+    VarDict
+
+*********************************************
+Computation
+*********************************************
+.. autosummary::
+    :toctree: ../generated/utils/computation
+
+    GenericCompute
+    Conditional
+    InfinityCond

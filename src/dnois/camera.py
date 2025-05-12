@@ -14,8 +14,8 @@ class Camera(torch.nn.Module):
     """
     A basic camera model.
 
-    :param ImagingOptics optics: The imaging optics.
-    :param Sensor sensor: The sensor.
+    :param ImagingOptics optics: The imaging optics object.
+    :param Sensor sensor: The sensor object.
     """
     __call__: Callable[..., Ts]
 

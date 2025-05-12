@@ -315,6 +315,7 @@ class CoaxialRayTracing(
     system.PsfImagingOptics,
     rto.ForwardRayTracingOptics,
     CoaxialRayTracingVisMixIn,
+    _t.FreezeParamMixIn,
 ):
     """
     A class of sequential and ray-tracing-based optical system model.
@@ -1224,7 +1225,7 @@ class CoaxialRayTracing(
         x, y = xy.unbind(-1)  # ... x N_wl x N_spp
         # if PSF size is odd, the center is N/2, relative positions are -N//2, ..., N//2
         # if PSF size is even, the center is (N+1)/2, relative positions are -N//2, ..., N//2-1
-        x, y = x + (psf_size[1] / 2), y + (psf_size[0] / 2)
+        x, y = x + (psf_size[1] // 2 + 0.5), y + (psf_size[0] // 2 + 0.5)
         c_a, r_a = torch.floor(x.detach() + 0.5).long(), torch.floor(y.detach() + 0.5).long()
 
         in_region = c_a.ge(0) & c_a.le(psf_size[1]) & r_a.ge(0) & r_a.le(psf_size[0])  # ... x N_wl x N_spp
@@ -1330,7 +1331,7 @@ class CoaxialRayTracing(
         # ... x N_wl x H x W x N_spp x 3
         rs2grid_points = sampling_grid.unsqueeze(-2) - ray.o[..., None, None, :, :]
         r_proj = torch.sum(ray.d[..., None, None, :, :] * rs2grid_points, -1)
-        wave_vec = base.wave_vec(wl.reshape(-1, 1, 1, 1))
+        wave_vec = base.k(wl.reshape(-1, 1, 1, 1))
         phase = (r_proj + ray.opl[..., None, None, :]) * wave_vec
 
         if oblique:
@@ -1364,7 +1365,7 @@ class CoaxialRayTracing(
         ref_idx = self.surfaces.mt_tail.n(ray.wl)
         opd = chief_ray.march(-rs_roc, ref_idx).opl - ray.opl  # ... x N_wl x N_spp
         opd[~ray.valid] = float('nan')
-        phase = opd * base.wave_vec(wl.unsqueeze(-1))
+        phase = opd * base.k(wl.unsqueeze(-1))
 
         spp = phase.size(-1)
         grid_size = int(math.sqrt(spp))

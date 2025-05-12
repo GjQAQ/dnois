@@ -387,7 +387,7 @@ class PinholeOptics(ImagingOptics, PerspectiveMixIn):
 
 def _symmetric_patch(obj_points: Ts, x_symmetric: bool, y_symmetric: bool) -> Ts:
     if x_symmetric:
-        obj_points = obj_points[:, :(obj_points.size(1) + 1) // 2]
+        obj_points = obj_points[:, :(obj_points.size(1) + 1) // 2, :]
     if y_symmetric:
         obj_points = obj_points[:, :, :(obj_points.size(2) + 1) // 2]
     return obj_points
@@ -395,10 +395,10 @@ def _symmetric_patch(obj_points: Ts, x_symmetric: bool, y_symmetric: bool) -> Ts
 
 def _stitch_symmetric(psf: Ts, h: int, w: int, x_symmetric: bool, y_symmetric: bool) -> Ts:
     if x_symmetric:
-        x_copy = psf[:, :h // 2].flip(1)
+        x_copy = psf[:, :h // 2, :].flip(1, -2)
         psf = torch.cat([psf, x_copy], 1)
     if y_symmetric:
-        y_copy = psf[:, :, :w // 2].flip(2)
+        y_copy = psf[:, :, :w // 2].flip(2, -1)
         psf = torch.cat([psf, y_copy], 2)
     return psf
 
@@ -883,7 +883,7 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         psf = self.variable_hook('patchwise_render.psf', psf)
 
         psf = psf.permute(0, 3, 1, 2, 4, 5)  # B(1) x N_wl x N_y x N_x x H x W
-        image_blur = formation.space_variant(scene.image, psf, pad, linear_conv)  # B x N_wl x H x W
+        image_blur = formation.space_variant(scene.image, psf, pad, linear_conv, point_by_point)  # B x N_wl x H x W
 
         image_blur = self.crop(image_blur)
         return image_blur

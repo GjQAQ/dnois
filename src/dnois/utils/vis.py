@@ -30,7 +30,7 @@ def wl2rgb(wl: float, gamma: float = 0.8, output_format: RGBFormat = 'floats') -
     elif 580 <= wl <= 645:
         red, green, blue = 1.0, -(wl - 645) / (645 - 580), 0.
     else:
-        red, green, blue = 1.0, 0., 0.
+        red, green, blue = 1., 0., 0.
 
     if wl < 380:
         factor = 0.3
@@ -41,7 +41,7 @@ def wl2rgb(wl: float, gamma: float = 0.8, output_format: RGBFormat = 'floats') -
     elif 700 <= wl <= 780:
         factor = 0.3 + 0.7 * (780 - wl) / (780 - 700)
     else:
-        factor = 0.0
+        factor = 0.3
 
     rgb = ((red * factor) ** gamma, (green * factor) ** gamma, (blue * factor) ** gamma)
     if output_format == 'floats':

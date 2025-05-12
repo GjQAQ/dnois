@@ -23,6 +23,7 @@ Optical surfaces
     CoaxialSurfaceList
     Context
     CircularSurface
+    IntersectionConfig
     Surface
     SurfaceList
 

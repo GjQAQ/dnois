@@ -14,9 +14,9 @@ __all__ = [
 
 
 def _get_dd(**tensors: Ts):
-    tensors = {k: v for k, v in tensors.items() if not (v is None or isinstance(v, float))}
+    tensors = {k: v for k, v in tensors.items() if not (v is None or isinstance(v, (float, int)))}
     if len(tensors) == 0:
-        return
+        return None, None
     for k, ts in tensors.items():
         if not torch.is_tensor(ts):
             raise TypeError(f'torch.Tensor expected for {k}, got {type(ts).__name__}')
@@ -172,7 +172,7 @@ class BatchedRay(_t.TensorContainerMixIn):
         """
         new_ray = copy.copy(self)
         if deep:
-            new_ray._ts = {k: v.clone() for k, v in self._ts.items()}
+            new_ray._ts = {k: None if v is None else v.clone() for k, v in self._ts.items()}
         else:
             new_ray._ts = new_ray._ts.copy()
         return new_ray
@@ -281,7 +281,7 @@ class BatchedRay(_t.TensorContainerMixIn):
             if _opl:
                 self.opl = self.opl + opl
             if _ph:
-                self.phase = self.phase + base.physics.wave_vec(self.wl) * opl
+                self.phase = self.phase + base.physics.k(self.wl) * opl
         return self
 
     def march_to(self, z: float | Ts, n: float | Ts = None) -> 'BatchedRay':
@@ -339,7 +339,7 @@ class BatchedRay(_t.TensorContainerMixIn):
         """
         if valid.dtype != torch.bool:
             raise TypeError('Only bool tensors are supported.')
-        self.valid = torch.logical_and(self._ts['v'], valid)
+        self.valid = torch.logical_and(self.valid, valid)
         self.copy_valid_()
         return self
 
@@ -609,6 +609,10 @@ class BatchedRay(_t.TensorContainerMixIn):
         :type: bool
         """
         return self._ts['i'] is not None
+
+    @property
+    def coherent(self) -> bool:
+        return self.recording_phase or self.recording_opl
 
     @property
     def x(self) -> Ts:

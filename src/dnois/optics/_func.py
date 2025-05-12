@@ -2,11 +2,16 @@ import math
 
 import torch
 
-from .. import utils
+from .. import base, utils
+from ..base import typing
 from ..base.typing import Numeric, Ts, overload
 
 __all__ = [
     'circle_of_confusion',
+    'fresnel_st',
+    'fresnel_sr',
+    'fresnel_pt',
+    'fresnel_pr',
     'imgd',
     'norm_psf',
     'objd',
@@ -227,3 +232,253 @@ def norm_psf(psf: Ts, dims: tuple[int, int] = (-2, -1)) -> Ts:
     den = psf.sum(dims, True)
     psf = torch.where(den.ne(0), psf / den, 0)
     return psf
+
+
+def snell(incident_angle: Numeric, n1: Numeric, n2: Numeric) -> Numeric:
+    r"""
+    Computes angle of refracted ray :math:`\theta_t` given that of incident ray :math:`\theta_i`
+    and refractive indices of both media :math:`n_1` and :math:`n_2`:
+
+    .. math::
+        \sin\theta_t=\frac{n_1}{n_2}\sin\theta_i
+
+    :param incident_angle: Angle of incident ray :math:`\theta_i`.
+    :param n1: Refractive index :math:`n_1` in incident medium.
+    :param n2: Refractive index :math:`n_2` in refractive medium.
+    :return: Angle of refracted ray :math:`\theta_t`.
+    """
+    incident_angle = base.Angle.default_to(incident_angle, 'rad')
+    sin_incident = utils.GenericCompute(math.sin, torch.sin)(incident_angle)
+    sin_refracted = sin_incident * n1 / n2
+    refracted_angle = utils.GenericCompute(math.asin, torch.asin)(sin_refracted)
+    return base.Angle.as_default(refracted_angle, 'rad')
+
+
+def _fresnel_dispatch(func, args, kwargs):
+    ba = utils.get_bound_args(func, False, *args, **kwargs)
+    overloads = typing.get_overloads(func)
+    if len(ba.arguments) == 2:  # form 1
+        return typing.cast(Numeric, overloads[0](*args, **kwargs))
+    elif 'n1' in ba.kwargs:  # form 2
+        return typing.cast(Numeric, overloads[1](*args, **kwargs))
+    else:  # form 3
+        return typing.cast(Numeric, overloads[2](*args, **kwargs))
+
+
+def _fresnel_st(i, t):
+    sin_t = utils.GenericCompute(math.sin, torch.sin)(t)
+    cos_i = utils.GenericCompute(math.cos, torch.cos)(i)
+    sin = utils.GenericCompute(math.sin, torch.sin)(i + t)
+    return 2 * sin_t * cos_i / sin
+
+
+def _fresnel_sr(i, t):
+    numerator = utils.GenericCompute(math.sin, torch.sin)(t - i)
+    denominator = utils.GenericCompute(math.sin, torch.sin)(i + t)
+    return numerator / denominator
+
+
+def _fresnel_pt(i, t):
+    sin_t = utils.GenericCompute(math.sin, torch.sin)(t)
+    cos_i = utils.GenericCompute(math.cos, torch.cos)(i)
+    sin = utils.GenericCompute(math.sin, torch.sin)(i + t)
+    cos = utils.GenericCompute(math.cos, torch.cos)(i - t)
+    return 2 * sin_t * cos_i / (sin * cos)
+
+
+def _fresnel_pr(i, t):
+    numerator = utils.GenericCompute(math.tan, torch.tan)(i - t)
+    denominator = utils.GenericCompute(math.tan, torch.tan)(i + t)
+    return numerator / denominator
+
+
+def _fresnel_form1(impl, incident_angle: Numeric, refracted_angle: Numeric) -> Numeric:
+    i, t = incident_angle, refracted_angle
+    i = base.Angle.default_to(i, 'rad')
+    t = base.Angle.default_to(t, 'rad')
+    return impl(i, t)
+
+
+def _fresnel_form2(normal_expr, impl, incident_angle: Numeric, n1: Numeric, n2: Numeric) -> Numeric:
+    def _non_normal(x):
+        t = snell(x, n1, n2)
+        return _fresnel_form1(impl, x, t)
+
+    c = utils.Conditional(lambda x: x == 0., normal_expr(n1, n2), _non_normal)(incident_angle)
+    return c
+
+
+@overload  # noqa
+def fresnel_st(incident_angle: Numeric, refracted_angle: Numeric) -> Numeric:
+    return _fresnel_form1(_fresnel_st, incident_angle, refracted_angle)
+
+
+@overload
+def fresnel_st(incident_angle: Numeric, *, n1: Numeric, n2: Numeric) -> Numeric:
+    return _fresnel_form2(lambda a, b: 2 * a / (a + b), _fresnel_st, incident_angle, n1, n2)
+
+
+def fresnel_st(*args, **kwargs) -> Numeric:
+    r"""
+    Computes Fresnel's equation for s-polarized transmitted (refractive) wave:
+
+    .. math::
+        \frac{E_\text{s,t}}{E_\text{s,i}}=\frac{2\sin\theta_\text{t}\cos\theta_\text{i}}
+        {\sin(\theta_\text{i}+\theta_\text{t})}
+
+    .. function:: fresnel_st(incident_angle, refracted_angle)
+        :no-index:
+
+        .. caution::
+            This version cannot handle normal incidence, i.e. :math:`\theta_i=\theta_t=0`
+            and hence the denominator is zero.
+
+        :param incident_angle: Incident angle :math:`\theta_\text{i}`.
+        :param refracted_angle: Refracted angle :math:`\theta_\text{t}`.
+
+    .. function:: fresnel_st(incident_angle, *, n1, n2)
+        :no-index:
+
+        .. note::
+            This version handles normal incidence, i.e. :math:`\theta_i=\theta_t=0` correctly,
+            in which case the result is :math:`2n_1/(n_1+n_2)`.
+
+        :param incident_angle: Incident angle :math:`\theta_\text{i}`.
+        :param n1: Refractive index :math:`n_1` in incident medium.
+        :param n2: Refractive index :math:`n_2` in refractive medium.
+
+    :return: Ratio of electric intensity amplitude of transmitted wave to that of incident wave.
+    """
+    return _fresnel_dispatch(fresnel_st, args, kwargs)
+
+
+@overload
+def fresnel_sr(incident_angle: Numeric, refracted_angle: Numeric) -> Numeric:
+    return _fresnel_form1(_fresnel_sr, incident_angle, refracted_angle)
+
+
+@overload
+def fresnel_sr(incident_angle: Numeric, *, n1: Numeric, n2: Numeric) -> Numeric:
+    return _fresnel_form2(lambda a, b: (b - a) / (a + b), _fresnel_sr, incident_angle, n1, n2)
+
+
+def fresnel_sr(*args, **kwargs) -> Numeric:
+    r"""
+    Computes Fresnel's equation for s-polarized reflected wave:
+
+    .. math::
+        \frac{E_\text{s,r}}{E_\text{s,i}}=-\frac{\sin(\theta_\text{i}-\theta_\text{t})}
+        {\sin(\theta_\text{i}+\theta_\text{t})}
+
+    .. function:: fresnel_sr(incident_angle, refracted_angle)
+        :no-index:
+
+        .. caution::
+            This version cannot handle normal incidence, i.e. :math:`\theta_i=\theta_t=0`
+            and hence the denominator is zero.
+
+        :param incident_angle: Incident angle :math:`\theta_\text{i}`.
+        :param refracted_angle: Refracted angle :math:`\theta_\text{t}`.
+
+    .. function:: fresnel_sr(incident_angle, *, n1, n2)
+        :no-index:
+
+        .. note::
+            This version handles normal incidence, i.e. :math:`\theta_i=\theta_t=0` correctly,
+            in which case the result is :math:`(n_2-n_1)/(n_2+n_1)`.
+
+        :param incident_angle: Incident angle :math:`\theta_\text{i}`.
+        :param n1: Refractive index :math:`n_1` in incident medium.
+        :param n2: Refractive index :math:`n_2` in refractive medium.
+
+    :return: Ratio of electric intensity amplitude of reflected wave to that of incident wave.
+    """
+    return _fresnel_dispatch(fresnel_sr, args, kwargs)
+
+
+@overload  # noqa
+def fresnel_pt(incident_angle: Numeric, refracted_angle: Numeric) -> Numeric:
+    return _fresnel_form1(_fresnel_pt, incident_angle, refracted_angle)
+
+
+@overload
+def fresnel_pt(incident_angle: Numeric, *, n1: Numeric, n2: Numeric) -> Numeric:
+    return _fresnel_form2(lambda a, b: 2 * a / (a + b), _fresnel_pt, incident_angle, n1, n2)
+
+
+def fresnel_pt(*args, **kwargs) -> Numeric:
+    r"""
+    Computes Fresnel's equation for p-polarized transmitted (refractive) wave:
+
+    .. math::
+        \frac{E_\text{p,t}}{E_\text{p,i}}=\frac{2\sin\theta_\text{t}\cos\theta_\text{i}}
+        {\sin(\theta_\text{i}+\theta_\text{t})\cos(\theta_\text{i}-\theta_\text{t})}
+
+    .. function:: fresnel_pt(incident_angle, refracted_angle)
+        :no-index:
+
+        .. caution::
+            This version cannot handle normal incidence, i.e. :math:`\theta_i=\theta_t=0`
+            and hence the denominator is zero.
+
+        :param incident_angle: Incident angle :math:`\theta_\text{i}`.
+        :param refracted_angle: Refracted angle :math:`\theta_\text{t}`.
+
+    .. function:: fresnel_pt(incident_angle, *, n1, n2)
+        :no-index:
+
+        .. note::
+            This version handles normal incidence, i.e. :math:`\theta_i=\theta_t=0` correctly,
+            in which case the result is :math:`2n_1/(n_1+n_2)`.
+
+        :param incident_angle: Incident angle :math:`\theta_\text{i}`.
+        :param n1: Refractive index :math:`n_1` in incident medium.
+        :param n2: Refractive index :math:`n_2` in refractive medium.
+
+    :return: Ratio of electric intensity amplitude of transmitted wave to that of incident wave.
+    """
+    return _fresnel_dispatch(fresnel_pt, args, kwargs)
+
+
+@overload
+def fresnel_pr(incident_angle: Numeric, refracted_angle: Numeric) -> Numeric:
+    return _fresnel_form1(_fresnel_pr, incident_angle, refracted_angle)
+
+
+@overload
+def fresnel_pr(incident_angle: Numeric, *, n1: Numeric, n2: Numeric) -> Numeric:
+    return _fresnel_form2(lambda a, b: (b - a) / (a + b), _fresnel_pr, incident_angle, n1, n2)
+
+
+def fresnel_pr(*args, **kwargs) -> Numeric:
+    r"""
+    Computes Fresnel's equation for p-polarized reflected wave:
+
+    .. math::
+        \frac{E_\text{p,r}}{E_\text{p,i}}=\frac{\tan(\theta_\text{i}-\theta_\text{t})}
+        {\tan(\theta_\text{i}+\theta_\text{t})}
+
+    .. function:: fresnel_pr(incident_angle, refracted_angle)
+        :no-index:
+
+        .. caution::
+            This version cannot handle normal incidence, i.e. :math:`\theta_i=\theta_t=0`
+            and hence the denominator is zero.
+
+        :param incident_angle: Incident angle :math:`\theta_\text{i}`.
+        :param refracted_angle: Refracted angle :math:`\theta_\text{t}`.
+
+    .. function:: fresnel_pr(incident_angle, *, n1, n2)
+        :no-index:
+
+        .. note::
+            This version handles normal incidence, i.e. :math:`\theta_i=\theta_t=0` correctly,
+            in which case the result is :math:`(n_2-n_1)/(n_2+n_1)`.
+
+        :param incident_angle: Incident angle :math:`\theta_\text{i}`.
+        :param n1: Refractive index :math:`n_1` in incident medium.
+        :param n2: Refractive index :math:`n_2` in refractive medium.
+
+    :return: Ratio of electric intensity amplitude of reflected wave to that of incident wave.
+    """
+    return _fresnel_dispatch(fresnel_pr, args, kwargs)

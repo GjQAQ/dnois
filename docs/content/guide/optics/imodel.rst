@@ -72,7 +72,8 @@ distribution, a.k.a. **Point Spread Function (PSF)** rather than a single point
 on the image plane. Representing the coordinate on image plane as :math:`(x',y')`,
 the PSF of an object point :math:`P(x,y,z)` can be expressed as :math:`p(x',y';x,y,z)`.
 Given some object points :math:`\{P_i(x_i,y_i,z_i)\}_{i=1}^N` whose intensities are given as
-:math:`I_i`, the image of the scene can be represented as
+:math:`I_i`, the image (i.e. irradiance distribution on the sensor plane)
+of the scene can be represented as
 
 .. math::
     I(x',y')=\sum_{i=1}^N I_i p(x',y';x_i,y_i,z_i).

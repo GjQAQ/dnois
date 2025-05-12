@@ -146,6 +146,7 @@ def space_variant(
     psf: Ts,
     pad: Size2d = 0,
     linear_conv: bool = False,
+    _one_by_one: bool = False,
 ) -> Ts:
     r"""
     Space-variant image formation model. The image plane is partitioned into non-overlapping
@@ -175,8 +176,8 @@ def space_variant(
     # ... x N_h x N_w x H_p x W_p
     patches = torch.stack([torch.stack(cast(list[Ts], row), -3) for row in patches], -4)
 
-    wh = torch.linspace(0, 1, pad[0] * 2, device=obj.device, dtype=obj.dtype)[:, None]
-    ww = torch.linspace(0, 1, pad[1] * 2, device=obj.device, dtype=obj.dtype)[None, :]
+    wh = torch.linspace(0, 1, pad[0] * 2 + 2, device=obj.device, dtype=obj.dtype)[1:-1, None]
+    ww = torch.linspace(0, 1, pad[1] * 2 + 2, device=obj.device, dtype=obj.dtype)[None, 1:-1]
     if pad[0] != 0:
         patches[..., 1:, :, :pad[0] * 2, :] *= wh
         patches[..., :-1, :, -pad[0] * 2:, :] *= wh.flip(0)
@@ -191,8 +192,16 @@ def space_variant(
         padding = 'none'
         overlap = (2 * pad[0], 2 * pad[1])
 
-    # ... x N_h x N_w x H_p x W_p
-    blurred = fourier.dconv2(psf, patches, out='full', padding=padding)
+    if _one_by_one:
+        blurred = torch.stack([
+            torch.stack([
+                fourier.dconv2(psf_elem, patch, out='full', padding=padding)
+                for psf_elem, patch in zip(psf_row.unbind(-3), patch_row.unbind(-3))
+            ], -3) for psf_row, patch_row in zip(psf.unbind(-4), patches.unbind(-4))
+        ], -4)
+    else:
+        # ... x N_h x N_w x H_p x W_p
+        blurred = fourier.dconv2(psf, patches, out='full', padding=padding)
 
     blurred = blurred.transpose(-4, 0).transpose(-3, 1)  # N_h x N_w x ... x H_p x W_p
     blurred = utils.merge_patches(blurred, overlap, 'sum')

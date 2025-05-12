@@ -13,6 +13,7 @@ __all__ = [
     'DeviceMixIn',
     'DtypeMixIn',
     'EnhancedModule',
+    'FreezeParamMixIn',
     'ParamTransformModule',
     'TensorAsDelegate',
     'TensorContainerMixIn',
@@ -426,7 +427,7 @@ class EnhancedModule(
                     raise TypeError(f'Value of parameter {key} of {type(self).__name__} must be a number')
                 value = self.new_tensor(value)
             if not isinstance(value, nn.Parameter):
-                value = nn.Parameter(value)
+                value = nn.Parameter(value.to(device=self.device, dtype=self.dtype))
             self.register_parameter(key, value)
         else:
             super().__setattr__(key, value)
