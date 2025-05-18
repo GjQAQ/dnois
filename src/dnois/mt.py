@@ -25,6 +25,9 @@ from . import utils, base
 from .base.typing import Numeric, Union, Any, Self, cast
 
 __all__ = [
+    'air',
+    'vacuum',
+
     'dispersion_types',
     'get',
     'is_available',
@@ -129,7 +132,7 @@ class Material(base.AsJsonMixIn, metaclass=abc.ABCMeta):
                 f'{base.Length.fmt(self.min_wl, self.default_unit)}, '
                 f'{base.Length.fmt(self.max_wl, self.default_unit)})')
 
-    def _validate(self, wl: Numeric) -> Numeric:
+    def _make_wl(self, wl: Numeric) -> Numeric:
         wl = base.Length.default_to(wl, self.default_unit)
         m1, m2 = (wl.min().item(), wl.max().item()) if torch.is_tensor(wl) else (wl, wl)
         if m1 < self.min_wl * (1 - RANGE_CHECK_EPS) or m2 > self.max_wl * (1 + RANGE_CHECK_EPS):
@@ -171,7 +174,7 @@ class Constant(Material):
         return super()._repr() + f', n={utils.fmt(self.refractive_index)}'
 
     def n(self, wl: Numeric) -> Numeric:
-        wl = self._validate(wl)
+        wl = self._make_wl(wl)
         n = self.refractive_index
         return torch.full_like(wl, n) if torch.is_tensor(wl) else n
 
@@ -201,7 +204,7 @@ class Cauchy(Material):
         self.c = c  #: :math:`C` in Cauchy formula.
 
     def n(self, wl: Numeric) -> Numeric:
-        wl = self._validate(wl)
+        wl = self._make_wl(wl)
         iw2 = 1 / cast(Numeric, wl ** 2)
         n = (self.c * iw2 + self.b) * iw2 + self.a
         return n
@@ -246,7 +249,7 @@ class Schott(Material):
         return super().__getattribute__(name)
 
     def n(self, wl: Numeric) -> Numeric:
-        wl = self._validate(wl)
+        wl = self._make_wl(wl)
         iw2 = 1 / cast(Numeric, wl ** 2)
         cs = self.coefficients.copy()
         n2 = cs.pop(-1)
@@ -294,7 +297,7 @@ class _Sellmeier(Material):
             super().__setattr__(key, value)
 
     def n(self, wl: Numeric) -> Numeric:
-        wl = self._validate(wl)
+        wl = self._make_wl(wl)
         w2 = cast(Numeric, wl ** 2)
         n2 = 1 + sum([kc * w2 / (w2 - lc) for kc, lc in zip(self.ks, self.ls)])
         n = n2 ** 0.5
@@ -360,7 +363,7 @@ class Sellmeier2(Material):
         self.swl2 = wl2 * wl2  #: :math:`\lambda_2^2` in Sellmeier2 formula.
 
     def n(self, wl: Numeric) -> Numeric:
-        wl = self._validate(wl)
+        wl = self._make_wl(wl)
         w2 = cast(Numeric, wl ** 2)
         n2 = self.a_pp + self.b1 * w2 / (w2 - self.swl1) + self.b2 / (w2 - self.swl2)
         n = n2 ** 0.5
@@ -411,7 +414,7 @@ class Sellmeier4(Material):
         self.e = e  #: :math:`E` in Sellmeier4 formula.
 
     def n(self, wl: Numeric) -> Numeric:
-        wl = self._validate(wl)
+        wl = self._make_wl(wl)
         w2 = cast(Numeric, wl ** 2)
         n2 = self.a + self.b * w2 / (w2 - self.c) + self.d * w2 / (w2 - self.e)
         n = n2 ** 0.5
@@ -462,7 +465,7 @@ class Herzberger(Material):
         return super().__getattribute__(name)
 
     def n(self, wl: Numeric) -> Numeric:
-        wl = self._validate(wl)
+        wl = self._make_wl(wl)
         w2 = cast(Numeric, wl ** 2)
         m = 1 / (w2 - 0.028)
         _1, _2, _3, _4, _5, _6 = self.coefficients
@@ -503,7 +506,7 @@ class Conrady(Material):
         self.b = b  #: :math:`b` in Conrady formula.
 
     def n(self, wl: Numeric) -> Numeric:
-        wl = self._validate(wl)
+        wl = self._make_wl(wl)
         n = self.n0 + self.a / wl + self.b / cast(Numeric, wl ** 3.5)
         return n
 
@@ -529,10 +532,13 @@ class Air(Material):
     """
 
     def n(self, wavelength: Numeric) -> Numeric:
-        wl = self._validate(wavelength)
-        wl2 = wl ** 2
-        n = 1 + 6.4328e-5 + 2.94981e-2 * wl2 / (146 * wl2 - 1) + 2.5540e-4 * wl2 / (41 * wl2 - 1)  # noqa
+        wl = self._make_wl(wavelength)
+        n = _ref_n(wl * wl)
         return n
+
+
+def _ref_n(wl2):
+    return 1 + 6.4328e-5 + 2.94981e-2 * wl2 / (146 * wl2 - 1) + 2.5540e-4 * wl2 / (41 * wl2 - 1)
 
 
 def get(name: str, default_none: bool = False) -> Union[Material, None]:
@@ -710,3 +716,5 @@ def load(file, exist_ok: bool = False):
 _lib: dict[str, Material] = {}
 with importlib.resources.open_text(__name__, 'builtin_materials.json') as f:
     load(f)
+air: Air = cast(Air, _lib['air'])
+vacuum: Constant = cast(Constant, _lib['vacuum'])
