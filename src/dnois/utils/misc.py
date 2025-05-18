@@ -126,14 +126,32 @@ _T = typing.TypeVar('_T')
 VarHook = typing.Callable[[_T], _T | None]
 
 
-class VarHookMixIn:  # to be documented
-    _capture_hooks: dict[str, VarHook]
+class HookRemover:
+    def __init__(self, hook: VarHook, hook_list: list[VarHook]):
+        self.hook = hook
+        self.hook_list = hook_list
 
-    def register_variable_hook(self, name: str, hook: VarHook):
+    def remove(self, absent_ok: bool = True):
+        try:
+            idx = self.hook_list.index(self.hook)
+        except ValueError as e:
+            if absent_ok:
+                return
+            else:
+                raise e
+        self.hook_list.pop(idx)
+
+
+class VarHookMixIn:  # to be documented
+    _capture_hooks: dict[str, list[VarHook]]
+
+    def register_variable_hook(self, name: str, hook: VarHook) -> HookRemover:
         hooks = self._get_capture_hooks(True)
         if name in hooks:
-            raise ValueError(f'Capture hook "{name}" for {self.__class__.__name__} already exists')
-        hooks[name] = hook
+            hooks[name].append(hook)
+        else:
+            hooks[name] = [hook]
+        return HookRemover(hook, hooks[name])
 
     def remove_variable_hook(self, name: str):
         hooks = self._get_capture_hooks()
@@ -145,16 +163,17 @@ class VarHookMixIn:  # to be documented
         if hooks is None:
             return obj
 
-        hook = hooks.get(name, None)
-        if hook is None:
-            hook = hooks.get('*', None)
-        if hook is not None:
-            ret = hook(obj)
-            if ret is not None:
-                obj = ret
+        hook_list = hooks.get(name, None)
+        # if hook is None:
+        #     hook = hooks.get('*', None)
+        if hook_list is not None:
+            for hook in hook_list:
+                ret = hook(obj)
+                if ret is not None:
+                    obj = ret
         return obj
 
-    def _get_capture_hooks(self, create: bool = False) -> dict[str, VarHook]:
+    def _get_capture_hooks(self, create: bool = False) -> dict[str, list[VarHook]]:
         hooks = getattr(self, '_capture_hooks', None)
         if hooks is None and create:
             self._capture_hooks = hooks = {}

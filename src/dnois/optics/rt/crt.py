@@ -273,13 +273,13 @@ if ext.vis.mpl_available():
 
             rays = [ray.broadcast_()]
             intercepted_rays = []
+            handles = []
             for s in self.surfaces:
-                s.register_variable_hook('forward.intercepted', intercepted_rays.append)
-                s.register_variable_hook('forward.interacted', rays.append)
+                handles.append(s.register_variable_hook('forward.intercepted', intercepted_rays.append))
+                handles.append(s.register_variable_hook('forward.interacted', rays.append))
             intercepted_rays.append(self.trace_ray(ray).broadcast_())
-            for s in self.surfaces:
-                s.remove_variable_hook('forward.intercepted')
-                s.remove_variable_hook('forward.interacted')
+            for h in handles:
+                h.remove()
 
             for i in reversed(list(range(len(rays) - 1))):
                 rays[i].valid = self.surfaces[i].backward_valid(rays[i + 1].valid)
