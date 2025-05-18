@@ -423,13 +423,16 @@ class CoaxialRayTracing(
         ACM Transactions on Graphics (TOG), 40(5), 1-15.
     """
     _inherent = system.PsfImagingOptics._inherent + ['surfaces']
-    _external = system.PsfImagingOptics._external + [
-        'imaging_model',
-        'psf_type', 'psf_center',
-        'coherent_tracing_samples', 'coherent_tracing_sampling_pattern',
-        'fov_type', 'sampler', 'wl_reduction',
-        'repetitions', 'intensity_aware',
-    ]
+    imaging_model: utils.Exparam
+    psf_type: utils.Exparam
+    psf_center: utils.Exparam
+    fov_type: utils.Exparam
+    sampler: utils.Exparam
+    coherent_tracing_samples: utils.Exparam
+    coherent_tracing_sampling_pattern: utils.Exparam
+    wl_reduction: utils.Exparam
+    intensity_aware: utils.Exparam
+    repetitions: utils.Exparam
 
     def __init__(
         self,

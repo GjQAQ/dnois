@@ -663,7 +663,14 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         See descriptions above. Default: ``False``.
     """
     _inherent = ['sensor', 'perspective_focal_length']
-    _external = ['wl', 'segments', 'depth', 'psf_size', 'norm_psf', 'cropping', 'x_symmetric', 'y_symmetric']
+    wl: utils.Exparam
+    segments: utils.Exparam
+    depth: utils.Exparam
+    psf_size: utils.Exparam
+    norm_psf: utils.Exparam
+    cropping: utils.Exparam
+    x_symmetric: utils.Exparam
+    y_symmetric: utils.Exparam
 
     def __init__(
         self,

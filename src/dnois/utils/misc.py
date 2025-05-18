@@ -11,6 +11,7 @@ __all__ = [
     'with_external',
 
     'Conditional',
+    'Exparam',
     'ExternalParamMixIn',
     'FixStateMixIn',
     'GenericCompute',
@@ -19,6 +20,9 @@ __all__ = [
     'VarHook',
     'VarHookMixIn',
 ]
+
+_unset = object()
+Exparam: type = type('Exparam', (), {})
 
 
 def fmt(v: float) -> str:
@@ -32,11 +36,15 @@ def fmt(v: float) -> str:
     return unit.fmt(v)
 
 
-_unset = object()
-
-
 class ExternalParamMixIn:
     _external: list[str] = []
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        annotations = inspect.get_annotations(cls)
+        for k, v in annotations.items():
+            if v is Exparam:
+                cls._external.append(k)
 
     def pick(self, name: str, value=None) -> typing.Any:
         """
