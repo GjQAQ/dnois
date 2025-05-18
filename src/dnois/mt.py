@@ -14,24 +14,27 @@ See :ref:`accessing_materials`.
 """
 
 import abc
+import importlib.resources
+import json
+from pathlib import Path
 import re
 
 import torch
 
 from . import utils, base
-from .base.typing import Numeric, Union, cast
+from .base.typing import Numeric, Union, Any, Self, cast
 
 __all__ = [
-    'vacuum',
-
     'dispersion_types',
     'get',
     'is_available',
     'list_all',
+    'load',
     'refractive_index',
     'register',
     'registered',
     'remove',
+    'save',
 
     'Cauchy',
     'Conrady',
@@ -53,14 +56,16 @@ def _format_flist(flist: list[float]) -> str:
     return f'[{", ".join(f"{utils.fmt(c)}" for c in flist)}]'
 
 
-class Material(metaclass=abc.ABCMeta):
+# TODO: replace deep copy of registered materials with shallow copy
+class Material(base.AsJsonMixIn, metaclass=abc.ABCMeta):
     """
     Class representing an optical material type.
 
     :param str name: Name of the material.
     :param float min_wl: Minimum applicable wavelength in ``default_unit``. Default: 0.
     :param float max_wl: Maximum applicable wavelength in ``default_unit``. Default: infinity.
-    :param str default_unit: Default unit for wavelength.
+    :param str default_unit: Unit of wavelength for dispersion formula and ``min_wl`` and ``max_wl``.
+        Default: ``'um'``.
     """
     __slots__ = ('name', 'min_wl', 'max_wl', 'default_unit')
     _forbidden_name = ['', 'None', 'none', 'null']
@@ -97,11 +102,32 @@ class Material(metaclass=abc.ABCMeta):
         """
         pass
 
-    @abc.abstractmethod
+    def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
+        return {
+            'type': self.__class__.__name__,
+            'name': self.name,
+            'min_wl': self.min_wl,
+            'max_wl': self.max_wl,
+            'default_unit': self.default_unit
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> Self:
+        if cls is not Material:
+            d.pop('type', None)
+            return cls(**d)  # default implementation of eponymous method
+
+        mt_type = d['type']
+        subs = utils.subclasses(cls)
+        for sub in subs:
+            if sub.__name__ == mt_type:
+                return cast(type[Material], sub).from_dict(d)  # calling eponymous method of subclass
+        raise RuntimeError(utils.invalid_option_msg('material type', mt_type, dispersion_types(True)))
+
     def _repr(self) -> str:
         return (f'name={self.name}, domain=('
-                f'{utils.fmt(self.min_wl)}{self.default_unit}, '
-                f'{utils.fmt(self.max_wl)}{self.default_unit})')
+                f'{base.Length.fmt(self.min_wl, self.default_unit)}, '
+                f'{base.Length.fmt(self.max_wl, self.default_unit)})')
 
     def _validate(self, wl: Numeric) -> Numeric:
         wl = base.Length.default_to(wl, self.default_unit)
@@ -135,6 +161,11 @@ class Constant(Material):
     ):
         super().__init__(name, min_wl, max_wl, default_unit)
         self.refractive_index: float = n  #: Refractive index.
+
+    def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
+        d = super().to_dict(keep_tensor)
+        d['n'] = self.refractive_index
+        return d
 
     def _repr(self) -> str:
         return super()._repr() + f', n={utils.fmt(self.refractive_index)}'
@@ -174,6 +205,13 @@ class Cauchy(Material):
         iw2 = 1 / cast(Numeric, wl ** 2)
         n = (self.c * iw2 + self.b) * iw2 + self.a
         return n
+
+    def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
+        d = super().to_dict(keep_tensor)
+        d['a'] = self.a
+        d['b'] = self.b
+        d['c'] = self.c
+        return d
 
     def _repr(self) -> str:
         return super()._repr() + f', A={utils.fmt(self.a)}, B={utils.fmt(self.b)}, C={utils.fmt(self.c)}'
@@ -217,6 +255,11 @@ class Schott(Material):
         n = n2 ** 0.5
         return n
 
+    def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
+        d = super().to_dict(keep_tensor)
+        d['coefficients'] = self.coefficients
+        return d
+
     def _repr(self) -> str:
         return f'{super()._repr()}, coefficients={_format_flist(self.coefficients)}'
 
@@ -256,6 +299,12 @@ class _Sellmeier(Material):
         n2 = 1 + sum([kc * w2 / (w2 - lc) for kc, lc in zip(self.ks, self.ls)])
         n = n2 ** 0.5
         return n
+
+    def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
+        d = super().to_dict(keep_tensor)
+        d['ks'] = self.ks
+        d['ls'] = self.ls
+        return d
 
     def _repr(self) -> str:
         return f'{super()._repr()}, K={_format_flist(self.ks)}, L={_format_flist(self.ls)}'
@@ -317,6 +366,15 @@ class Sellmeier2(Material):
         n = n2 ** 0.5
         return n
 
+    def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
+        d = super().to_dict(keep_tensor)
+        d['a'] = self.a_pp - 1
+        d['b1'] = self.b1
+        d['b2'] = self.b2
+        d['wl1'] = self.swl1 ** 0.5
+        d['wl2'] = self.swl2 ** 0.5
+        return d
+
     def _repr(self) -> str:
         return (f'{super()._repr()}, '
                 f'A={utils.fmt(self.a_pp - 1)}, '
@@ -358,6 +416,12 @@ class Sellmeier4(Material):
         n2 = self.a + self.b * w2 / (w2 - self.c) + self.d * w2 / (w2 - self.e)
         n = n2 ** 0.5
         return n
+
+    def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
+        d = super().to_dict(keep_tensor)
+        for k in ['a', 'b', 'c', 'd', 'e']:
+            d[k] = getattr(self, k)
+        return d
 
     def _repr(self) -> str:
         return (f'{super()._repr()}, '
@@ -405,6 +469,11 @@ class Herzberger(Material):
         n = _1 + m * (_2 + m * _3) + w2 * (_4 + w2 * (_5 + w2 * _6))
         return n
 
+    def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
+        d = super().to_dict(keep_tensor)
+        d['coefficients'] = self.coefficients
+        return d
+
     def _repr(self) -> str:
         return f'{super()._repr()}, coefficients={_format_flist(self.coefficients)}'
 
@@ -438,22 +507,32 @@ class Conrady(Material):
         n = self.n0 + self.a / wl + self.b / cast(Numeric, wl ** 3.5)
         return n
 
+    def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
+        d = super().to_dict(keep_tensor)
+        d['n0'] = self.n0
+        d['a'] = self.a
+        d['b'] = self.b
+        return d
+
     def _repr(self) -> str:
         return f'{super()._repr()}, n0={utils.fmt(self.n0)}, A={utils.fmt(self.a)}, B={utils.fmt(self.b)}'
 
 
-vacuum = Constant('vacuum', 1.)
-silica = Sellmeier1(
-    'silica',
-    [0.6961663, 0.4079426, 0.8974794],
-    [0.0684043 ** 2, 0.1162414 ** 2, 9.896161 ** 2],
-    0.21, 6.7,
-)
-_builtins: list[Material] = [
-    vacuum,
-    silica,
-]
-_lib = {m.name: m for m in _builtins}
+class Air(Material):
+    r"""
+    Air in normal temperature and pressure, whose dispersion formula is:
+
+    .. math::
+        n=1+\left(6432.8+\frac{2949810}{146\lambda^2-1}+\frac{25540}{41\lambda^2-1}\right)10^{-8}
+
+    See :class:`Material` for descriptions of parameters.
+    """
+
+    def n(self, wavelength: Numeric) -> Numeric:
+        wl = self._validate(wavelength)
+        wl2 = wl ** 2
+        n = 1 + 6.4328e-5 + 2.94981e-2 * wl2 / (146 * wl2 - 1) + 2.5540e-4 * wl2 / (41 * wl2 - 1)  # noqa
+        return n
 
 
 def get(name: str, default_none: bool = False) -> Union[Material, None]:
@@ -594,3 +673,40 @@ def dispersion_types(name_only: bool = False) -> list[type[Material]] | list[str
         return [sub.__name__ for sub in sub_list]
     else:
         return cast(list, sub_list)
+
+
+def save(file):
+    """
+    Save the material library to a JSON file.
+
+    :param file: The JSON file to save. Either its path (``str`` or ``pathlib.Path``)
+        or a file-like object.
+    """
+    materials = [m.to_dict() for m in _lib.values()]
+    json.dump(materials, file, separators=(',', ':'))
+
+
+def load(file, exist_ok: bool = False):
+    """
+    Load the material library from a JSON file.
+
+    :param file: The JSON file to load. Either its path (``str`` or ``pathlib.Path``)
+        or a file-like object.
+    :param bool exist_ok: If ``False``, raise :exc:`KeyError` if the material already exists.
+        Otherwise, overwrite the existing material. Default: ``False``.
+    """
+    if isinstance(file, str):
+        file = Path(file)
+    if isinstance(file, Path):
+        with file.open('r', encoding='utf-8') as fp:
+            materials = json.load(fp)
+    else:
+        materials = json.load(file)
+
+    for m in materials:
+        register(Material.from_dict(m), exist_ok=exist_ok)
+
+
+_lib: dict[str, Material] = {}
+with importlib.resources.open_text(__name__, 'builtin_materials.json') as f:
+    load(f)

@@ -66,14 +66,22 @@ class AsJsonMixIn(AsDictMixIn):
         kwargs.setdefault('indent', 2)
         return json.dumps(self.to_dict(False), **kwargs)
 
-    def save_json(self, fp, **kwargs):
+    def save_json(self, file, **kwargs):
         """
-        Save ``self`` into a JSON file-like object ``fp``.
+        Save ``self`` into a JSON file ``file``.
 
+        :param file: The JSON file to save. Either its path (``str`` or ``pathlib.Path``)
+            or a file-like object.
         :keyword kwargs: Keyword arguments passed to :func:`json.dump`.
         """
         kwargs.setdefault('indent', 2)
-        return json.dump(self.to_dict(False), fp, **kwargs)
+        if isinstance(file, str):
+            file = Path(file)
+        if isinstance(file, Path):
+            with file.open('w', encoding='utf-8') as fp:
+                json.dump(self.to_dict(False), fp, **kwargs)  # noqa
+        else:
+            json.dump(self.to_dict(False), file, **kwargs)
 
     @classmethod
     def load_json(cls, file, **kwargs):
