@@ -428,6 +428,5 @@ class EnhancedModule(
                 value = self.new_tensor(value)
             if not isinstance(value, nn.Parameter):
                 value = nn.Parameter(value.to(device=self.device, dtype=self.dtype))
-            self.register_parameter(key, value)
-        else:
-            super().__setattr__(key, value)
+        # it is handled correctly when key refers to a transformed parameter
+        super().__setattr__(key, value)

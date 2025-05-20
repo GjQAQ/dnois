@@ -17,4 +17,4 @@ from .formation import *
 from .paraxial import *
 from .system import *
 
-from . import reg, df, formation, paraxial, rt, system
+from . import df, formation, paraxial, rt, system

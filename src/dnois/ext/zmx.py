@@ -16,9 +16,9 @@ class ZmxParsingError(RuntimeError):
     pass
 
 
-def slist_from_zmx(file: str | Path | typing.TextIO) -> rt.CoaxialSurfaceList:
+def slist_from_zmx(file: str | Path | typing.TextIO) -> rt.CoaxialSurfaceSequence:
     """
-    Parse a ZMX file and return a :class:`~dnois.optics.rt.CoaxialSurfaceList` object.
+    Parse a ZMX file and return a :class:`~dnois.optics.rt.CoaxialSurfaceSequence` object.
 
     .. warning::
         This function is experimental and is subject to change.
@@ -26,8 +26,8 @@ def slist_from_zmx(file: str | Path | typing.TextIO) -> rt.CoaxialSurfaceList:
     :param file: The ZMX file to be parsed. Can be either a file path (``str`` or ``pathlib.Path``),
         or a file-like object (implementing ``readlines()``).
     :type file: str | Path | typing.TextIO
-    :return: A :class:`~dnois.optics.rt.CoaxialSurfaceList` object.
-    :rtype: ~dnois.optics.rt.CoaxialSurfaceList
+    :return: A :class:`~dnois.optics.rt.CoaxialSurfaceSequence` object.
+    :rtype: ~dnois.optics.rt.CoaxialSurfaceSequence
     """
     if isinstance(file, str):
         file = Path(file)
@@ -70,7 +70,7 @@ def slist_from_zmx(file: str | Path | typing.TextIO) -> rt.CoaxialSurfaceList:
 
     zmx_surf_list = zmx_surf_list[1:-1]  # discard object and image plane
     slist = [_surface_from_zmx_segment(segment, i, zmx_lens_unit) for i, segment in enumerate(zmx_surf_list)]
-    slist = rt.CoaxialSurfaceList(slist, stop_idx=stop_idx)
+    slist = rt.CoaxialSurfaceSequence(slist, stop_idx=stop_idx)
     return slist
 
 

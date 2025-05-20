@@ -996,6 +996,15 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         image = self.crop(image)
         return image
 
+    @utils.with_external(exclude='segments')
+    def psf_array(self, segments: Size2d, depth: Vector) -> Ts:
+        segments = size2d(segments)
+        obj_points = self.points_grid(segments, depth)  # (N_d,N_H,N_W,3)
+        obj_points = _symmetric_patch(obj_points, self.x_symmetric, self.y_symmetric)
+        psf = self.psf(obj_points)  # (N_d,N_H,N_W,N_wl,H,W)
+        psf = _stitch_symmetric(psf, segments[0], segments[1], self.x_symmetric, self.y_symmetric)
+        return psf
+
     def crop(self, image: Ts) -> Ts:
         """
         Crop ``image`` by width :attr:`.cropping`.

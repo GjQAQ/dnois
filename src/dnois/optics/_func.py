@@ -242,6 +242,10 @@ def snell(incident_angle: Numeric, n1: Numeric, n2: Numeric) -> Numeric:
     .. math::
         \sin\theta_t=\frac{n_1}{n_2}\sin\theta_i
 
+    .. seealso::
+        Use :func:`dnois.refract` if direction of incident and refracted rays
+        and normal vector are all vectors.
+
     :param incident_angle: Angle of incident ray :math:`\theta_i`.
     :param n1: Refractive index :math:`n_1` in incident medium.
     :param n2: Refractive index :math:`n_2` in refractive medium.

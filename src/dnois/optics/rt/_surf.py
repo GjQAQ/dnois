@@ -9,11 +9,13 @@ import torch
 from torch import nn
 
 from .ray import BatchedRay
+from .. import paraxial
 from ... import mt, utils, torch as _t, base
-from ...base import typing
+from ...base import typing as ty
 from ...base.typing import Sequence, Ts, Any, Callable, Scalar, Self, Size2d
 
 __all__ = [
+    'paraxialize',
     'surface_types',
 
     'Aperture',
@@ -22,14 +24,14 @@ __all__ = [
     'CircularStop',
     'CircularSurface',
     'CoaxialContext',
-    'CoaxialSurfaceList',
+    'CoaxialSurfaceSequence',
     'Context',
     'IntersectionConfig',
     'Planar',
     'Sampler',
     'Stop',
     'Surface',
-    'SurfaceList',
+    'SurfaceSequence',
 ]
 
 EDGE_CUTTING: float = 1 - 1e-6
@@ -54,7 +56,7 @@ def _rotation_mat(angles: Ts) -> Ts:
     ])
 
 
-Sampler = typing.Callable[[], tuple[Ts, Ts]]
+Sampler = ty.Callable[[], tuple[Ts, Ts]]
 
 
 class Context(_t.EnhancedModule):
@@ -69,7 +71,7 @@ class Context(_t.EnhancedModule):
     See :ref:`guide_optics_rt_slcs` for more details.
 
     :param Surface surface: The host surface that this context belongs to.
-    :param SurfaceList surface_list: The surface list containing ``surface``.
+    :param SurfaceSequence surface_list: The surface list containing ``surface``.
     """
     x: Ts  #: x-coordinate of the origin of local coordinate.
     y: Ts  #: y-coordinate of the origin of local coordinate.
@@ -81,10 +83,10 @@ class Context(_t.EnhancedModule):
     _transform_params = {'x', 'y', 'z', 'theta', 'phi', 'chi'}
     _writable_params = _transform_params
 
-    def __init__(self, surface: 'Surface', surface_list: 'SurfaceList'):
+    def __init__(self, surface: 'Surface', surface_list: 'SurfaceSequence'):
         super().__init__()
         self.surface: 'Surface' = surface  #: The host surface that this context belongs to.
-        self.surface_list: 'SurfaceList' = surface_list  #: The surface list containing the surface.
+        self.surface_list: 'SurfaceSequence' = surface_list  #: The surface list containing the surface.
 
     def __setattr__(self, key, value):
         if key in {'surface', 'surface_list'}:
@@ -279,7 +281,7 @@ class Context(_t.EnhancedModule):
 
     @classmethod
     def from_dict(cls, d: dict) -> 'Context':
-        # deserialization of this class is controlled by SurfaceList
+        # deserialization of this class is controlled by SurfaceSequence
         raise TypeError(f'{cls.__name__} cannot be instantiated from a dict by calling {cls.from_dict.__qualname__}')
 
     def _get_csp(self, name: str) -> Ts:
@@ -315,13 +317,13 @@ class CoaxialContext(Context):
     def __init__(
         self,
         surface: 'Surface',
-        surface_list: 'SurfaceList',
-        distance: typing.Scalar = None,
+        surface_list: 'SurfaceSequence',
+        distance: ty.Scalar = None,
     ):
         super().__init__(surface, surface_list)
         if distance is None:
             distance = 0.
-        distance = typing.scalar(distance, dtype=torch.get_default_dtype())
+        distance = ty.scalar(distance, dtype=torch.get_default_dtype())
         self.register_parameter('distance', nn.Parameter(distance))
 
     def extra_repr(self) -> str:
@@ -468,13 +470,13 @@ class Aperture(_t.EnhancedModule, metaclass=abc.ABCMeta):
             d.pop('type')
             return cls(**d)  # default implementation of eponymous method
 
-        ty = d['type']
+        _ty = d['type']
         subs = utils.subclasses(cls)
         for sub in subs:
-            if sub.__name__ == ty:
-                return typing.cast(type[Aperture], sub).from_dict(d)  # Calling eponymous method of subclass
+            if sub.__name__ == _ty:
+                return ty.cast(type[Aperture], sub).from_dict(d)  # Calling eponymous method of subclass
         aperture_types = [sub.__name__ for sub in subs]
-        raise RuntimeError(utils.invalid_option_msg('aperture type', ty, aperture_types))
+        raise RuntimeError(utils.invalid_option_msg('aperture type', _ty, aperture_types))
 
 
 class CircularAperture(Aperture):
@@ -492,17 +494,17 @@ class CircularAperture(Aperture):
 
         self.register_parameter('radius', None)
         #: Radius of the aperture.
-        radius = typing.scalar(diameter, dtype=torch.get_default_dtype()) / 2
+        radius = ty.scalar(diameter, dtype=torch.get_default_dtype()) / 2
         self.radius: nn.Parameter = nn.Parameter(radius, False)
 
     def extra_repr(self) -> str:
         return f'radius={utils.fmt(self.radius.item())}{base.Length.default()}'
 
     def evaluate(self, x: Ts, y: Ts) -> torch.BoolTensor:
-        return typing.cast(torch.BoolTensor, x.square() + y.square() < self._detection_radius().square())
+        return ty.cast(torch.BoolTensor, x.square() + y.square() < self._detection_radius().square())
 
     def pass_ray(self, ray: BatchedRay) -> torch.BoolTensor:
-        return typing.cast(torch.BoolTensor, ray.r2 < self._detection_radius().square())
+        return ty.cast(torch.BoolTensor, ray.r2 < self._detection_radius().square())
 
     def sample_random(self, n: int, sampling_curve: Callable[[Ts], Ts] = None) -> tuple[Ts, Ts]:
         r"""
@@ -538,7 +540,7 @@ class CircularAperture(Aperture):
         :return: Two 1D tensors of representing x and y coordinates of the points.
         :rtype: tuple[Tensor, Tensor]
         """
-        h, w = typing.size2d(n)
+        h, w = ty.size2d(n)
         y, x = utils.grid(
             (h, w), (2 * self.radius / h, 2 * self.radius / w), symmetric=True,
             device=self.device, dtype=self.dtype
@@ -674,7 +676,7 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
         super().__init__()
         if aperture is None:
             aperture = CircularAperture()
-        elif typing.is_scalar(aperture):
+        elif ty.is_scalar(aperture):
             aperture = CircularAperture(aperture)
         if intersection_config is None:
             intersection_config = {}
@@ -689,7 +691,7 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
         self.reflective: bool = reflective
 
         if d is not None:
-            self._distance = typing.scalar(d, dtype=self.dtype, device=self.device)
+            self._distance = ty.scalar(d, dtype=self.dtype, device=self.device)
 
         self._cfg = intersection_config
 
@@ -864,11 +866,11 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
         ray.d = base.reflect(ray.d, normal)
         return ray
 
-    @typing.overload
+    @ty.overload
     def sample(self, mode: str, *args, **kwargs) -> Ts:
         pass
 
-    @typing.overload
+    @ty.overload
     def sample(self, sampler: Sampler) -> Ts:
         pass
 
@@ -892,13 +894,45 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
         :rtype: Tensor
         """
         if callable(mode):
-            x, y = typing.cast(Sampler, mode)()
+            x, y = ty.cast(Sampler, mode)()
         else:
             x, y = self.aperture.sample(mode, *args, **kwargs)
         z = self.h_extended(x, y)
         points = torch.stack([x, y, z], dim=-1)
         points = self.context.l2g(points)
         return points
+
+    def flip_(self) -> Self:
+        """
+        Flip the surface along the optical axis.
+
+        .. note::
+            This method does not consider material (and distance).
+
+        :return: Self.
+        :rtype: Identical to ``self``
+        :raises RuntimeError: If the surface is reflective.
+        """
+        # aperture need not be flipped typically
+        if self.reflective:
+            raise RuntimeError(f'Reflective surface cannot be flipped.')
+        return self
+
+    def paraxialize(self, wl: ty.Numeric) -> paraxial.ParaxialSystem:
+        """
+        Abstract this surface into a paraxial surface.
+
+        .. note::
+            Focal lengths of resulted paraxial surface depend on wavelength
+            because refractive index does.
+
+        :param wl: Wavelength to be evaluated.
+        :type wl: ``int``, ``float`` or Tensor.
+        :return: Equivalent paraxial surface of self.
+        :rtype: ParaxialSystem
+        :raises NotImplementedError: If the surface is not paraxializable.
+        """
+        raise NotImplementedError(f'{self.__class__.__name__} cannot be paraxialized.')
 
     def to_dict(self, keep_tensor=True) -> dict[str, Any]:
         return {
@@ -937,16 +971,16 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
     @classmethod
     def from_dict(cls, d: dict):
         if cls is not Surface:
-            d.pop('type')
+            d.pop('type', None)
             d['aperture'] = Aperture.from_dict(d['aperture'])
             return cls(**d)  # default implementation of eponymous method
 
-        ty = d['type']
+        _ty = d['type']
         subs = utils.subclasses(cls)
         for sub in subs:
-            if sub.__name__ == ty:
-                return typing.cast(type[Surface], sub).from_dict(d)  # calling eponymous method of subclass
-        raise RuntimeError(utils.invalid_option_msg('surface type', ty, surface_types(True)))
+            if sub.__name__ == _ty:
+                return ty.cast(type[Surface], sub).from_dict(d)  # calling eponymous method of subclass
+        raise RuntimeError(utils.invalid_option_msg('surface type', _ty, surface_types(True)))
 
     @staticmethod
     def backward_valid(valid: Ts) -> Ts:
@@ -1235,7 +1269,7 @@ class CircularStop(Stop, CircularSurface):
         return torch.zeros_like(r2)
 
 
-class SurfaceList(
+class SurfaceSequence(
     nn.ModuleList,
     collections.abc.MutableSequence,
     utils.VarHookMixIn,
@@ -1307,7 +1341,7 @@ class SurfaceList(
 
     def __iadd__(self, other: Sequence[Surface]) -> Self:
         """:meta private:"""
-        if isinstance(other, SurfaceList):
+        if isinstance(other, SurfaceSequence):
             if other.mt_head != self.mt_tail:
                 warnings.warn(f'The last material of former surface list {self.mt_tail.name} is different from '
                               f'the first material of latter surface list {other.mt_head.name}.')
@@ -1316,7 +1350,7 @@ class SurfaceList(
         self.extend(other)
         return self
 
-    def __iter__(self) -> typing.Iterator[Surface]:
+    def __iter__(self) -> ty.Iterator[Surface]:
         """:meta private:"""
         return self._slist.__iter__()
 
@@ -1401,11 +1435,17 @@ class SurfaceList(
         """:meta private:"""
         sl = list(reversed(self._slist))
         stop_idx = None if self.stop_idx is None else sl.index(self.stop)
-        m = self.mt_tail
+        mt_head = self.mt_head
         self.clear()
         self.extend(sl)
-        self.mt_head = m
+        for s in self:
+            s.flip_()
+
+        self.mt_head = self.first.material
         self._stop_idx = stop_idx
+        for i in range(len(self) - 1):
+            self[i].material = self[i + 1].material
+        self.last.material = mt_head
 
     def extra_repr(self) -> str:
         return f'foremost_material={self.mt_head.name}, stop_idx={self.stop_idx}'
@@ -1461,6 +1501,10 @@ class SurfaceList(
         else:
             stop_idx = None
         return cls(cloned, m, stop_idx)
+
+    def paraxialize(self, wl: ty.Numeric) -> paraxial.ParaxialSystem:
+        """Apply :func:`paraxialize` to this surface sequence."""
+        return paraxialize(self, wl)
 
     @property
     def first(self) -> Surface:
@@ -1572,12 +1616,25 @@ class SurfaceList(
             surface.context = None
 
 
-class CoaxialSurfaceList(SurfaceList):
-    """A subclass of :class:`SurfaceList` to contain coaxial surfaces."""
+class CoaxialSurfaceSequence(SurfaceSequence):
+    """A subclass of :class:`SurfaceSequence` to contain coaxial surfaces."""
+
+    def reverse(self):
+        """
+        See :meth:`SurfaceSequence.reverse`.
+
+        .. warning::
+            The :attr:`CoaxialContext.distance` of the last surface after reversal
+            will be set to 0. Remember to modify it manually if needed.
+        """
+        super().reverse()
+        for i in range(len(self) - 1):
+            self.ctxs[i].distance = self.ctxs[i + 1].distance
+        self.ctxs[-1].distance = 0
 
     @property
     def ctxs(self) -> list[CoaxialContext]:
-        return [typing.cast(CoaxialContext, s.context) for s in self._slist]
+        return [ty.cast(CoaxialContext, s.context) for s in self._slist]
 
     @property
     def length(self) -> Ts:
@@ -1587,7 +1644,7 @@ class CoaxialSurfaceList(SurfaceList):
 
         :type: Tensor
         """
-        return typing.cast(Ts, sum(s.context.distance for s in self._slist[:-1]))
+        return ty.cast(Ts, sum(s.context.distance for s in self._slist[:-1]))
 
     @property
     def total_length(self) -> Ts:
@@ -1597,7 +1654,7 @@ class CoaxialSurfaceList(SurfaceList):
 
         :type: Tensor
         """
-        return typing.cast(Ts, sum(s.context.distance for s in self._slist))
+        return ty.cast(Ts, sum(s.context.distance for s in self._slist))
 
     def _make_ctx(self, s):
         d = getattr(s, '_distance', None)
@@ -1625,4 +1682,28 @@ def surface_types(name_only: bool = False) -> list[type[Surface]] | list[str]:
     if name_only:
         return [sub.__name__ for sub in sub_list]
     else:
-        return typing.cast(list, sub_list)
+        return ty.cast(list, sub_list)
+
+
+def paraxialize(surfaces: ty.Iterable[Surface], wl: ty.Numeric) -> paraxial.ParaxialSystem:
+    """
+    Returns the equivalent paraxial system of a collection of surfaces at given wavelengths.
+
+    .. seealso::
+        :meth:`~Surface.paraxialize`
+
+    :param Iterable[Surface] surfaces: A collection of surfaces.
+    :param wl: Wavelength.
+    :type wl: ``int``, ``float`` or Tensor
+    :return: The equivalent paraxial system.
+    :rtype: :class:`~paraxial.ParaxialSystem`
+    """
+    ps = ...  # returned paraxial system
+    for s in surfaces:
+        if isinstance(s, Stop):
+            continue
+        if ps is ...:  # in case the first surface is not paraxializable
+            ps = s.paraxialize(wl)
+        else:
+            ps = ps.composite(s.paraxialize(wl))
+    return ps

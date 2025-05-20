@@ -227,21 +227,17 @@ if ext.vis.mpl_available():
             edge_z = []
             for sf in self.surfaces:  # surfaces
                 sf: surf.CircularSurface
+                radius = sf.apt.radius.item()
                 if isinstance(sf, surf.CircularStop):
-                    r = sf.apt.radius.item()
-                    length = r / 5
-                    z = sf.ctx.baseline.item()
-                    ax.plot(
-                        [[z, z, z - length / 2, z - length / 2], [z, z, z + length / 2, z + length / 2]],
-                        [[r, -r, r, -r], [r + length, -r - length, r, -r]],
-                        **self._ls_surf
-                    )
+                    self._plot_component_circular_stop(ax, sf)
                     edge_z.append(None)
                 else:
-                    y = torch.linspace(-sf.apt.radius, sf.apt.radius, points, device=self.device)
+                    y = torch.linspace(-radius, radius, points, device=self.device)
                     z = sf.h_extended(torch.zeros_like(y), y) + sf.ctx.baseline
                     ax.plot(utils.t4plot(z), utils.t4plot(y), **self._ls_surf)
                     edge_z.append(z[-1].item())
+                if isinstance(sf, surf.ThinLens):
+                    self._plot_thin_lens(ax, radius, sf)
             for i in range(len(self.surfaces) - 1):  # edges
                 if self.surfaces[i].material.name == 'vacuum':
                     continue
@@ -261,6 +257,28 @@ if ext.vis.mpl_available():
                         z = edge_z[i]
                         r1, r2 = r2, r1
                     ax.plot([[z, z], [z, z]], [[r2, -r2], [r1, -r1]], color='black', linewidth=1)
+
+        def _plot_thin_lens(self, ax, radius, sf):
+            length = radius / (10 * 2 ** 0.5)
+            z0 = sf.ctx.baseline.item()
+            ax.plot(
+                [[z0, z0, z0, z0], [z0 - length, z0 + length, z0 + length, z0 - length]],
+                [
+                    [radius, radius, -radius, -radius],
+                    [radius - length, radius - length, length - radius, length - radius]
+                ],
+                **self._ls_surf
+            )
+
+        def _plot_component_circular_stop(self, ax, sf: surf.CircularStop):
+            r = sf.apt.radius.item()
+            length = r / 5
+            z = sf.ctx.baseline.item()
+            ax.plot(
+                [[z, z, z - length / 2, z - length / 2], [z, z, z + length / 2, z + length / 2]],
+                [[r, -r, r, -r], [r + length, -r - length, r, -r]],
+                **self._ls_surf
+            )
 
         def _plot_rays(self: 'CoaxialRayTracing', ax, ray: BatchedRay, height: Ts, wl: Ts, legend: bool):
             # ray: N_fov x N_wl x N_spp
@@ -322,7 +340,7 @@ class CoaxialRayTracing(
 
     See :class:`~dnois.optics.PsfImagingOptics` for descriptions of more parameters.
 
-    :param CoaxialSurfaceList surfaces: Surface list object.
+    :param CoaxialSurfaceSequence surfaces: Surface list object.
     :param str imaging_model: The way to render imaged radiance field. Default: ``'psf'``.
 
         ``'psf'``
@@ -436,7 +454,7 @@ class CoaxialRayTracing(
 
     def __init__(
         self,
-        surfaces: surf.CoaxialSurfaceList,
+        surfaces: surf.CoaxialSurfaceSequence,
         sensor: Sensor = None,
         imaging_model: ImagingModel = 'psf',
         perspective_focal_length: float = None,
@@ -457,7 +475,7 @@ class CoaxialRayTracing(
             raise NotImplementedError()
 
         super().__init__(sensor, perspective_focal_length, **kwargs)
-        self.surfaces: surf.CoaxialSurfaceList = surfaces  #: Surface list.
+        self.surfaces: surf.CoaxialSurfaceSequence = surfaces  #: Surface list.
         self.psf_type: PsfType = psf_type  #: See :class:`CoaxialRayTracing`.
         self.psf_center: PsfCenter = psf_center  #: See :class:`CoaxialRayTracing`.
         self.fov_type: FovType = fov_type  #: See :class:`CoaxialRayTracing`.
@@ -648,9 +666,9 @@ class CoaxialRayTracing(
         elif psf_type == 'inc_gaussian':
             psf = self._psf_inc_gaussian(origins, psf_size, wl, psf_center, **kwargs)
         elif psf_type == 'coh_huygens':
-            psf = self._psf_coherent(origins, psf_size, wl, psf_center, False)
+            psf = self._psf_coherent(origins, psf_size, wl, psf_center, False, **kwargs)
         elif psf_type == 'coh_kirchoff':
-            psf = self._psf_coherent(origins, psf_size, wl, psf_center, True)
+            psf = self._psf_coherent(origins, psf_size, wl, psf_center, True, **kwargs)
         elif psf_type == 'coh_fraunhofer':
             psf = self._psf_from_wavefront(origins, psf_size, wl, psf_center, **kwargs)
         else:
@@ -703,13 +721,7 @@ class CoaxialRayTracing(
         :return: Focal length. A 0D tensor.
         :rtype: Tensor
         """
-        paraxial = self.surfaces.first.paraxialize(wl)
-        for s in self.surfaces[1:]:
-            if isinstance(s, surf.Stop):
-                continue
-            if not surf.is_paraxializable(s):
-                raise RuntimeError(f'Surface {s.ctx.index} ({type(s).__name__}) is not paraxializable')
-            paraxial = paraxial.composite(s.paraxialize(wl))
+        paraxial = self.surfaces.paraxialize(wl)
         return paraxial.fl1 if obj_side else paraxial.fl2
 
     def find_stop(
@@ -1032,7 +1044,7 @@ class CoaxialRayTracing(
     @classmethod
     def _pre_from_dict(cls, d: dict):
         d = super()._pre_from_dict(d)
-        d['surfaces'] = surf.CoaxialSurfaceList.from_dict(d['surfaces'])
+        d['surfaces'] = surf.CoaxialSurfaceSequence.from_dict(d['surfaces'])
         return d
 
     # protected

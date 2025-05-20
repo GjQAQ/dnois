@@ -28,6 +28,8 @@ Materials
     Sellmeier4
     Sellmeier5
 
+.. _accessing_materials:
+
 *****************************
 Accessing materials
 *****************************

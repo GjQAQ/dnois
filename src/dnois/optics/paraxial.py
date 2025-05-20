@@ -3,6 +3,7 @@ import math
 
 import torch
 
+from . import _func
 from .. import base
 from ..base.typing import Numeric, cast
 
@@ -28,6 +29,9 @@ def _determine(principal: Numeric, focal: Numeric, fl: Numeric, obj: bool):
 
 
 class ParaxialSystem(metaclass=abc.ABCMeta):
+    fl1: Numeric
+    fl2: Numeric
+
     """
     Model of paraxial (or ideal, Gaussian) optical system. Its main properties include
     the positions of two principal points. Principal points can also be left unspecified.
@@ -62,6 +66,14 @@ class ParaxialSystem(metaclass=abc.ABCMeta):
         :rtype: ParaxialSystem
         """
         pass
+
+    def imgd(self, obj_d: Numeric) -> Numeric:
+        """Call :func:`dnois.optics.imgd` with focal lengths of this system."""
+        return _func.imgd(obj_d, self.fl1, self.fl2)
+
+    def objd(self, img_d: Numeric) -> Numeric:
+        """Call :func:`dnois.optics.objd` with focal lengths of this system."""
+        return _func.objd(img_d, self.fl1, self.fl2)
 
     @classmethod
     def from_interface(cls, roc: Numeric, n1: Numeric, n2: Numeric, location: Numeric = None) -> 'ParaxialSystem':
@@ -237,11 +249,6 @@ class InfiniteParaxialSystem(ParaxialSystem):
         super().__init__(principal1, principal2)
         self.focal_ratio = focal_ratio
 
-    def _repr_fields(self) -> str:
-        p_texts = super()._repr_fields().split(', ')
-        p_texts.append(f'focal_ratio={self.focal_ratio}')
-        return ", ".join(p_texts)
-
     def composite(self, other: ParaxialSystem, delta: Numeric = None, d: Numeric = None) -> ParaxialSystem:
         if delta is not None:
             raise ValueError('delta cannot be provided for infinite paraxial system')
@@ -252,6 +259,25 @@ class InfiniteParaxialSystem(ParaxialSystem):
             return self._composite_infinite(other, d)
         else:
             raise TypeError(f'Composition between {type(self).__name__} and {type(other).__name__} is not supported')
+
+    def imgd(self, obj_d: Numeric) -> Numeric:
+        return obj_d * -self.focal_ratio
+
+    def objd(self, img_d: Numeric) -> Numeric:
+        return img_d / -self.focal_ratio
+
+    @property
+    def fl1(self):
+        return float('inf')
+
+    @property
+    def fl2(self):
+        return float('inf') * self.focal_ratio
+
+    def _repr_fields(self) -> str:
+        p_texts = super()._repr_fields().split(', ')
+        p_texts.append(f'focal_ratio={self.focal_ratio}')
+        return ", ".join(p_texts)
 
     def _composite_finite(self, other: FiniteParaxialSystem, d: Numeric) -> FiniteParaxialSystem:
         if self.principal1 is None:

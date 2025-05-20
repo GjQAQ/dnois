@@ -1,6 +1,7 @@
 import abc
 import functools
 import math
+import warnings
 
 import torch
 from torch import nn
@@ -10,7 +11,7 @@ from ._surf import *
 from .. import _func, paraxial
 from ... import base, mt, torch as _t, utils
 from ...base.typing import Any, Ts, Scalar, Sequence
-from ...base import typing
+from ...base import typing as ty
 
 __all__ = [
     'is_paraxializable',
@@ -58,7 +59,7 @@ class ParaxializableMixIn(Surface, metaclass=abc.ABCMeta):
         """
         pass
 
-    def px_image_point(self: Surface, wl: typing.Numeric, point: Ts, forward: bool = True) -> Ts:
+    def px_image_point(self: Surface, wl: ty.Numeric, point: Ts, forward: bool = True) -> Ts:
         """
         Computes the image point of ``point`` according to paraxial optics.
 
@@ -93,13 +94,13 @@ class ParaxializableMixIn(Surface, metaclass=abc.ABCMeta):
         xy = point[..., :2] * lateral_amplification.unsqueeze(-1)  # ... x 2
         return torch.cat([xy, z.unsqueeze(-1)], -1)  # ... x 3
 
-    def paraxialize(self, wl: typing.Numeric) -> paraxial.ParaxialSystem:
+    def paraxialize(self, wl: ty.Numeric) -> paraxial.ParaxialSystem:
         z = self.context.baseline if isinstance(self.context, CoaxialContext) else None
         n1, n2 = self.context.material_before.n(wl), self.material.n(wl)
         return paraxial.ParaxialSystem.from_interface(1 / self.px_curvature, n1, n2, z)
 
 
-class ThinLens(Planar, CircularSurface, ParaxializableMixIn):
+class ThinLens(Planar, CircularSurface):
     """
     A model for thin lens. See :class:`Planar` for more description of arguments.
 
@@ -132,10 +133,10 @@ class ThinLens(Planar, CircularSurface, ParaxializableMixIn):
 
         super().__init__(material, aperture, reflective, d=d)
         #: Object focal length.
-        self.fl1: nn.Parameter = nn.Parameter(typing.scalar(fl1, dtype=torch.get_default_dtype()))
+        self.fl1: nn.Parameter = nn.Parameter(ty.scalar(fl1, dtype=torch.get_default_dtype()))
         if not fl_equal:
             #: Image focal length.
-            self.fl2: nn.Parameter = nn.Parameter(typing.scalar(fl2, dtype=torch.get_default_dtype()))
+            self.fl2: nn.Parameter = nn.Parameter(ty.scalar(fl2, dtype=torch.get_default_dtype()))
         self.eps: float = eps  #: See :class:`ThinLens`.
         self._fl_equal = fl_equal
 
@@ -145,7 +146,7 @@ class ThinLens(Planar, CircularSurface, ParaxializableMixIn):
         else:
             return super().__getattr__(item)
 
-    def fl_equal(self, equal: bool = None) -> bool | typing.Self:
+    def fl_equal(self, equal: bool = None) -> bool | ty.Self:
         """
         Set or get the flag indicating whether ``fl2`` is identical to ``fl1``.
 
@@ -209,18 +210,16 @@ class ThinLens(Planar, CircularSurface, ParaxializableMixIn):
         if not ray.coherent:
             return ray
 
-        # TODO: imparted phase of thin lens
-        # n1, n2 = self.ctx.material_before.n(ray.wl), self.material.n(ray.wl)
-        # if not forward:
-        #     n1, n2 = n2, n1
-        # refracted_opl = n2 * (self.fl2 - torch.norm(d, dim=-1))
-        # if ray.recording_opl:
-        #     ray.opl = refracted_opl
-        # if ray.recording_phase:
-        #     ray.phase = refracted_opl * base.wave_vec(ray.wl)
+        warnings.warn(f'{self.__class__.__name__} does not support coherent ray tracing currently')
         return ray
 
-    def px_image_point(self, wl: typing.Numeric, point: Ts, forward: bool = True) -> Ts:
+    def flip_(self) -> ty.Self:
+        super().flip_()
+        if not self.fl_equal():
+            self.fl2, self.fl1 = self.fl1, self.fl2
+        return self
+
+    def px_image_point(self, wl: ty.Numeric, point: Ts, forward: bool = True) -> Ts:
         z0 = self.ctx.baseline  # 0d
         z = point[..., 2]  # ...
         if forward:
@@ -237,13 +236,9 @@ class ThinLens(Planar, CircularSurface, ParaxializableMixIn):
         xy = point[..., :2] * lateral_amplification.unsqueeze(-1)  # ... x 2
         return torch.cat([xy, z.unsqueeze(-1)], -1)  # ... x 3
 
-    def paraxialize(self, wl: typing.Numeric) -> paraxial.ParaxialSystem:
+    def paraxialize(self, wl: ty.Numeric) -> paraxial.ParaxialSystem:
         z = self.context.baseline if isinstance(self.context, CoaxialContext) else None
         return paraxial.FiniteParaxialSystem(z, z, fl1=self.fl1, fl2=self.fl2)
-
-    @property
-    def px_curvature(self) -> Ts:
-        raise RuntimeError(f'There is no curvature for {self.__class__.__name__}')
 
 
 class _SphericalBase(CircularSurface, ParaxializableMixIn, metaclass=abc.ABCMeta):  # docstring for Spherical
@@ -256,7 +251,7 @@ class _SphericalBase(CircularSurface, ParaxializableMixIn, metaclass=abc.ABCMeta
 
         h(x,y)=\hat{h}(r^2)=\frac{cr^2}{1+\sqrt{1-c^2r^2}}
 
-    where :math:`c` is radius of curvature.
+    where :math:`c` is curvature.
 
     See :py:class:`CircularSurface` for more description of arguments.
 
@@ -274,13 +269,18 @@ class _SphericalBase(CircularSurface, ParaxializableMixIn, metaclass=abc.ABCMeta
         d: Scalar = None
     ):
         super().__init__(material, aperture, reflective, intersection_config, d=d)
-        roc = typing.scalar(roc, dtype=torch.get_default_dtype())
+        roc = ty.scalar(roc, dtype=torch.get_default_dtype())
         self.curvature: nn.Parameter = nn.Parameter(1 / roc)  #: Curvature. One of optimizable parameters.
 
     def extra_repr(self) -> str:
         r = super().extra_repr()
-        r += f',\nroc={utils.fmt(self.roc.item())}{base.Length.default()}'
+        r += f',\nroc={base.Length.fmt(self.roc.item())}'
         return r
+
+    def flip_(self) -> ty.Self:
+        super().flip_()
+        self.curvature = -self.curvature
+        return self
 
     def to_dict(self, keep_tensor=True) -> dict[str, Any]:
         d = super().to_dict(keep_tensor)
@@ -350,7 +350,7 @@ class _ConicBase(_SphericalBase, metaclass=abc.ABCMeta):  # docstring for Conic
 
         h(x,y)=\hat{h}(r^2)=\frac{cr^2}{1+\sqrt{1-(1+k)c^2r^2}}
 
-    where :math:`c` is radius of curvature and :math:`k` is conic coefficient.
+    where :math:`c` is curvature and :math:`k` is conic coefficient.
 
     See :py:class:`CircularSurface` for more description of arguments.
 
@@ -371,7 +371,7 @@ class _ConicBase(_SphericalBase, metaclass=abc.ABCMeta):  # docstring for Conic
         d: Scalar = None
     ):
         super().__init__(roc, material, aperture, reflective, intersection_config, d=d)
-        k = typing.scalar(conic, dtype=torch.get_default_dtype())
+        k = ty.scalar(conic, dtype=torch.get_default_dtype())
         self.conic: nn.Parameter = nn.Parameter(k)  #: Conic coefficient. One of optimizable parameters.
 
     def extra_repr(self) -> str:
@@ -461,7 +461,7 @@ class EvenAspherical(_ConicBase):
     ):
         super().__init__(roc, conic, material, aperture, reflective, intersection_config, d=d)
         for i, a in enumerate(coefficients):
-            self.register_parameter(f'a{i + 1}', nn.Parameter(typing.scalar(a, dtype=torch.get_default_dtype())))
+            self.register_parameter(f'a{i + 1}', nn.Parameter(ty.scalar(a, dtype=torch.get_default_dtype())))
         self._n = len(coefficients)
 
     def extra_repr(self) -> str:
@@ -484,6 +484,12 @@ class EvenAspherical(_ConicBase):
             else:
                 a_der = a_der * r2 + self.coefficients[i - 1] * i
         return s_der + a_der
+
+    def flip_(self) -> ty.Self:
+        super().flip_()
+        for i in range(self._n):
+            setattr(self, f'a{i + 1}', -getattr(self, f'a{i + 1}'))
+        return self
 
     def to_dict(self, keep_tensor=True) -> dict[str, Any]:
         d = super().to_dict(keep_tensor)
@@ -519,7 +525,7 @@ class EvenAspherical(_ConicBase):
                 delattr(self, f'a{i + 1}')
         else:
             for i in range(self._n, n):
-                self.register_parameter(f'a{i + 1}', nn.Parameter(typing.scalar(0.)))
+                self.register_parameter(f'a{i + 1}', nn.Parameter(ty.scalar(0.)))
         self._n = n
 
     @property
@@ -649,10 +655,10 @@ class PolynomialPhase(PlanarPhase, CircularSurface):
         CircularSurface.__init__(self, material, aperture, reflective, d=d)
 
         for i, _a in enumerate(a):
-            self.register_parameter(f'a{i + 1}', nn.Parameter(typing.scalar(_a, dtype=torch.get_default_dtype())))
+            self.register_parameter(f'a{i + 1}', nn.Parameter(ty.scalar(_a, dtype=torch.get_default_dtype())))
         self.n: int = len(a)  #: Number of radial coefficients :math:`n`.
         for i, _b in enumerate(b):
-            self.register_parameter(f'b{i + 1}', nn.Parameter(typing.scalar(_b, dtype=torch.get_default_dtype())))
+            self.register_parameter(f'b{i + 1}', nn.Parameter(ty.scalar(_b, dtype=torch.get_default_dtype())))
         self.m: int = len(b)  #: Number of rectangular coefficients :math:`m`.
 
     def extra_repr(self) -> str:
@@ -710,7 +716,7 @@ class PolynomialPhase(PlanarPhase, CircularSurface):
         x_grads, y_grads = zip(*term_grads)
         x_grad = sum(x_grad_i * b_i for x_grad_i, b_i in zip(x_grads, self.b))
         y_grad = sum(y_grad_i * b_i for y_grad_i, b_i in zip(y_grads, self.b))
-        return typing.cast(Ts, x_grad), typing.cast(Ts, y_grad)
+        return ty.cast(Ts, x_grad), ty.cast(Ts, y_grad)
 
 
 class Fresnel(Planar, EvenAspherical):
@@ -744,6 +750,11 @@ class Fresnel(Planar, EvenAspherical):
     def h_derivative_r2(self, r2: Ts) -> Ts:
         return torch.zeros_like(r2)
 
+    def refract(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
+        if ray.coherent:
+            warnings.warn(f'{self.__class__.__name__} does not support coherent ray tracing currently')
+        return super().refract(ray, forward)
+
     def expand(self) -> EvenAspherical:
         return EvenAspherical(
             self.roc, self.conic, self.coefficients, self.material, self.aperture, self.reflective,
@@ -764,11 +775,11 @@ class Fresnel(Planar, EvenAspherical):
         return f_grad / f_grad.norm(2, -1, True)
 
 
-def _check_coefficients(c: typing.Vector, name: str, length: int) -> Ts | None:
+def _check_coefficients(c: ty.Vector, name: str, length: int) -> Ts | None:
     if c is None:
         return c
     else:
-        c = typing.vector(c)
+        c = ty.vector(c)
     if c.lt(0.).any():
         raise ValueError(f'{name} cannot be negative, but got {c}')
     if c.size(0) != length:
@@ -807,9 +818,9 @@ class Grating(Planar):
         material: mt.Material | str = _surf.DEFAULT_MATERIAL,
         aperture: Aperture | Scalar = None,
         period: Scalar = None,
-        orders: int | typing.Double[int] = 5,
-        transmittance: typing.Vector = None,
-        reflectance: typing.Vector = None,
+        orders: int | ty.Double[int] = 5,
+        transmittance: ty.Vector = None,
+        reflectance: ty.Vector = None,
         expand_dim: int = -1,
         *,
         d: Scalar = None
@@ -817,7 +828,7 @@ class Grating(Planar):
         if period is None:
             period = base.Length.as_default(1e-5, 'm')
 
-        period = typing.scalar(period, dtype=torch.get_default_dtype())
+        period = ty.scalar(period, dtype=torch.get_default_dtype())
         if period.item() < 0:
             raise ValueError(f'Period must be non-negative, but got {period.item()}')
         if isinstance(orders, int):
@@ -921,7 +932,7 @@ class Grating(Planar):
         return self.T
 
     @transmittance.setter
-    def transmittance(self, value: typing.Vector | None):
+    def transmittance(self, value: ty.Vector | None):
         if value is None:
             self.register_buffer('T', None)
         else:
@@ -938,7 +949,7 @@ class Grating(Planar):
         return self.R
 
     @reflectance.setter
-    def reflectance(self, value: typing.Vector | None):
+    def reflectance(self, value: ty.Vector | None):
         if value is None:
             self.register_buffer('R', None)
         else:

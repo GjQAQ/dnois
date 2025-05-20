@@ -18,14 +18,15 @@ Optical surfaces
 .. autosummary::
     :toctree: ../../generated/optics/rt/surf
 
+    paraxialize
     surface_types
     CoaxialContext
-    CoaxialSurfaceList
+    CoaxialSurfaceSequence
     Context
     CircularSurface
     IntersectionConfig
     Surface
-    SurfaceList
+    SurfaceSequence
 
 Apertures
 ============================================
@@ -49,6 +50,7 @@ Specific surface types
     PolynomialPhase
     Spherical
     Stop
+    ThinLens
 
 ************************************
 Ray-tracing-based optical systems
