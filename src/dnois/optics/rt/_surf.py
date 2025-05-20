@@ -71,7 +71,7 @@ class Context(_t.EnhancedModule):
     See :ref:`guide_optics_rt_slcs` for more details.
 
     :param Surface surface: The host surface that this context belongs to.
-    :param SurfaceSequence surface_list: The surface list containing ``surface``.
+    :param SurfaceSequence surface_sequence: The surface list containing ``surface``.
     """
     x: Ts  #: x-coordinate of the origin of local coordinate.
     y: Ts  #: y-coordinate of the origin of local coordinate.
@@ -83,13 +83,13 @@ class Context(_t.EnhancedModule):
     _transform_params = {'x', 'y', 'z', 'theta', 'phi', 'chi'}
     _writable_params = _transform_params
 
-    def __init__(self, surface: 'Surface', surface_list: 'SurfaceSequence'):
+    def __init__(self, surface: 'Surface', surface_sequence: 'SurfaceSequence'):
         super().__init__()
         self.surface: 'Surface' = surface  #: The host surface that this context belongs to.
-        self.surface_list: 'SurfaceSequence' = surface_list  #: The surface list containing the surface.
+        self.seq: 'SurfaceSequence' = surface_sequence  #: The surface list containing the surface.
 
     def __setattr__(self, key, value):
-        if key in {'surface', 'surface_list'}:
+        if key in {'surface', 'seq'}:
             self.__dict__[key] = value  # avoid these two to be registered as submodule
         else:
             return super().__setattr__(key, value)
@@ -187,7 +187,7 @@ class Context(_t.EnhancedModule):
 
         :type: int
         """
-        return self.surface_list.index(self.surface)
+        return self.seq.index(self.surface)
 
     @property
     def material_before(self) -> mt.Material:
@@ -198,8 +198,8 @@ class Context(_t.EnhancedModule):
         """
         idx = self.index
         if idx == 0:
-            return self.surface_list.mt_head
-        return self.surface_list[idx - 1].material
+            return self.seq.mt_head
+        return self.seq[idx - 1].material
 
     @property
     def shifted(self) -> bool:
@@ -280,15 +280,19 @@ class Context(_t.EnhancedModule):
                 delattr(self, n)
 
     @classmethod
-    def from_dict(cls, d: dict) -> 'Context':
-        # deserialization of this class is controlled by SurfaceSequence
-        raise TypeError(f'{cls.__name__} cannot be instantiated from a dict by calling {cls.from_dict.__qualname__}')
+    def from_dict(cls, d: dict) -> Self:
+        # this method yields a context object without surface and sq associated
+        obj = cls(..., ...)
+        for k, v in d.items():
+            if k in cls._transform_params:
+                obj.register_parameter(k, nn.Parameter(ty.scalar(v, dtype=obj.dtype)))
+        return obj
 
     def _get_csp(self, name: str) -> Ts:
         return getattr(self, name, self.new_tensor(0.))
 
     def _check_available(self):
-        if self.surface in self.surface_list:
+        if self.surface in self.seq:
             return
         raise RuntimeError(
             'The surface is not contained in the surface list referenced by its context object. '
@@ -317,10 +321,10 @@ class CoaxialContext(Context):
     def __init__(
         self,
         surface: 'Surface',
-        surface_list: 'SurfaceSequence',
+        surface_sequence: 'SurfaceSequence',
         distance: ty.Scalar = None,
     ):
-        super().__init__(surface, surface_list)
+        super().__init__(surface, surface_sequence)
         if distance is None:
             distance = 0.
         distance = ty.scalar(distance, dtype=torch.get_default_dtype())
@@ -362,10 +366,16 @@ class CoaxialContext(Context):
         idx = self.index
         if idx == 0:
             return self.new_tensor(0.)
-        z = self.surface_list[0].context.distance
-        for s in self.surface_list[1:idx]:
+        z = self.seq[0].context.distance
+        for s in self.seq[1:idx]:
             z = z + s.context.distance
         return z
+
+    @classmethod
+    def from_dict(cls, d: dict) -> Self:
+        obj = super().from_dict(d)
+        obj.distance = d['distance']
+        return obj
 
 
 class Aperture(_t.EnhancedModule, metaclass=abc.ABCMeta):
@@ -1588,8 +1598,10 @@ class SurfaceSequence(
         contexts = d.pop('contexts')
         sl = cls(**d)
         for i, ctx in enumerate(contexts):
-            for k, v in ctx.items():
-                setattr(sl[i].context, k, v)
+            ctx = sl[i].context.from_dict(ctx)
+            ctx.surface = sl[i]
+            ctx.seq = sl
+            sl[i].context = ctx
         return sl
 
     def _welcome(self, *new: Surface):
