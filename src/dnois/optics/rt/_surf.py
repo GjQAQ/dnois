@@ -503,8 +503,8 @@ class CircularAperture(Aperture):
             raise ValueError('radius must be positive')
 
         self.register_parameter('radius', None)
-        #: Radius of the aperture.
         radius = ty.scalar(diameter, dtype=torch.get_default_dtype()) / 2
+        #: Radius of the aperture.
         self.radius: nn.Parameter = nn.Parameter(radius, False)
 
     def extra_repr(self) -> str:
@@ -610,6 +610,21 @@ class CircularAperture(Aperture):
         d = super().to_dict(keep_tensor)
         d['diameter'] = self._attr2dictitem('radius', keep_tensor) * 2
         return d
+
+    @property
+    def diameter(self):
+        """Diameter of the aperture.\n\n:type: 0D Tensor"""
+        return self.radius * 2
+
+    @property
+    def r(self):
+        """Alias for :attr:`.radius`."""
+        return self.radius
+
+    @property
+    def d(self):
+        """Alias for :attr:`.diameter`."""
+        return self.diameter
 
     def _detection_radius(self) -> Ts:
         return self.radius * (1 + DETECTION_RADIUS_EPS)
