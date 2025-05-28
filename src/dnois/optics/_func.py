@@ -135,14 +135,24 @@ def objd(img_d: Numeric, fl_obj: Numeric, fl_img: Numeric = None, diopter: Numer
     if diopter is None:  # given two focal lengths
         if fl_img is None:
             fl_img = fl_obj
-        return utils.InfinityCond(
-            lambda x: fl_obj * x / (x - fl_img),
-            lambda x: fl_obj,
+        return utils.InfinityCond(  # 1.if img_d is infinite,
+            lambda x: utils.Conditional(
+                lambda y: y == 0,  # 1.else 2.if x - fl_img is zero,
+                lambda _: float('inf'),  # 2.then return inf
+                lambda y: fl_obj * x / y,  # 2.else return fl_obj * x / (x - fl_img)
+                expr_true_tensor=lambda y: torch.full_like(y, float('inf')),
+            )(x - fl_img),
+            lambda x: fl_obj,  # 1.then return fl_obj
         )(img_d)
     else:  # given two refractive indices and diopter
         n_obj, n_img = fl_obj, fl_img
-        return utils.InfinityCond(
-            lambda x: n_obj * x / (diopter * x - n_img),
+        return utils.InfinityCond(  # similar logic
+            lambda x: utils.Conditional(
+                lambda y: y == 0,
+                lambda _: float('inf'),
+                lambda y: n_obj * x / y,
+                expr_true_tensor=lambda y: torch.full_like(y, float('inf')),
+            )(diopter * x - n_img),
             lambda x: n_obj / diopter,
         )(img_d)
 

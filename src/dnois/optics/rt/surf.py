@@ -14,8 +14,6 @@ from ...base.typing import Any, Ts, Scalar, Sequence
 from ...base import typing as ty
 
 __all__ = [
-    'is_paraxializable',
-
     'Conic',
     'EvenAspherical',
     'Fresnel',
@@ -43,12 +41,7 @@ def _spherical_der_wrt_r2(r2: Ts, c: Ts, k: Ts = None) -> Ts:
     return torch.where(mask, c / _4 * (1 + _2 / (2 * _3 * _4 + 1e-10)), 0)
 
 
-def is_paraxializable(surface: Surface | type[Surface]) -> bool:
-    """Return whether a surface type can be modeled by paraxial optics.\n\n:rtype: bool"""
-    return isinstance(surface, ParaxializableMixIn) or issubclass(surface, ParaxializableMixIn)
-
-
-class ParaxializableMixIn(Surface, metaclass=abc.ABCMeta):
+class QuasiSphereMixIn(Surface, metaclass=abc.ABCMeta):
     @property
     @abc.abstractmethod
     def px_curvature(self) -> Ts:
@@ -58,41 +51,6 @@ class ParaxializableMixIn(Surface, metaclass=abc.ABCMeta):
         :type: Tensor
         """
         pass
-
-    def px_image_point(self: Surface, wl: ty.Numeric, point: Ts, forward: bool = True) -> Ts:
-        """
-        Computes the image point of ``point`` according to paraxial optics.
-
-        :param wl: Wavelengths considered used to compute refractive index.
-        :type wl: float or Tensor
-        :param Tensor point: Coordinates of points in :ref:`LCS <guide_optics_rt_lcs>`.
-            A tensor of shape ``(..., 3)``.
-        :param bool forward: The left side of the surface is object space if ``True`` and image space
-            if ``False``. Default: ``True``.
-        :return: Coordinates of image points in LCS. A tensor of shape ``(..., 3)``.
-        :rtype: Tensor
-        """
-        if not isinstance(self.context, CoaxialContext):
-            raise RuntimeError(f'A {CoaxialContext.__name__} is required to compute paraxial image point')
-        n_obj = self.ctx.material_before.n(wl)  # ...
-        n_img = self.material.n(wl)  # ...
-        z0 = self.ctx.baseline  # 0d
-        z = point[..., 2]  # ...
-        if forward:
-            obj_d = z0 - z  # ...
-            c = self.px_curvature  # 0d
-        else:
-            obj_d = z - z0  # ...
-            c = -self.px_curvature  # 0d
-            n_img, n_obj = n_obj, n_img
-        diopter = c * (n_img - n_obj)  # ...
-
-        img_d = _func.imgd(obj_d, n_obj, n_img, diopter)  # ...
-        z = z0 + img_d if forward else z0 - img_d  # ...
-
-        lateral_amplification = n_obj / (n_obj - diopter * obj_d)  # ...
-        xy = point[..., :2] * lateral_amplification.unsqueeze(-1)  # ... x 2
-        return torch.cat([xy, z.unsqueeze(-1)], -1)  # ... x 3
 
     def paraxialize(self, wl: ty.Numeric) -> paraxial.ParaxialSystem:
         z = self.context.baseline if isinstance(self.context, CoaxialContext) else None
@@ -241,7 +199,7 @@ class ThinLens(Planar, CircularSurface):
         return paraxial.FiniteParaxialSystem(z, z, fl1=self.fl1, fl2=self.fl2)
 
 
-class _SphericalBase(CircularSurface, ParaxializableMixIn, metaclass=abc.ABCMeta):  # docstring for Spherical
+class _SphericalBase(CircularSurface, QuasiSphereMixIn, metaclass=abc.ABCMeta):  # docstring for Spherical
     r"""
     Spherical surfaces.
 

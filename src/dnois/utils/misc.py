@@ -1,3 +1,4 @@
+import collections.abc
 import functools
 import inspect
 
@@ -28,6 +29,9 @@ Exparam: type = type('Exparam', (), {})
 def fmt(v: float) -> str:
     """
     Format a ``float`` according to :data:`dnois.float_print_fmt`.
+
+    .. seealso::
+        :meth:`dnois.Unit.fmt` formats values with unit.
 
     :param float v: The ``float`` to be formatted.
     :return: Formatted string.
@@ -202,18 +206,21 @@ def invalid_option_msg(name: str, value, literals: type[typing.Literal] | list[s
     return f'Unknown {name}: {value}, available: {", ".join(literals)}'
 
 
+Cond = typing.Callable[[typing.Numeric], bool | torch.BoolTensor]
+Expr = typing.Callable[[typing.Numeric], typing.Any]
+Exprs = Expr | typing.Sequence[Expr]
+
+
 class Conditional:
-    Cond = typing.Callable[[typing.Numeric], bool | torch.BoolTensor]
-    Expr = typing.Callable[[typing.Numeric], typing.Any]
 
     def __init__(
         self,
         condition: Cond,
-        expr_true: Expr,
-        expr_false: Expr,
+        expr_true: Exprs,
+        expr_false: Exprs,
         condition_tensor: Cond = None,
-        expr_true_tensor: Expr = None,
-        expr_false_tensor: Expr = None,
+        expr_true_tensor: Exprs = None,
+        expr_false_tensor: Exprs = None,
     ):
         if condition_tensor is None:
             condition_tensor = condition
@@ -233,30 +240,47 @@ class Conditional:
         if torch.is_tensor(value):
             condition = self.condition_tensor(value)
             if condition.all():
-                return self.expr_false_tensor(value)
+                return self._eval(self.expr_true_tensor, value)
             else:
-                result = self.expr_true_tensor(value)
+                result = self._eval(self.expr_false_tensor, value)
                 if condition.any():
-                    result = torch.where(condition, self.expr_false_tensor(value), result)
+                    result_true = self._eval(self.expr_true_tensor, value)
+                    true_atomic = not isinstance(self.expr_true_tensor, collections.abc.Sequence)
+                    false_atomic = not isinstance(self.expr_false_tensor, collections.abc.Sequence)
+                    if true_atomic and false_atomic:
+                        return torch.where(condition, result_true, result)
+                    else:
+                        if true_atomic:
+                            result_true = [result_true for _ in range(len(result))]  # result is a list
+                        if false_atomic:
+                            result = [result for _ in range(len(result_true))]  # result_true is a list
+                        return [torch.where(condition, r1, r2) for r1, r2 in zip(result_true, result)]
                 return result
         else:
             if self.condition(value):
-                return self.expr_false(value)
-            else:
                 return self.expr_true(value)
+            else:
+                return self.expr_false(value)
+
+    @staticmethod
+    def _eval(expr, value):
+        if isinstance(expr, collections.abc.Sequence):
+            return [exp(value) for exp in expr]
+        else:
+            return expr(value)
 
 
 class InfinityCond(Conditional):
     def __init__(
         self,
-        expr_finite: Conditional.Expr,
-        expr_infinite: Conditional.Expr,
-        expr_finite_tensor: Conditional.Expr = None,
-        expr_infinite_tensor: Conditional.Expr = None
+        expr_finite: Exprs,
+        expr_infinite: Exprs,
+        expr_finite_tensor: Exprs = None,
+        expr_infinite_tensor: Exprs = None
     ):
         super().__init__(
-            lambda x: x == float('inf'), expr_finite, expr_infinite,
-            lambda x: x.isinf(), expr_finite_tensor, expr_infinite_tensor
+            lambda x: x == float('inf'), expr_infinite, expr_finite,
+            lambda x: x.isinf(), expr_infinite_tensor, expr_finite_tensor
         )
 
 

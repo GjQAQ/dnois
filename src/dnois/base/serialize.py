@@ -4,7 +4,7 @@ import warnings
 
 import torch
 
-from .typing import Any, cast
+from .typing import Any, Self, cast
 
 __all__ = [
     'AsDictMixIn',
@@ -23,7 +23,7 @@ class AsDictMixIn:
                                   f'implement {self.to_dict.__name__} method')
 
     @classmethod
-    def from_dict(cls, d: dict):
+    def from_dict(cls, d: dict) -> Self:
         """
         Constructs an instance of ``cls`` from a ``dict``.
 
@@ -84,7 +84,7 @@ class AsJsonMixIn(AsDictMixIn):
             json.dump(self.to_dict(False), file, **kwargs)
 
     @classmethod
-    def load_json(cls, file, **kwargs):
+    def load_json(cls, file, **kwargs) -> Self:
         """
         Constructs an instance of ``cls`` through loading JSON from a file,
         converting it to a ``dict`` and then calling :meth:`.from_dict`.

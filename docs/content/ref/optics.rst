@@ -47,6 +47,7 @@ It is an abstract class but typically you need only to instantiate it with
 .. autosummary::
     :toctree: ../generated/optics/paraxial
 
+    ConjugatePointFeature
     ParaxialSystem
     FiniteParaxialSystem
     InfiniteParaxialSystem

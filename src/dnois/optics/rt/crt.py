@@ -881,12 +881,13 @@ class CoaxialRayTracing(
             A 2-tuple of scalars (when the stop is pupil) or tensors of shape ``(N_wl,)``.
         :rtype: tuple[Tensor, Tensor]
         """
-        point, sublist = self._pupil_prepare(entr)
+        point, sublist = self._pupil_prepare(entr, False)  # point in LCS
 
-        for s in sublist:
-            if not surf.is_paraxializable(s):
-                raise RuntimeError(f'Paraxial behavior of surface {s.ctx.index} ({type(s).__name__}) is not defined')
-            point = s.px_image_point(wl, point, not entr)  # (N_wl x )3
+        ps = surf.paraxialize(sublist, wl.unsqueeze(-1))  # (N_wl, 1)
+        if entr:
+            point = ps.obj_point(point)
+        else:
+            point = ps.img_point(point)
         r, z = point[..., 1], point[..., 2]  # N_wl or 0d
         return r, z
 
@@ -1474,8 +1475,7 @@ class CoaxialRayTracing(
         else:
             raise ValueError(utils.invalid_option_msg('wavelength reduction', wl_reduction, WlReduction))
 
-    def _pupil_prepare(self, entr: bool) -> tuple[Ts, list[surf.Surface]]:
-        self._check_circ_aperture()
+    def _pupil_prepare(self, entr: bool, flip_half_before: bool = True) -> tuple[Ts, list[surf.Surface]]:
         self._check_circ_surf()
 
         stop = self.surfaces.stop
@@ -1489,7 +1489,9 @@ class CoaxialRayTracing(
         point = torch.stack([torch.zeros_like(r_stop), r_stop, z_stop])  # 3
 
         if entr:
-            sublist = list(reversed(self.surfaces[:idx]))
+            sublist = self.surfaces[:idx]
+            if flip_half_before:
+                sublist = list(reversed(sublist))
         else:
             sublist = self.surfaces[idx + 1:]
         return point, sublist
