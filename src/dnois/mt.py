@@ -250,11 +250,11 @@ class Schott(Material):
 
     def n(self, wl: Numeric) -> Numeric:
         wl = self._make_wl(wl)
-        iw2 = 1 / cast(Numeric, wl ** 2)
-        cs = self.coefficients.copy()
-        n2 = cs.pop(-1)
-        for c in reversed(cs):
-            n2 = n2 * iw2 + c
+        wl2 = wl * wl
+        iw2 = 1 / wl2
+        iw4 = iw2 * iw2
+        a = self.coefficients
+        n2 = a[0] + a[1] * wl2 + a[2] * iw2 + a[3] * iw4 + a[4] * (iw4 * iw2) + a[5] * (iw4 * iw4)
         n = n2 ** 0.5
         return n
 
