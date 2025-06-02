@@ -879,6 +879,9 @@ class CoaxialRayTracing(
         """
         point, sublist = self._pupil_prepare(entr, False)  # point in LCS
 
+        if len(sublist) == 0:
+            return point[1], point[2]  # 0d
+
         ps = surf.paraxialize(sublist, wl.unsqueeze(-1))  # (N_wl, 1)
         if entr:
             point = ps.obj_point(point)
@@ -1477,6 +1480,8 @@ class CoaxialRayTracing(
         stop = self.surfaces.stop
         if stop is None:
             raise NotImplementedError(f'A stop must be specified to compute paraxial pupil currently')
+        if not isinstance(stop.apt, surf.CircularAperture):
+            raise RuntimeError(f'Stop must be circular to compute pupils')
 
         ap = typing.cast(surf.CircularAperture, stop.aperture)
         idx = stop.ctx.index
@@ -1485,14 +1490,10 @@ class CoaxialRayTracing(
         point = torch.stack([torch.zeros_like(r_stop), r_stop, z_stop])  # 3
 
         if entr:
-            if not isinstance(stop, surf.Stop):
-                idx = idx + 1  # contain the stop itself
             sublist = self.surfaces[:idx]
             if flip_half_before:
                 sublist = list(reversed(sublist))
         else:
-            if not isinstance(stop, surf.Stop):
-                idx = idx - 1  # contain the stop itself
             sublist = self.surfaces[idx + 1:]
         return point, sublist
 

@@ -1733,4 +1733,6 @@ def paraxialize(surfaces: ty.Iterable[Surface], wl: ty.Numeric) -> paraxial.Para
             ps = s.paraxialize(wl)
         else:
             ps = ps.composite(s.paraxialize(wl))
+    if ps is...:
+        raise ValueError('No paraxializable surface given')
     return ps
