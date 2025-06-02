@@ -20,6 +20,7 @@ Physics
     :toctree: ../generated/dnois/physics
 
     c
+    fdc
     fline
     fraunhofer_line
     k

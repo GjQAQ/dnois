@@ -129,8 +129,8 @@ class Material(base.AsJsonMixIn, metaclass=abc.ABCMeta):
 
     def _repr(self) -> str:
         return (f'name={self.name}, domain=('
-                f'{base.Length.fmt(self.min_wl, self.default_unit)}, '
-                f'{base.Length.fmt(self.max_wl, self.default_unit)})')
+                f'{base.Length.fmt(base.Length.as_default(self.min_wl, self.default_unit), self.default_unit)}, '
+                f'{base.Length.fmt(base.Length.as_default(self.max_wl, self.default_unit), self.default_unit)})')
 
     def _make_wl(self, wl: Numeric) -> Numeric:
         wl = base.Length.default_to(wl, self.default_unit)

@@ -178,11 +178,7 @@ if ext.vis.mpl_available():
                 height = o[:, 1]  # (3,)
             else:
                 height = typing.vector(height, device=self.device, dtype=self.dtype)
-                o = torch.stack([
-                    torch.zeros_like(height),
-                    height,
-                    torch.full_like(height, self.cam2lens_z(depth).item())
-                ], -1)  # (N, 3)
+                o = self.fovd2obj(torch.stack([torch.zeros_like(height), height], -1), depth)
 
             self._plot_components(ax)
 
@@ -1489,10 +1485,14 @@ class CoaxialRayTracing(
         point = torch.stack([torch.zeros_like(r_stop), r_stop, z_stop])  # 3
 
         if entr:
+            if not isinstance(stop, surf.Stop):
+                idx = idx + 1  # contain the stop itself
             sublist = self.surfaces[:idx]
             if flip_half_before:
                 sublist = list(reversed(sublist))
         else:
+            if not isinstance(stop, surf.Stop):
+                idx = idx - 1  # contain the stop itself
             sublist = self.surfaces[idx + 1:]
         return point, sublist
 

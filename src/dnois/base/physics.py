@@ -8,6 +8,7 @@ from .typing import Numeric, Ts, overload
 
 __all__ = [
     'c',
+    'fdc',
     'fline',
     'fraunhofer_line',
     'k',
@@ -99,6 +100,16 @@ def fline(
 ) -> float | dict[str, float] | list[tuple[str, str, float]]:
     """Alias for :func:`fraunhofer_line`."""
     return fraunhofer_line(str(symbol), element, alone, unit)
+
+
+def fdc():
+    """
+    Returns the wavelengths of Fraunhofer's F, d and C lines.
+
+    :return: A tuple of three floats.
+    :rtype: tuple[float, float, float]
+    """
+    return fline('F'), fline('d', 'He'), fline('C')
 
 
 def wave_vector(wl: Numeric, n: Numeric = None) -> Numeric:
