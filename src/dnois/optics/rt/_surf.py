@@ -46,14 +46,31 @@ def _dist_transform(x: Ts, curve: Callable[[Ts], Ts]) -> Ts:
     return magnitude.copysign(x)
 
 
+def _matrix(tensors: list[list[Ts]]):
+    return torch.stack([torch.stack(row, dim=-1) for row in tensors], dim=-2)
+
+
 def _rotation_mat(angles: Ts) -> Ts:
     angles = base.Angle.default_to(angles, 'rad')
     c, s = angles.cos(), angles.sin()
-    return torch.stack([
-        torch.stack([c.prod() - s[2] * s[0], c[2] * c[1] * s[0] + s[2] * c[0], -c[2] * s[1]]),
-        torch.stack([-s[2] * c[1] * c[0] - c[2] * s[0], -s[2] * c[1] * s[0] + c[2] * c[0], s[2] * s[1]]),
-        torch.stack([s[1] * c[0], s[1] * s[0], c[1]]),
+    zero = torch.zeros_like(angles[0])
+    ones = torch.ones_like(angles[0])
+    m1 = _matrix([
+        [c[1], s[1], zero],
+        [-s[1], c[1], zero],
+        [zero, zero, ones],
     ])
+    m2 = _matrix([
+        [c[0], zero, -s[0]],
+        [zero, ones, zero],
+        [s[0], zero, c[0]],
+    ])
+    m3 = _matrix([
+        [c[2], s[2], zero],
+        [-s[2], c[2], zero],
+        [zero, zero, ones],
+    ])
+    return m1 @ m2 @ m3
 
 
 Sampler = ty.Callable[[], tuple[Ts, Ts]]
@@ -127,9 +144,9 @@ class Context(_t.EnhancedModule):
         if self.shifted and not direction:
             x = x - self.origin
         if self.rotated:
-            x = _rotation_mat(torch.stack([
-                self._get_csp('theta'), self._get_csp('phi'), self._get_csp('chi')
-            ])) @ x.unsqueeze(-1)
+            rm = _rotation_mat(torch.stack([self._get_csp('theta'), self._get_csp('phi'), self._get_csp('chi')]))
+            x = rm @ x.unsqueeze(-1)
+            x = x.squeeze(-1)
         return x
 
     def l2g(self, x: Ts, direction: bool = False) -> Ts:
@@ -152,9 +169,10 @@ class Context(_t.EnhancedModule):
         :rtype: Tensor
         """
         if self.rotated:
-            x = _rotation_mat(-torch.stack([
-                self._get_csp('chi'), self._get_csp('phi'), self._get_csp('theta')
-            ])).T @ x.unsqueeze(-1)
+            rm = _rotation_mat(torch.stack([self._get_csp('theta'), self._get_csp('phi'), self._get_csp('chi')]))
+            rm = rm.inverse()
+            x = rm @ x.unsqueeze(-1)
+            x = x.squeeze(-1)
         if self.shifted and not direction:
             x = x + self.origin
         return x
@@ -1733,6 +1751,6 @@ def paraxialize(surfaces: ty.Iterable[Surface], wl: ty.Numeric) -> paraxial.Para
             ps = s.paraxialize(wl)
         else:
             ps = ps.composite(s.paraxialize(wl))
-    if ps is...:
+    if ps is ...:
         raise ValueError('No paraxializable surface given')
     return ps
