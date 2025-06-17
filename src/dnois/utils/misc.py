@@ -16,6 +16,7 @@ __all__ = [
     'ExternalParamMixIn',
     'FixStateMixIn',
     'GenericCompute',
+    'HookRemover',
     'InfinityCond',
     'VarDict',
     'VarHook',

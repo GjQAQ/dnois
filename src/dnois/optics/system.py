@@ -19,6 +19,7 @@ __all__ = [
     'ImagingOptics',
     'PinholeOptics',
     'PsfImagingOptics',
+    'SegLit',
 ]
 
 SegLit = typing.Literal['uniform', 'pointwise']

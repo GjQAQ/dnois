@@ -1331,6 +1331,14 @@ class SurfaceSequence(
     :param foremost_material: The material before the first surface.
     :type foremost_material: :py:class:`~dnois.mt.Material`
     """
+
+    class RayCollector(list[BatchedRay]):
+        handles: list[utils.HookRemover]
+
+        def detach(self):
+            for handle in self.handles:
+                handle.remove(True)
+
     _force_surface: bool = True
     __call__: Callable[..., BatchedRay]  # for return type hint in IDE
 
@@ -1548,6 +1556,15 @@ class SurfaceSequence(
     def paraxialize(self, wl: ty.Numeric) -> paraxial.ParaxialSystem:
         """Apply :func:`paraxialize` to this surface sequence."""
         return paraxialize(self, wl)
+
+    def ray_collector(self):
+        rc = self.RayCollector()
+        handles = []
+        for i in range(len(self)):
+            handle = self.register_variable_hook(f'forward.out_ray[{i}]', rc.append)
+            handles.append(handle)
+        rc.handles = handles
+        return rc
 
     @property
     def first(self) -> Surface:

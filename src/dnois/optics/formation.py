@@ -38,15 +38,16 @@ def simple(obj: Ts, psf: Ts, pad: Size2d | str = 'linear', compensate_edge: bool
     :return: A tensor of shape :math:`(\cdots,H_o,W_o)`.
     :rtype: Tensor
     """
-    if psf.size(-2) > obj.size(-2) or psf.size(-1) > obj.size(-1):
-        raise base.ShapeError(f'Spatial dimension of PSF ({psf.shape[-2:]}) cannot '
-                              f'be larger than that of object ({obj.shape[-2:]})')
     if pad != 'linear' and compensate_edge:
         warnings.warn(f'{compensate_edge=} is ignored when {pad=}')
+
     blurred = fourier.dconv2(obj, psf, out='same', padding=pad)
+    blurred = utils.resize(blurred, obj.shape[-2:])  # in case PSF is larger
+
     if compensate_edge:
         msk = torch.ones_like(obj)
         msk = fourier.dconv2(msk, psf, out='same', padding=pad)
+        msk = utils.resize(msk, obj.shape[-2:])
         blurred = blurred / (msk + eps)
     return blurred
 

@@ -8,6 +8,8 @@ __all__ = [
     'subclasses',
 ]
 
+_T = typing.TypeVar('_T')
+
 
 def _subclasses(cls: type) -> set[type]:
     subs = set(cls.__subclasses__())  # use set to avoid duplicates
@@ -16,7 +18,7 @@ def _subclasses(cls: type) -> set[type]:
     return subs
 
 
-def subclasses(cls: type, _filter: bool = True) -> list[type]:
+def subclasses(cls: type[_T], _filter: bool = True) -> list[type[_T]]:
     # Returns subclasses of cls recursively
     # If _filter is True, only non-abstract and non-private (name starting with _) classes are returned
     sub_list = _subclasses(cls)

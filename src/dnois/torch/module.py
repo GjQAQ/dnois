@@ -77,22 +77,22 @@ class ParamTransformModule(nn.Module):
 
     def __getattr__(self, name: str):
         param_transforms = cast(dict, self.__dict__.get('_param_transforms', _unset))
-        if param_transforms is _unset:
+        if param_transforms is _unset:  # fall back if no param transform set
             return super().__getattr__(name)
 
         latent_name = self._latent_name(name)
-        if name in param_transforms:
+        if name in param_transforms:  # if a transformed param, return its nominal value
             return param_transforms[name].transform(super().__getattr__(latent_name))
         else:
             return super().__getattr__(name)
 
     def __setattr__(self, name, value):
         param_transforms = getattr(self, '_param_transforms', _unset)
-        if param_transforms is _unset:
+        if param_transforms is _unset:  # fall back if no param transform set
             return super().__setattr__(name, value)
 
         latent_name = self._latent_name(name)
-        if name in param_transforms:
+        if name in param_transforms:  # if a transformed param, set its latent value
             transform = param_transforms[name]
             if not transform.invertible:
                 raise RuntimeError(f'No inverse transformation specified for transformed parameter {name} '
@@ -105,11 +105,11 @@ class ParamTransformModule(nn.Module):
 
     def __delattr__(self, name):
         param_transforms = getattr(self, '_param_transforms', _unset)
-        if param_transforms is _unset:
+        if param_transforms is _unset:  # fall back if no param transform set
             return super().__delattr__(name)
 
         latent_name = self._latent_name(name)
-        if name in param_transforms:
+        if name in param_transforms:  # if a transformed param, delete its latent value and transformation
             super().__delattr__(latent_name)
             del param_transforms[name]
         else:
@@ -181,6 +181,26 @@ class ParamTransformModule(nn.Module):
         :param Transform transform: Transformation object.
         """
         return self.register_parameter(name, nn.Parameter(getattr(self, name)), transform)
+
+    def remove_transform(self, name: str):
+        """
+        Remove transformation for parameter ``name``.
+
+        :param str name: Name of the parameter.
+        """
+        param_transforms = getattr(self, '_param_transforms', _unset)
+        if param_transforms is _unset:
+            raise RuntimeError(f'No parameter transform set in {self.__class__.__name__}')
+        if name not in param_transforms:
+            raise RuntimeError(f'No parameter transform set for {name} in {self.__class__.__name__}')
+
+        nominal_value = getattr(self, name)
+        latent_name = self._latent_name(name)
+        delattr(self, latent_name)
+        del param_transforms[name]
+        if not isinstance(nominal_value, nn.Parameter):
+            nominal_value = nn.Parameter(nominal_value)
+        self.register_parameter(name, nominal_value)
 
     @property
     def nominal_values(self) -> dict[str, Ts]:
@@ -381,6 +401,8 @@ class EnhancedModule(
     TensorContainerMixIn,
     FreezeParamMixIn,
 ):
+    _writable_params = set()
+
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         original_to_dict = cls.__dict__.get('to_dict', None)
@@ -409,7 +431,8 @@ class EnhancedModule(
                 tp = d.pop('transformed_parameters', {})
                 obj = original_from_dict(clz, d)
                 for k, (param, transform) in tp.items():
-                    param = nn.Parameter(torch.tensor(param))
+                    if not isinstance(param, nn.Parameter):
+                        param = nn.Parameter(torch.tensor(param))
                     obj.register_latent_parameter(k, param, Transform.from_dict(transform))
                 return obj
 
@@ -421,12 +444,18 @@ class EnhancedModule(
         params: dict | object = self.__dict__.get('_parameters', _unset)
         if params is _unset:
             return super().__setattr__(key, value)
-        if key in params and (params[key] is None or params[key].ndim == 0):
-            if not torch.is_tensor(value):
-                if not isinstance(value, numbers.Number):
-                    raise TypeError(f'Value of parameter {key} of {type(self).__name__} must be a number')
-                value = self.new_tensor(value)
-            if not isinstance(value, nn.Parameter):
-                value = nn.Parameter(value.to(device=self.device, dtype=self.dtype))
+
+        if key in self._writable_params or (key in params and (params[key] is None or params[key].ndim == 0)):
+            self.set_scalar_param(key, value)
+        else:
+            super().__setattr__(key, value)
+
+    def set_scalar_param(self, name: str, value: numbers.Number | Ts):
+        if not torch.is_tensor(value):
+            if not isinstance(value, numbers.Number):
+                raise TypeError(f'Value of parameter {name} of {type(self).__name__} must be a number')
+            value = self.new_tensor(value)
+        if not isinstance(value, nn.Parameter):
+            value = nn.Parameter(value.to(device=self.device, dtype=self.dtype))
         # it is handled correctly when key refers to a transformed parameter
-        super().__setattr__(key, value)
+        super().__setattr__(name, value)

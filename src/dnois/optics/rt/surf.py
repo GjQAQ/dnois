@@ -606,10 +606,13 @@ class PolynomialPhase(PlanarPhase, CircularSurface):
         b: Sequence[Scalar],
         material: mt.Material | str,
         aperture: Aperture | Scalar = None,
+        norm_radius: float = None,
         reflective: bool = False,
         *,
         d: Scalar = None
     ):
+        if norm_radius is None:
+            raise NotImplementedError()
         CircularSurface.__init__(self, material, aperture, reflective, d=d)
 
         for i, _a in enumerate(a):
@@ -618,6 +621,7 @@ class PolynomialPhase(PlanarPhase, CircularSurface):
         for i, _b in enumerate(b):
             self.register_parameter(f'b{i + 1}', nn.Parameter(ty.scalar(_b, dtype=torch.get_default_dtype())))
         self.m: int = len(b)  #: Number of rectangular coefficients :math:`m`.
+        self.norm_radius: float = norm_radius  #: Normalization radius.
 
     def extra_repr(self) -> str:
         r = super().extra_repr()
@@ -665,11 +669,13 @@ class PolynomialPhase(PlanarPhase, CircularSurface):
         return [getattr(self, f'b{i + 1}') for i in range(self.m)]
 
     def _radial_phase_grad_r2(self, r2: Ts) -> Ts:
-        c = self.coefficients
-        c = [(i + 1) * _c for i, _c in enumerate(c)]
+        c = [(i + 1) * _c / self.norm_radius ** (2 * (i + 1)) for i, _c in enumerate(self.a)]
         return _t.polynomial(r2, c)
 
     def _rect_phase_grad(self, x: Ts, y: Ts) -> tuple[Ts, Ts]:
+        if self.m == 0:
+            return torch.zeros_like(x), torch.zeros_like(y)
+
         term_grads = [_rect_grad(i, x, y) for i in range(1, self.m + 1)]
         x_grads, y_grads = zip(*term_grads)
         x_grad = sum(x_grad_i * b_i for x_grad_i, b_i in zip(x_grads, self.b))
