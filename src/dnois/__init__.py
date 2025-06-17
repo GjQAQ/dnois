@@ -17,6 +17,7 @@ from . import (
 )
 from .base import *
 from .camera import *
+from ._func import *
 from .torch.calc import *
 from .utils import fmt
 

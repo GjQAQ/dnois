@@ -262,9 +262,9 @@ def snell(incident_angle: Numeric, n1: Numeric, n2: Numeric) -> Numeric:
     :return: Angle of refracted ray :math:`\theta_t`.
     """
     incident_angle = base.Angle.default_to(incident_angle, 'rad')
-    sin_incident = utils.GenericCompute(math.sin, torch.sin)(incident_angle)
+    sin_incident = utils.GenericCompute.sin(incident_angle)
     sin_refracted = sin_incident * n1 / n2
-    refracted_angle = utils.GenericCompute(math.asin, torch.asin)(sin_refracted)
+    refracted_angle = utils.GenericCompute.asin(sin_refracted)
     return base.Angle.as_default(refracted_angle, 'rad')
 
 
@@ -280,29 +280,29 @@ def _fresnel_dispatch(func, args, kwargs):
 
 
 def _fresnel_st(i, t):
-    sin_t = utils.GenericCompute(math.sin, torch.sin)(t)
-    cos_i = utils.GenericCompute(math.cos, torch.cos)(i)
-    sin = utils.GenericCompute(math.sin, torch.sin)(i + t)
+    sin_t = utils.GenericCompute.sin(t)
+    cos_i = utils.GenericCompute.cos(i)
+    sin = utils.GenericCompute.sin(i + t)
     return 2 * sin_t * cos_i / sin
 
 
 def _fresnel_sr(i, t):
-    numerator = utils.GenericCompute(math.sin, torch.sin)(t - i)
-    denominator = utils.GenericCompute(math.sin, torch.sin)(i + t)
+    numerator = utils.GenericCompute.sin(t - i)
+    denominator = utils.GenericCompute.sin(i + t)
     return numerator / denominator
 
 
 def _fresnel_pt(i, t):
-    sin_t = utils.GenericCompute(math.sin, torch.sin)(t)
-    cos_i = utils.GenericCompute(math.cos, torch.cos)(i)
-    sin = utils.GenericCompute(math.sin, torch.sin)(i + t)
-    cos = utils.GenericCompute(math.cos, torch.cos)(i - t)
+    sin_t = utils.GenericCompute.sin(t)
+    cos_i = utils.GenericCompute.cos(i)
+    sin = utils.GenericCompute.sin(i + t)
+    cos = utils.GenericCompute.cos(i - t)
     return 2 * sin_t * cos_i / (sin * cos)
 
 
 def _fresnel_pr(i, t):
-    numerator = utils.GenericCompute(math.tan, torch.tan)(i - t)
-    denominator = utils.GenericCompute(math.tan, torch.tan)(i + t)
+    numerator = utils.GenericCompute.tan(i - t)
+    denominator = utils.GenericCompute.tan(i + t)
     return numerator / denominator
 
 

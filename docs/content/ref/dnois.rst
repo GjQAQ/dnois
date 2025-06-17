@@ -28,6 +28,14 @@ Physics
     refract
     wave_vector
 
+************************************
+Functions
+************************************
+.. autosummary::
+    :toctree: ../generated/dnois/functions
+
+    zernike
+
 *********************************
 Debugging
 *********************************

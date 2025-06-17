@@ -1,6 +1,7 @@
 import collections.abc
 import functools
 import inspect
+import math
 
 import torch
 
@@ -286,6 +287,18 @@ class InfinityCond(Conditional):
 
 
 class GenericCompute:
+    zero: 'GenericCompute'
+    one: 'GenericCompute'
+    cos: 'GenericCompute'
+    sin: 'GenericCompute'
+    tan: 'GenericCompute'
+    acos: 'GenericCompute'
+    asin: 'GenericCompute'
+    exp: 'GenericCompute'
+    log: 'GenericCompute'
+    sqrt: 'GenericCompute'
+    abs: 'GenericCompute'
+
     def __init__(
         self,
         func: typing.Callable[[typing.Number], typing.Any] | typing.Callable[[typing.Ts | typing.Number], typing.Any],
@@ -301,3 +314,16 @@ class GenericCompute:
             return self.func_tensor(value)
         else:
             return self.func(value)
+
+
+GenericCompute.zero = GenericCompute(lambda x: 0 * x, torch.zeros_like)
+GenericCompute.one = GenericCompute(lambda x: 1 if isinstance(x, int) else 1., torch.ones_like)
+GenericCompute.cos = GenericCompute(math.cos, torch.cos)
+GenericCompute.sin = GenericCompute(math.sin, torch.sin)
+GenericCompute.tan = GenericCompute(math.tan, torch.tan)
+GenericCompute.acos = GenericCompute(math.acos, torch.acos)
+GenericCompute.asin = GenericCompute(math.asin, torch.asin)
+GenericCompute.exp = GenericCompute(math.exp, torch.exp)
+GenericCompute.log = GenericCompute(math.log, torch.log)
+GenericCompute.sqrt = GenericCompute(math.sqrt, torch.sqrt)
+GenericCompute.abs = GenericCompute(math.fabs, torch.abs)
