@@ -12,8 +12,10 @@ from .. import _func, paraxial
 from ... import base, mt, torch as _t, utils
 from ...base.typing import Any, Ts, Scalar, Sequence
 from ...base import typing as ty
+from ..._func import zernike, zernike_cpd
 
 __all__ = [
+    'AsphericalRadialPhase',
     'Conic',
     'EvenAspherical',
     'Fresnel',
@@ -21,6 +23,7 @@ __all__ = [
     'PolynomialPhase',
     'Spherical',
     'ThinLens',
+    'Zernike',
 ]
 __all__ += _surf.__all__
 
@@ -491,6 +494,196 @@ class EvenAspherical(_ConicBase):
         return super().px_curvature + 2 * self.a1
 
 
+class Zernike(Surface):
+    def __init__(
+        self, roc: Scalar = DEFAULT_ROC,
+        conic: Scalar = DEFAULT_K,
+        a: Sequence[Scalar] = (),
+        z: Sequence[Scalar] = (),
+        norm_radius: float = None,
+        material: mt.Material | str = _surf.DEFAULT_MATERIAL,
+        aperture: Aperture | Scalar = _surf.DEFAULT_APERTURE_D,
+        reflective: bool = False,
+        intersection_config: IntersectionConfig = IntersectionConfig.default,
+        *,
+        d: Scalar = None
+    ):
+        super().__init__(material, aperture, reflective, intersection_config, d=d)
+
+        roc = ty.scalar(roc, dtype=torch.get_default_dtype())
+        self.curvature: nn.Parameter = nn.Parameter(1 / roc)  #: Curvature. One of optimizable parameters.
+
+        k = ty.scalar(conic, dtype=torch.get_default_dtype())
+        self.conic: nn.Parameter = nn.Parameter(k)  #: Conic coefficient. One of optimizable parameters.
+
+        for i, a_item in enumerate(a):
+            self.register_parameter(f'a{i + 1}', nn.Parameter(ty.scalar(a_item, dtype=torch.get_default_dtype())))
+        self._a_n = len(a)
+
+        for i, z_item in enumerate(z):
+            self.register_parameter(f'z{i + 1}', nn.Parameter(ty.scalar(z_item, dtype=torch.get_default_dtype())))
+        self._z_n = len(z)
+
+        self._norm_radius = norm_radius
+
+    def extra_repr(self) -> str:
+        r = EvenAspherical.extra_repr(self)  # noqa
+        r += f',\n' + ','.join(f'z{i + 1}={utils.fmt(z.item())}' for i, z in enumerate(self.z))
+        return r
+
+    def h(self, x: Ts, y: Ts) -> Ts:
+        h_base = EvenAspherical.h(self, x, y)  # noqa
+        if self.zernike_items <= 0:
+            return h_base
+
+        h = h_base + self.zernike(x, y)
+        return h
+
+    def h_grad(self, x: Ts, y: Ts) -> tuple[Ts, Ts]:
+        dx, dy = EvenAspherical.h_grad(self, x, y)  # noqa
+        if self.zernike_items <= 0:
+            return dx, dy
+
+        zdx, zdy = self.zernike_grad(x, y)
+        dx, dy = dx + zdx, dy + zdy
+        return dx, dy
+
+    def h_extended(self, x: Ts, y: Ts) -> Ts:
+        lim2 = self.geo_radius.square()
+        if lim2.isinf().all():
+            return self.h(x, y)
+
+        r2 = x.square() + y.square()
+        return torch.where(
+            r2 <= lim2,
+            self.h(x, y),
+            EvenAspherical.h_extended(self, x, y) + self.zernike(x, y)  # noqa
+        )
+
+    def h_grad_extended(self, x: Ts, y: Ts) -> tuple[Ts, Ts]:
+        lim2 = self.geo_radius.square()
+        if lim2.isinf().all():
+            return self.h_grad(x, y)
+
+        r2 = x.square() + y.square()
+        dx, dy = self.h_grad(x, y)
+        adx, ady = EvenAspherical.h_grad_extended(self, x, y)  # noqa
+        zdx, zdy = self.zernike_grad(x, y)
+        mask = r2 <= lim2
+        return torch.where(mask, dx, adx + zdx), torch.where(mask, dy, ady + zdy)
+
+    def to_dict(self, keep_tensor=True) -> dict[str, Any]:
+        d = EvenAspherical.to_dict(self, keep_tensor)  # noqa
+        d['a'] = d.pop('coefficients')
+        d['z'] = self.z if keep_tensor else [c.item() for c in self.z]
+        return d
+
+    def zernike(self, x: Ts, y: Ts) -> Ts:
+        if self.zernike_items <= 0:
+            return torch.zeros_like(x)
+
+        r = torch.sqrt(x.square() + y.square())
+        r = r / self.norm_radius
+        theta = torch.atan2(y, x)
+        f = zernike(r, theta, 1) * self.z1
+        for i in range(2, self.zernike_items + 1):
+            f += zernike(r, theta, i) * getattr(self, f'z{i}')
+        return f
+
+    def zernike_grad(self, x: Ts, y: Ts) -> tuple[Ts, Ts]:
+        if self.zernike_items <= 0:
+            return torch.zeros_like(x), torch.zeros_like(y)
+
+        r = torch.sqrt(x.square() + y.square())
+        r = r / self.norm_radius
+        theta = torch.atan2(y, x)
+        dx, dy = zernike_cpd(r, theta, 1) * self.z1
+        for i in range(2, self.zernike_items + 1):
+            ddx, ddy = zernike_cpd(r, theta, i) * getattr(self, f'z{i}')
+            dx, dy = dx + ddx, dy + ddy
+        return dx / self.norm_radius, dy / self.norm_radius
+
+    @property
+    def z(self) -> list[Ts]:
+        r"""
+        Zernike coefficients. Note that the element with index ``i``
+        represents coefficient :math:`z_{i+1}`.
+
+        :return: A list containing the coefficients.
+        :rtype: list[torch.nn.Parameter]
+        """
+        return [getattr(self, f'z{i + 1}') for i in range(self._z_n)]
+
+    @property
+    def zernike_items(self) -> int:
+        """
+        Number of even aspherical coefficients.
+
+        :type: int
+        """
+        return self._z_n
+
+    @zernike_items.setter
+    def zernike_items(self, n: int):
+        if n < 0:
+            raise ValueError(f'Number of Zernike coefficients must be non-negative, but got {n}')
+        if n <= self._z_n:
+            for i in range(n, self._z_n):
+                delattr(self, f'z{i + 1}')
+        else:
+            for i in range(self._z_n, n):
+                self.register_parameter(f'z{i + 1}', nn.Parameter(ty.scalar(0.)))
+        self._z_n = n
+
+    @property
+    def a(self) -> list[Ts]:
+        r"""
+        Aspherical coefficients. Note that the element with index ``i``
+        represents coefficient :math:`a_{i+1}`.
+
+        :return: A list containing the coefficients.
+        :rtype: list[torch.nn.Parameter]
+        """
+        return [getattr(self, f'a{i + 1}') for i in range(self._a_n)]
+
+    @property
+    def aspheric_items(self) -> int:
+        """
+        Number of aspherical coefficients.
+
+        :type: int
+        """
+        return self._a_n
+
+    @aspheric_items.setter
+    def aspheric_items(self, n: int):
+        if n < 0:
+            raise ValueError(f'Number of aspherical coefficients must be non-negative, but got {n}')
+        if n <= self._a_n:
+            for i in range(n, self._a_n):
+                delattr(self, f'a{i + 1}')
+        else:
+            for i in range(self._a_n, n):
+                self.register_parameter(f'a{i + 1}', nn.Parameter(ty.scalar(0.)))
+        self._a_n = n
+
+    @property
+    def geo_radius(self) -> Ts:
+        if self.conic.item() <= -1:
+            return self.conic.new_tensor(float('inf'))
+        else:
+            return self.roc / torch.sqrt(1 + self.conic)
+
+    @property
+    def norm_radius(self) -> float:
+        r = self._norm_radius
+        if r is not None:
+            return r
+        if not isinstance(self.aperture, CircularAperture):
+            raise RuntimeError(f'norm_radius is not specified and the aperture is not a circular aperture.')
+        return self.aperture.radius.item()
+
+
 class PlanarPhase(Planar, metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def phase_grad(self, x: Ts, y: Ts) -> tuple[Ts, Ts]:
@@ -681,6 +874,98 @@ class PolynomialPhase(PlanarPhase, CircularSurface):
         x_grad = sum(x_grad_i * b_i for x_grad_i, b_i in zip(x_grads, self.b))
         y_grad = sum(y_grad_i * b_i for y_grad_i, b_i in zip(y_grads, self.b))
         return ty.cast(Ts, x_grad), ty.cast(Ts, y_grad)
+
+
+class AsphericalRadialPhase(EvenAspherical):
+    def __init__(
+        self, roc: Scalar = DEFAULT_ROC,
+        conic: Scalar = DEFAULT_K,
+        coefficients: Sequence[Scalar] = (),
+        phase_coef: Sequence[Scalar] = (),
+        norm_radius: float = None,
+        material: mt.Material | str = _surf.DEFAULT_MATERIAL,
+        aperture: Aperture | Scalar = _surf.DEFAULT_APERTURE_D,
+        reflective: bool = False,
+        intersection_config: IntersectionConfig = IntersectionConfig.default,
+        *,
+        d: Scalar = None
+    ):
+        super().__init__(roc, conic, coefficients, material, aperture, reflective, intersection_config, d=d)
+        for i, b in enumerate(phase_coef):
+            self.register_parameter(f'b{i + 1}', nn.Parameter(ty.scalar(b, dtype=torch.get_default_dtype())))
+        self._phase_n = len(phase_coef)
+        self._norm_radius = norm_radius
+
+    def extra_repr(self) -> str:
+        r = super().extra_repr()
+        r += f',\nnorm_radius={self.norm_radius}'
+        r += f',\n' + ','.join(f'b{i + 1}={utils.fmt(b.item())}' for i, b in enumerate(self.phase_coefficients))
+        return r
+
+    def phase_grad(self, x: Ts, y: Ts) -> tuple[Ts, Ts]:
+        r2 = x.square() + y.square()
+        c = [(i + 1) * b / self.norm_radius ** (2 * (i + 1)) for i, b in enumerate(self.phase_coefficients)]
+        double_phase_grad_r2 = _t.polynomial(r2, c)
+        return double_phase_grad_r2 * x, double_phase_grad_r2 * y
+
+    def reflect(self, ray: BatchedRay) -> BatchedRay:
+        raise NotImplementedError()
+
+    def refract(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
+        ray = super().refract(ray, forward)
+        ray = PlanarPhase.refract(self, ray, forward)  # noqa
+        return ray
+
+    def to_dict(self, keep_tensor=True) -> dict[str, Any]:
+        d = super().to_dict(keep_tensor)
+        d['phase_coef'] = self.phase_coefficients if keep_tensor else [c.item() for c in self.phase_coefficients]
+        d['norm_radius'] = self._norm_radius
+        return d
+
+    @property
+    def phase_coefficients(self) -> list[Ts]:
+        r"""
+        Phase coefficients. Note that the element with index ``i``
+        represents coefficient :math:`b_{i+1}`.
+
+        :return: A list containing the coefficients.
+        :rtype: list[torch.nn.Parameter]
+        """
+        return [getattr(self, f'b{i + 1}') for i in range(self._phase_n)]
+
+    @property
+    def phase_items(self) -> int:
+        """
+        Number of even phase coefficients.
+
+        :type: int
+        """
+        return self._phase_n
+
+    @phase_items.setter
+    def phase_items(self, n: int):
+        if n < 0:
+            raise ValueError(f'Number of phase coefficients must be non-negative, but got {n}')
+        if n <= self._phase_n:
+            for i in range(n, self._phase_n):
+                delattr(self, f'b{i + 1}')
+        else:
+            for i in range(self._phase_n, n):
+                self.register_parameter(f'b{i + 1}', nn.Parameter(ty.scalar(0.)))
+        self._phase_n = n
+
+    @property
+    def px_curvature(self) -> Ts:
+        raise NotImplementedError()
+
+    @property
+    def norm_radius(self) -> float:
+        r = self._norm_radius
+        if r is not None:
+            return r
+        if not isinstance(self.aperture, CircularAperture):
+            raise RuntimeError(f'norm_radius is not specified and the aperture is not a circular aperture.')
+        return self.aperture.radius.item()
 
 
 class Fresnel(Planar, EvenAspherical):

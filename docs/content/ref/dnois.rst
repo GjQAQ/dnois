@@ -35,6 +35,7 @@ Functions
     :toctree: ../generated/dnois/functions
 
     zernike
+    zernike_cpd
 
 *********************************
 Debugging

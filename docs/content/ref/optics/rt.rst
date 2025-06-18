@@ -41,6 +41,7 @@ Specific surface types
 .. autosummary::
     :toctree: ../../generated/optics/rt/surf/types
 
+    AsphericalRadialPhase
     CircularStop
     Conic
     EvenAspherical
@@ -51,6 +52,7 @@ Specific surface types
     Spherical
     Stop
     ThinLens
+    Zernike
 
 ************************************
 Ray-tracing-based optical systems
