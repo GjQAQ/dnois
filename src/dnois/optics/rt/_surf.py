@@ -35,12 +35,6 @@ __all__ = [
     'SurfaceSequence',
 ]
 
-EDGE_CUTTING: float = 1 - 1e-6
-DETECTION_RADIUS_EPS: float = 1e-5
-
-DEFAULT_APERTURE_D = float('inf')
-DEFAULT_MATERIAL = 'vacuum'
-
 
 def _dist_transform(x: Ts, curve: Callable[[Ts], Ts]) -> Ts:
     magnitude = curve(x.abs())
@@ -516,10 +510,8 @@ class CircularAperture(Aperture):
     :type diameter: float | Tensor
     """
 
-    def __init__(self, diameter: Scalar = DEFAULT_APERTURE_D):
+    def __init__(self, diameter: Scalar = float('inf')):
         super().__init__()
-        if diameter <= 0:
-            raise ValueError('radius must be positive')
 
         self.register_parameter('radius', None)
         radius = ty.scalar(diameter, dtype=torch.get_default_dtype()) / 2
@@ -539,7 +531,8 @@ class CircularAperture(Aperture):
         r"""
         Returns ``n`` points randomly sampled on this aperture. An optional ``sampling_curve``
         (denoted by :math:`\Gamma`) can be specified to control the distribution of
-        radial distance: :math:`r=\Gamma(t)` where :math:`t` is drawn uniformly from :math:`[0,1]`.
+        radial distance: :math:`r=\Gamma(t)R` where :math:`t` is drawn uniformly from :math:`[0,1]`
+        and :math:`R` is the radius.
 
         :param int n: Number of points.
         :param sampling_curve: Sampling curve :math:`\Gamma(t)`. Default: :math:`\sqrt{t}`.
@@ -646,7 +639,7 @@ class CircularAperture(Aperture):
         return self.diameter
 
     def _detection_radius(self) -> Ts:
-        return self.radius * (1 + DETECTION_RADIUS_EPS)
+        return self.radius * (1 + base.conf.DETECTION_RADIUS_EPS)
 
 
 class _DefaultMixIn:
@@ -710,7 +703,7 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
 
     def __init__(
         self,
-        material: mt.Material | str = DEFAULT_MATERIAL,
+        material: mt.Material | str = 'vacuum',
         aperture: Aperture | Scalar = None,
         reflective: bool = False,
         intersection_config: IntersectionConfig = IntersectionConfig.default,
@@ -1081,7 +1074,7 @@ class Planar(Surface):
 
     def __init__(
         self,
-        material: mt.Material | str = DEFAULT_MATERIAL,
+        material: mt.Material | str = 'vacuum',
         aperture: Aperture | Scalar = None,
         reflective: bool = False,
         *,
@@ -1187,8 +1180,8 @@ class CircularSurface(Surface, metaclass=abc.ABCMeta):
 
     def __init__(
         self,
-        material: mt.Material | str = DEFAULT_MATERIAL,
-        aperture: Aperture | Scalar = DEFAULT_APERTURE_D,
+        material: mt.Material | str = 'vacuum',
+        aperture: Aperture | Scalar = float('inf'),
         reflective: bool = False,
         intersection_config: IntersectionConfig = IntersectionConfig.default,
         *,
@@ -1271,7 +1264,7 @@ class CircularSurface(Surface, metaclass=abc.ABCMeta):
         lim2 = self.geo_radius.square()
         if lim2.isinf().all():
             return self.h_r2(r2)
-        return torch.where(r2 <= lim2, self.h_r2(r2), self.h_r2(lim2 * EDGE_CUTTING))
+        return torch.where(r2 <= lim2, self.h_r2(r2), self.h_r2(lim2 * base.conf.EDGE_CUTTING))
 
     @property
     def geo_radius(self) -> Ts:
@@ -1301,7 +1294,7 @@ class CircularStop(Stop, CircularSurface):
     :type aperture: float or 0D Tensor
     """
 
-    def __init__(self, aperture: Scalar = DEFAULT_APERTURE_D, *, d: Scalar = None):
+    def __init__(self, aperture: Scalar = float('inf'), *, d: Scalar = None):
         if isinstance(aperture, float):
             aperture = CircularAperture(aperture)
         super().__init__(aperture, d=d)
