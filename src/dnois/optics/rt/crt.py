@@ -13,6 +13,15 @@ from ...sensor import Sensor
 
 __all__ = [
     'CoaxialRayTracing',
+    'ChiefSide',
+    'FlType',
+    'FovType',
+    'ImagingModel',
+    'PupilSpec',
+    'PupilType',
+    'PsfCenter',
+    'PsfType',
+    'WlReduction',
 ]
 
 DEFAULT_FIND_CHIEF_SAMPLES: int = 101
@@ -28,11 +37,6 @@ ChiefSide = typing.Literal['obj', 'img', 'object', 'image']
 WlReduction = typing.Literal['none', 'mean', 'center']
 PupilSpec = typing.Double[Ts]  # radius, z-coordinate
 ImagingModel = typing.Literal['psf', 'forward_rt', 'backward_rt']
-
-
-def _check_arg(arg: Any, n1: str, n2: str):
-    if arg is not None:
-        warnings.warn(f'{n1} and {n2} are given simultaneously, {n2} will be ignored')
 
 
 def _plot_set_ax(ax, x_range: tuple[float, float]):
@@ -160,8 +164,25 @@ if ext.vis.mpl_available():
             init_rays: int = 20,
             legend: bool = True,
         ) -> tuple[plt.Figure, plt.Axes]:
-            self._check_circ_aperture()
-            # self._check_circ_surf()
+            """
+            Plot a 2D figure of this system on YZ plane, including the
+            cross-sections of optical components and rays emitted from some point sources
+            (possibly at infinity) traced through the system are plotted.
+
+            :param Figure fig: The figure to plot on. If ``None``, a new figure will be created.
+            :param depth: Depth of the point sources. A ``float`` or a 0D tensor.
+                Default: infinity.
+            :type depth: float or Tensor
+            :param height: Heights of the point source if ``depth`` is finite, or Y-FoV
+                angles of the rays otherwise. If not given, it is specified by the FoV
+                range of this system.
+            :type height: float | Sequence[float] | Tensor
+            :param wl: Wavelengths of the rays. Default: :attr:`.wl`.
+            :type wl: float | Sequence[float] | Tensor
+            :param int init_rays: Number of rays sampled on the first surface.
+                The actual number of rays displayed may be fewer. Default: 20.
+            :param bool legend: Whether to show the legend. Default: ``True``.
+            """
 
             if torch.is_tensor(depth) and depth.numel() > 1:
                 raise RuntimeError('Cross section figure for multiple depths is not implemented yet')
@@ -175,10 +196,16 @@ if ext.vis.mpl_available():
                 fovs = [0., fov_half * 0.5 ** 0.5, fov_half]
                 fovs = [(0., fov) for fov in fovs]
                 o = self.fovd2obj(fovs, depth)  # (3, 3)
+                o = self.cam2lens(o)
                 height = o[:, 1]  # (3,)
             else:
                 height = typing.vector(height, device=self.device, dtype=self.dtype)
-                o = self.fovd2obj(torch.stack([torch.zeros_like(height), height], -1), depth)
+                z_obj = self.cam2lens_z(depth).item()
+                if z_obj != -float('inf'):
+                    o = torch.stack([torch.zeros_like(height), height, torch.full_like(height, z_obj)], -1)
+                else:
+                    o = self.fovd2obj(torch.stack([torch.zeros_like(height), height], -1), depth)
+                    o = self.cam2lens(o)
 
             self._plot_components(ax)
 
@@ -187,6 +214,13 @@ if ext.vis.mpl_available():
                 max_h = height.abs().max().item()
                 y = torch.linspace(-max_h, max_h, 100, device=self.device)
                 ax.plot(utils.t4plot(torch.full_like(y, z_obj)), utils.t4plot(y), **self._ls_bold)
+
+            x_min = 0. if z_obj == -float('inf') else z_obj
+            for s in self.surfaces:
+                if s.ctx.baseline.item() < x_min:
+                    x_min = s.ctx.baseline.item()
+            x_range = (x_min, self.surfaces.total_length.item())
+            _plot_set_ax(ax, x_range)
 
             # image_plane
             if self.sensor is not None:
@@ -203,9 +237,6 @@ if ext.vis.mpl_available():
             else:
                 ray = BatchedRay(o, d, wl.reshape(1, -1, 1))  # N x N_wl x N_spp
             self._plot_rays(ax, ray, height, wl, legend)
-
-            x_range = (0. if z_obj == -float('inf') else z_obj, self.surfaces.total_length.item())
-            _plot_set_ax(ax, x_range)
             return fig, ax
 
         @torch.no_grad()
@@ -419,7 +450,7 @@ class CoaxialRayTracing(
     :param int repetitions: Number of repetitions of computing in ``'forward_rt'`` mode.
         Typically, this mode requires an exceedingly
         huge amount of memory to compute, in which case one can set :attr:`.sampler` to a
-        random sampler (see :meth:`~surf.Aperture.sampler`) with few sampling points,
+        random sampler (see :meth:`dnois.optics.rt.Aperture.sampler`) with few sampling points,
         run rendering ``repetitions`` times and get their average to get rendered image
         with virtually many sampling points while memory footprint is reduced. Default: ``1``.
     :param float robust_mean_center_threshold: Threshold for robust mean center.

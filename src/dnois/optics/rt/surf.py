@@ -129,6 +129,28 @@ class AnnularAperture(Aperture):
         else:
             return x, y
 
+    def sample_diameter(self, n: int = 64, theta: float | Ts = 0.) -> tuple[Ts, Ts]:
+        """
+        Samples points on diameter line segments of this aperture.
+        Polar angle of the line is given by ``theta``.
+
+        :param int n: Number of points.
+        :param theta: Polar angle of the line. A single float or a tensor with any shape.
+        :type theta: float | Tensor
+        :return: Two tensors representing x and y coordinates of the points.
+            If ``theta`` is a float, with shape ``(n,)``; if a tensor with shape ``(...)``,
+            with shape ``(..., n)``.
+        """
+        if n % 2:
+            raise ValueError(f'n must be even, but got {n}')
+        if not torch.is_tensor(theta):
+            theta = torch.tensor(theta, dtype=self.dtype, device=self.device)
+        r = torch.linspace(self.r1.item(), self.r2.item(), n // 2, device=self.device, dtype=self.dtype)
+        r = torch.cat([-r.flip(0), r])
+        theta = base.Angle.default_to(theta, 'rad')
+        theta = theta.unsqueeze(-1)
+        return r * theta.cos(), r * theta.sin()
+
     def to_dict(self, keep_tensor=True) -> dict[str, Any]:
         d = super().to_dict(keep_tensor)
         d['inner_r'] = self._attr2dictitem('r1', keep_tensor)
@@ -154,6 +176,10 @@ class AnnularAperture(Aperture):
     def d2(self) -> Ts:
         """The outer diameter.\n\n:type: Tensor"""
         return 2 * self.r2
+
+    @property
+    def radius(self):
+        return self.r2
 
     def _detection_r1(self) -> Ts:
         return self.r1 * (1 - base.conf.DETECTION_RADIUS_EPS)
@@ -645,9 +671,38 @@ class Zernike(Surface):
         self._norm_radius = norm_radius
 
     def extra_repr(self) -> str:
-        r = EvenAspherical.extra_repr(self)  # noqa
+        r = super().extra_repr()
+        r += f',\nroc={base.Length.fmt(self.roc.item())}'
+        r += f',\nconic={utils.fmt(self.conic.item())}'
+        r += f',\n' + ','.join(f'a{i + 1}={utils.fmt(a.item())}' for i, a in enumerate(self.a))
         r += f',\n' + ','.join(f'z{i + 1}={utils.fmt(z.item())}' for i, z in enumerate(self.z))
         return r
+
+    def h_r2(self, r2: Ts) -> Ts:
+        a = 0
+        for c in reversed(self.a):
+            a = (a + c) * r2
+        return _conic(r2, self.c, self.conic) + a
+
+    def h_derivative_r2(self, r2: Ts) -> Ts:
+        s_der = _spherical_der_wrt_r2(r2, self.c, self.conic)
+        a_der = None
+        for i in range(len(self.a), 0, -1):
+            if a_der is None:
+                a_der = self.a[i - 1] * i
+            else:
+                a_der = a_der * r2 + self.a[i - 1] * i
+        return s_der + a_der
+
+    def h_r2_extended(self, r2: Ts) -> Ts:
+        r"""
+        Computes extended version of :math:`\hat{h}(r^2)`.
+        See :py:meth:`~h_r2` and :py:meth:`~h_extended`.
+        """
+        lim2 = self.geo_radius.square()
+        if lim2.isinf().all():
+            return self.h_r2(r2)
+        return torch.where(r2 <= lim2, self.h_r2(r2), self.h_r2(lim2 * base.conf.EDGE_CUTTING))
 
     def h(self, x: Ts, y: Ts) -> Ts:
         h_base = EvenAspherical.h(self, x, y)  # noqa
@@ -657,7 +712,7 @@ class Zernike(Surface):
         h = h_base + self.zernike(x, y)
         return h
 
-    def h_grad(self, x: Ts, y: Ts) -> tuple[Ts, Ts]:
+    def h_grad(self, x: Ts, y: Ts, r2: Ts = None) -> tuple[Ts, Ts]:
         dx, dy = EvenAspherical.h_grad(self, x, y)  # noqa
         if self.zernike_items <= 0:
             return dx, dy
@@ -720,6 +775,22 @@ class Zernike(Surface):
             ddx, ddy = zernike_cpd(r, theta, i) * getattr(self, f'z{i}')
             dx, dy = dx + ddx, dy + ddy
         return dx / self.norm_radius, dy / self.norm_radius
+
+    @property
+    def c(self) -> nn.Parameter:
+        return self.curvature
+
+    @c.setter
+    def c(self, value: Scalar):
+        self.curvature = value
+
+    @property
+    def roc(self) -> Ts:
+        return 1 / self.curvature
+
+    @roc.setter
+    def roc(self, value: Scalar):
+        self.curvature = 1 / value
 
     @property
     def z(self) -> list[Ts]:
@@ -1031,7 +1102,20 @@ class AsphericalRadialPhase(EvenAspherical):
 
     def refract(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
         ray = super().refract(ray, forward)
-        ray = PlanarPhase.refract(self, ray, forward)  # noqa
+
+        n1 = n2 = self.material.n(ray.wl)
+        ray_local = self.ctx.g2l_ray(ray)
+        inv_k = ray_local.wl / (2 * torch.pi)
+        phase_x, phase_y = self.phase_grad(ray_local.x, ray_local.y)
+
+        ndx = (n1 * ray_local.d_x + inv_k * phase_x) / n2
+        ndy = (n1 * ray_local.d_y + inv_k * phase_y) / n2
+        ndz, valid = _t.ssqrt(1 - ndx.square() - ndy.square())
+        new_d = torch.stack([ndx, ndy, ndz], dim=-1)
+        new_d = self.ctx.l2g(new_d, True)
+
+        ray.d = new_d
+        ray.update_valid_(valid)
         return ray
 
     def to_dict(self, keep_tensor=True) -> dict[str, Any]:
