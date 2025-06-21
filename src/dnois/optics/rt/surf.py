@@ -1094,7 +1094,7 @@ class AsphericalRadialPhase(EvenAspherical):
     def phase_grad(self, x: Ts, y: Ts) -> tuple[Ts, Ts]:
         r2 = x.square() + y.square()
         c = [(i + 1) * b / self.norm_radius ** (2 * (i + 1)) for i, b in enumerate(self.phase_coefficients)]
-        double_phase_grad_r2 = _t.polynomial(r2, c)
+        double_phase_grad_r2 = _t.polynomial(r2, c) * 2
         return double_phase_grad_r2 * x, double_phase_grad_r2 * y
 
     def reflect(self, ray: BatchedRay) -> BatchedRay:

@@ -1,3 +1,4 @@
+import dataclasses
 import math
 import warnings
 
@@ -8,7 +9,7 @@ from .ray import BatchedRay
 from .. import system, _func
 from ... import scene as _sc, base, utils, fourier, torch as _t, ext
 from ...base import typing
-from ...base.typing import Ts, Any, Size2d, Vector, Scalar, Self
+from ...base.typing import Ts, Size2d, Vector, Scalar, Self
 from ...sensor import Sensor
 
 __all__ = [
@@ -95,6 +96,13 @@ if ext.vis.mpl_available():
     import matplotlib.pyplot as plt
 
 
+    @dataclasses.dataclass
+    class CRTSpotDiagram:
+        fig: plt.Figure
+        rms: Ts = None
+        geo_radius: Ts = None
+
+
     class CoaxialRayTracingVisMixIn:
         _ls_surf = {'color': 'black', 'linewidth': 1}
         _ls_bold = {'color': 'black', 'linewidth': 2}
@@ -102,11 +110,15 @@ if ext.vis.mpl_available():
         @torch.no_grad()
         @utils.with_external
         def plot_spot_diagram(
-            self: 'CoaxialRayTracing', points: Ts = None, wl: Vector = None, *, width=None
-        ) -> plt.Figure:
-            self._check_circ_aperture()
-            self._check_circ_surf()
-
+            self: 'CoaxialRayTracing',
+            points: Ts = None,
+            wl: Vector = None,
+            ray_density: int = 6,
+            *,
+            width=None,
+            entr_d=None,
+            entr_z=None,
+        ) -> CRTSpotDiagram:
             if points is None:
                 fov_half = self.reference.fov_half
                 fov = [0., fov_half * 0.5 ** 0.5, fov_half]
@@ -118,40 +130,52 @@ if ext.vis.mpl_available():
             n_col = int(math.ceil(n_point / n_row))
             fig, axs = plt.subplots(n_row, n_col, squeeze=False, figsize=(n_col * 5, n_row * 5))
 
-            entr_r, entr_z = self.entr_pupil('paraxial', wl, 'center')
-            entr_d, entr_z = entr_r.item() * 2, entr_z.item()
+            if entr_d is None or entr_z is None:
+                entr_r_computed, entr_z_computed = self.entr_pupil('paraxial', wl, 'center')
+                if entr_d is None:
+                    entr_d = entr_r_computed.item() * 2
+                if entr_z is None:
+                    entr_z = entr_z_computed.item()
 
             pupil_ap = surf.CircularAperture(entr_d)
             pupil_ap.to(device=self.device, dtype=self.dtype)
-            x, y = pupil_ap.sample_unipolar(6, 6)
+            x, y = pupil_ap.sample_unipolar(ray_density, 6)
             pupil_points = torch.stack([x, y, torch.full_like(x, entr_z)], -1)  # N_spp x 3
             entr_center = self.new_tensor([0, 0, entr_z])
 
+            rms_list = []
+            geo_radius_list = []
             for i in range(n_point):
                 direction, _ = _make_direction(pupil_points, points[i])  # N_spp|1 x 3
                 ray_in = BatchedRay(pupil_points, direction, wl.view(-1, 1))  # N_wl x N_spp
-                ray_out = self.trace_ray(ray_in)  # N_wl x N_spp
+                ray_out = self.trace_ray(ray_in).broadcast()  # N_wl x N_spp
 
                 chief_direction, _ = _make_direction(entr_center, points[i])  # 3
                 chief_ray_in = BatchedRay(entr_center, chief_direction, wl)  # N_wl
-                chief_ray_out = self.trace_ray(chief_ray_in)  # N_wl
+                chief_ray_out = self.trace_ray(chief_ray_in).broadcast()  # N_wl
+
+                x, y = ray_out.x - chief_ray_out.x, ray_out.y - chief_ray_out.y
+                r2 = x.square() + y.square()
+                rms_list.append(r2.mean().sqrt())
+                geo_radius_list.append(r2.max().sqrt())
 
                 r, c = i // n_col, i % n_col
                 axs: list[list[plt.Axes]]
                 ax: plt.Axes = axs[r][c]
                 for j in range(wl.size(0)):
-                    x = utils.t4plot(ray_out.x[j] - chief_ray_out.x[j])
-                    y = utils.t4plot(ray_out.y[j] - chief_ray_out.y[j])
+                    wl_value = wl[j].item()
                     ax.scatter(
-                        x, y,
-                        s=2, c=utils.wl2rgb(wl[j].item(), output_format='hex'), label=f'{wl[j].item():.4g}',
+                        utils.t4plot(x[j]), utils.t4plot(y[j]),
+                        s=2, c=utils.wl2rgb(wl_value, output_format='hex'), label=base.Length.fmt(wl_value),
                     )
                     ax.legend()
                     ax.set_aspect('equal')
                     ax.set_xlim(-width, width)
                     ax.set_ylim(-width, width)
 
-            return fig
+            rms = torch.stack(rms_list)
+            geo_radius = torch.stack(geo_radius_list)
+            return CRTSpotDiagram(fig, rms, geo_radius)
 
         @torch.no_grad()
         @utils.with_external
@@ -216,10 +240,14 @@ if ext.vis.mpl_available():
                 ax.plot(utils.t4plot(torch.full_like(y, z_obj)), utils.t4plot(y), **self._ls_bold)
 
             x_min = 0. if z_obj == -float('inf') else z_obj
+            x_max = self.surfaces.total_length.item()
             for s in self.surfaces:
-                if s.ctx.baseline.item() < x_min:
-                    x_min = s.ctx.baseline.item()
-            x_range = (x_min, self.surfaces.total_length.item())
+                z_s = s.ctx.baseline.item()
+                if z_s < x_min:
+                    x_min = z_s
+                if z_s > x_max:
+                    x_max = z_s
+            x_range = (x_min, x_max)
             _plot_set_ax(ax, x_range)
 
             # image_plane
