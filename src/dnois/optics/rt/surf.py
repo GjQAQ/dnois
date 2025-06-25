@@ -29,17 +29,36 @@ __all__ = [
 __all__ += _surf.__all__
 
 
-def _conic(r2: Ts, c: Ts, k: Ts = None) -> Ts:
+def conical(r2: Ts, c: Ts, k: Ts = None) -> Ts:
     _1 = c.square() if k is None else c.square() * (1 + k)
     return c * r2 / (1 + torch.sqrt(torch.relu(1 - r2 * _1)))
 
 
-def _spherical_der_wrt_r2(r2: Ts, c: Ts, k: Ts = None) -> Ts:
+def conical_derivative_r2(r2: Ts, c: Ts, k: Ts = None) -> Ts:
     _1 = c.square() if k is None else c.square() * (1 + k)
     _2 = r2 * _1
     _3, mask = _t.ssqrt(1 - _2)
     _4 = _3 + 1
-    return torch.where(mask, c / _4 * (1 + _2 / (2 * _3 * _4 + 1e-10)), 0)
+    return torch.where(mask, c / _4 * (1 + _2 / (2 * _3 * _4 + 1e-20)), 0)
+
+
+def even_aspherical(r2: Ts, c: Ts, k: Ts = None, a: Sequence[Ts] = ()) -> Ts:
+    conic_base = conical(r2, c, k)
+    if len(a) == 0:
+        return conic_base
+
+    aspherical = r2 * _t.polynomial(r2, a)
+    return aspherical + conic_base
+
+
+def even_aspherical_derivative_r2(r2: Ts, c: Ts, k: Ts = None, a: Sequence[Ts] = ()) -> Ts:
+    conic_base = conical_derivative_r2(r2, c, k)
+    if len(a) == 0:
+        return conic_base
+
+    coefficients = [a_item * (i + 1) for i, a_item in enumerate(a)]
+    aspherical = _t.polynomial(r2, coefficients)
+    return aspherical + conic_base
 
 
 class AnnularAperture(Aperture):
@@ -318,6 +337,9 @@ class ThinLens(Planar, CircularSurface):
         warnings.warn(f'{self.__class__.__name__} does not support coherent ray tracing currently')
         return ray
 
+    def reflect(self, ray: BatchedRay) -> BatchedRay:
+        raise NotImplementedError()
+
     def flip_(self) -> ty.Self:
         super().flip_()
         if not self.fl_equal():
@@ -421,16 +443,19 @@ class Spherical(_SphericalBase):
     __doc__ = _SphericalBase.__doc__
 
     def h_r2(self, r2: Ts) -> Ts:
-        return _conic(r2, self.c)
+        return conical(r2, self.c)
 
     def h_derivative_r2(self, r2: Ts) -> Ts:
-        return _spherical_der_wrt_r2(r2, self.c)
+        return conical_derivative_r2(r2, self.c)
 
     def _solve_t(self, ray: BatchedRay) -> Ts:
+        if not self._cfg.use_analytical:
+            return Surface._solve_t(self, ray)
+
         if self.c.eq(0.).item():
             return -ray.z / ray.d_z
 
-        o_hat = torch.cat([ray.o[..., :2], ray.z.unsqueeze(-1)], -1) * self.c
+        o_hat = ray.o * self.c
         qc_b = torch.sum(o_hat * ray.d, -1) - ray.d_z  # quadratic coefficient: b
         qc_c = o_hat.square().sum(-1) - 2 * o_hat[..., 2]  # quadratic coefficient: c
         q_sqrt_delta = torch.sqrt(qc_b.square() - qc_c)  # sqrt of delta in quadratic equation
@@ -485,7 +510,7 @@ class _ConicBase(_SphericalBase, metaclass=abc.ABCMeta):  # docstring for Conic
         return r
 
     def h_derivative_r2(self, r2: Ts) -> Ts:
-        return _spherical_der_wrt_r2(r2, self.c, self.conic)
+        return conical_derivative_r2(r2, self.c, self.conic)
 
     def to_dict(self, keep_tensor=True) -> dict[str, Any]:
         d = super().to_dict(keep_tensor)
@@ -504,13 +529,16 @@ class Conic(_ConicBase):
     __doc__ = _ConicBase.__doc__
 
     def h_r2(self, r2: Ts) -> Ts:
-        return _conic(r2, self.c, self.conic)
+        return conical(r2, self.c, self.conic)
 
     def _solve_t(self, ray: BatchedRay) -> Ts:
+        if not self._cfg.use_analytical:
+            return Surface._solve_t(self, ray)
+
         if self.c.eq(0.).item():
             return -ray.z / ray.d_z
 
-        o_hat = torch.cat([ray.o[..., :2], ray.z.unsqueeze(-1)], -1) * self.c
+        o_hat = ray.o * self.c
         qc_a = 1 + self.conic * ray.d_z.square()  # quadratic coefficient: a
         _1 = o_hat * ray.d
         _1[..., 2] *= (self.conic + 1)
@@ -520,7 +548,7 @@ class Conic(_ConicBase):
         qc_c = _2.sum(-1) - 2 * o_hat[..., 2]  # quadratic coefficient: c
         q_sqrt_delta = torch.sqrt(qc_b.square() - qc_a * qc_c)
         q_sqrt_delta = torch.copysign(q_sqrt_delta, ray.d_z)
-        t_hat = -(qc_b + q_sqrt_delta) / qc_a
+        t_hat = -(qc_b + q_sqrt_delta) / (qc_a + 1e-20)
         t = t_hat * self.roc
 
         nan_mask = t.isnan()
@@ -575,20 +603,10 @@ class EvenAspherical(_ConicBase):
         return r
 
     def h_r2(self, r2: Ts) -> Ts:
-        a = 0
-        for c in reversed(self.coefficients):
-            a = (a + c) * r2
-        return _conic(r2, self.c, self.conic) + a
+        return even_aspherical(r2, self.c, self.conic, self.coefficients)
 
     def h_derivative_r2(self, r2: Ts) -> Ts:
-        s_der = _spherical_der_wrt_r2(r2, self.c, self.conic)
-        a_der = None
-        for i in range(len(self.coefficients), 0, -1):
-            if a_der is None:
-                a_der = self.coefficients[i - 1] * i
-            else:
-                a_der = a_der * r2 + self.coefficients[i - 1] * i
-        return s_der + a_der
+        return even_aspherical_derivative_r2(r2, self.c, self.conic, self.coefficients)
 
     def flip_(self) -> ty.Self:
         super().flip_()
@@ -679,20 +697,10 @@ class Zernike(Surface):
         return r
 
     def h_r2(self, r2: Ts) -> Ts:
-        a = 0
-        for c in reversed(self.a):
-            a = (a + c) * r2
-        return _conic(r2, self.c, self.conic) + a
+        return even_aspherical(r2, self.c, self.conic, self.a)
 
     def h_derivative_r2(self, r2: Ts) -> Ts:
-        s_der = _spherical_der_wrt_r2(r2, self.c, self.conic)
-        a_der = None
-        for i in range(len(self.a), 0, -1):
-            if a_der is None:
-                a_der = self.a[i - 1] * i
-            else:
-                a_der = a_der * r2 + self.a[i - 1] * i
-        return s_der + a_der
+        return even_aspherical_derivative_r2(r2, self.c, self.conic, self.a)
 
     def h_r2_extended(self, r2: Ts) -> Ts:
         r"""
@@ -1101,19 +1109,25 @@ class AsphericalRadialPhase(EvenAspherical):
         raise NotImplementedError()
 
     def refract(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
-        ray = super().refract(ray, forward)
+        if not forward:
+            raise NotImplementedError()
 
-        n1 = n2 = self.material.n(ray.wl)
+        n1 = self.ctx.material_before.n(ray.wl)
+        n2 = self.material.n(ray.wl)
         ray_local = self.ctx.g2l_ray(ray)
         inv_k = ray_local.wl / (2 * torch.pi)
         phase_x, phase_y = self.phase_grad(ray_local.x, ray_local.y)
+        phase_vec = torch.stack([phase_x, phase_y, torch.zeros_like(phase_x)], dim=-1)
+        phase_vec = phase_vec * inv_k.unsqueeze(-1)
+        normal = self._optical_normal(ray.x, ray.y)
 
-        ndx = (n1 * ray_local.d_x + inv_k * phase_x) / n2
-        ndy = (n1 * ray_local.d_y + inv_k * phase_y) / n2
-        ndz, valid = _t.ssqrt(1 - ndx.square() - ndy.square())
-        new_d = torch.stack([ndx, ndy, ndz], dim=-1)
+        normal, _1 = torch.broadcast_tensors(normal, n1.unsqueeze(-1) * ray.d + phase_vec)
+        n_cross_t = normal.cross(_1, -1) / n2.unsqueeze(-1)
+        t_vertical = n_cross_t.cross(normal, -1)
+        t_parallel, valid = _t.ssqrt(1 - t_vertical.square().sum(-1))
+        new_d = t_vertical + t_parallel.unsqueeze(-1) * normal
+
         new_d = self.ctx.l2g(new_d, True)
-
         ray.d = new_d
         ray.update_valid_(valid)
         return ray
@@ -1178,6 +1192,12 @@ class Fresnel(Planar, EvenAspherical):
     :math:`(x,y)` is that of a :class:`EvenAspherical` at the same point.
 
     See :class:`EvenAspherical` for description of parameters.
+
+    :param float wrapping: Wrapping height of Fresnel surface.
+        This parameter does not affect the behavior of this surface
+        in ray tracing and only matters in calculating the virtual profile
+        (e.g. in :meth:`.profile`). Zero of a negative number represents
+        no wrapping. Default: ``0.``.
     """
 
     def __init__(
@@ -1187,10 +1207,12 @@ class Fresnel(Planar, EvenAspherical):
         material: mt.Material | str = 'vacuum',
         aperture: Aperture | Scalar = float('inf'),
         reflective: bool = False,
+        wrapping: float = 0.,
         *,
         d: Scalar = None
     ):
         EvenAspherical.__init__(self, roc, conic, coefficients, material, aperture, reflective, d=d)
+        self.wrapping = wrapping  #: Wrapping height.
 
     def extra_repr(self) -> str:
         return EvenAspherical.extra_repr(self)
@@ -1211,6 +1233,38 @@ class Fresnel(Planar, EvenAspherical):
             self.roc, self.conic, self.coefficients, self.material, self.aperture, self.reflective,
             d=self.ctx.distance if self.ctx is not None and isinstance(self.ctx, CoaxialContext) else None
         )
+
+    def profile(self, r2: Ts) -> Ts:
+        """
+        Virtual profile of this surface.
+
+        :param Tensor r2: Squared radial distance.
+        :return: Virtual profile.
+        :rtype: Tensor
+        """
+        unwrapped = even_aspherical(r2, self.curvature, self.conic, self.coefficients)
+        if self.wrapping <= 0.:
+            return unwrapped
+
+        wrapped = unwrapped.fmod(self.wrapping)
+        return wrapped
+
+    def cut_radii(self, points: int = 1_000_000) -> list[float]:
+        if not isinstance(self.aperture, CircularAperture):
+            raise RuntimeError(f'cut_radii is only supported for circular aperture.')
+        r = self.aperture.radius.item()
+        r = torch.linspace(0, r, points, device=self.device, dtype=self.dtype)
+        profile = self.profile(r.square())
+        diff = profile.diff()
+        cutting_points = diff.abs() > 0.9 * self.wrapping
+        idx = torch.argwhere(cutting_points)
+        cutting_points = [((r[i] + r[i + 1]) / 2).item() for i in idx.flatten().tolist()]
+        return cutting_points
+
+    def to_dict(self, keep_tensor=True) -> dict[str, Any]:
+        d = super().to_dict(keep_tensor)
+        d['wrapping'] = self.wrapping
+        return d
 
     def _optical_normal(self, x: Ts, y: Ts) -> Ts:
         r2 = x.square() + y.square()

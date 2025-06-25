@@ -149,7 +149,7 @@ def _parse_segment_common(segment: list[str], unit: str) -> tuple[str | None, ty
         return 'material', value.split(' ', 1)[0]
     elif key == 'DIAM':
         r = float(value.split(' ', 1)[0])
-        aperture = rt.CircularAperture(base.Length.as_default(r, unit) * 2)
+        aperture = rt.CircularAperture(base.Length.as_default(r, unit))
         return 'aperture', aperture
     elif key == 'DISZ':
         return 'd', base.Length.as_default(float(value), unit)

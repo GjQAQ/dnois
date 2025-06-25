@@ -203,6 +203,18 @@ class Context(_t.EnhancedModule):
         return self.seq.index(self.surface)
 
     @property
+    def surface_before(self) -> 'Surface':
+        """
+        The surface before the host surface.
+
+        :type: Surface
+        """
+        idx = self.index
+        if idx == 0:
+            raise RuntimeError('Trying to access the surface before the first surface.')
+        return self.seq[idx - 1]
+
+    @property
     def material_before(self) -> mt.Material:
         """
         :py:class:`~dnois.mt.Material` object before ths host surface.
@@ -506,15 +518,15 @@ class CircularAperture(Aperture):
     """
     Circular aperture with radius :attr:`radius`.
 
-    :param diameter: Diameter of the aperture.
-    :type diameter: float | Tensor
+    :param radius: Radius of the aperture.
+    :type radius: float | Tensor
     """
 
-    def __init__(self, diameter: Scalar = float('inf')):
+    def __init__(self, radius: Scalar = float('inf')):
         super().__init__()
 
         self.register_parameter('radius', None)
-        radius = ty.scalar(diameter, dtype=torch.get_default_dtype()) / 2
+        radius = ty.scalar(radius, dtype=torch.get_default_dtype())
         #: Radius of the aperture.
         self.radius: nn.Parameter = nn.Parameter(radius, False)
 
@@ -620,7 +632,7 @@ class CircularAperture(Aperture):
 
     def to_dict(self, keep_tensor=True) -> dict[str, Any]:
         d = super().to_dict(keep_tensor)
-        d['diameter'] = self._attr2dictitem('radius', keep_tensor) * 2
+        d['radius'] = self._attr2dictitem('radius', keep_tensor)
         return d
 
     @property
@@ -667,6 +679,9 @@ class IntersectionConfig(base.AsJsonMixIn, _DefaultMixIn):
     force_before: bool = True
     #: Whether to mark rays whose marching distance are negative as invalid in intersection-determination.
     force_non_negative: bool = False
+    #: Use analytical solution rather than Newton's method to determine
+    #: ray-surface intersection if available.
+    use_analytical: bool = True
 
 
 IntersectionConfig.default = IntersectionConfig()

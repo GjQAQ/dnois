@@ -104,8 +104,9 @@ if ext.vis.mpl_available():
 
 
     class CoaxialRayTracingVisMixIn:
-        _ls_surf = {'color': 'black', 'linewidth': 1}
-        _ls_bold = {'color': 'black', 'linewidth': 2}
+        COLOR_FRESNEL = 'orange'
+        LS_SURF = {'color': 'black', 'linewidth': 1}
+        LS_TERMINAL = {'color': 'black', 'linewidth': 2}
 
         @torch.no_grad()
         @utils.with_external
@@ -137,7 +138,7 @@ if ext.vis.mpl_available():
                 if entr_z is None:
                     entr_z = entr_z_computed.item()
 
-            pupil_ap = surf.CircularAperture(entr_d)
+            pupil_ap = surf.CircularAperture(entr_d / 2)
             pupil_ap.to(device=self.device, dtype=self.dtype)
             x, y = pupil_ap.sample_unipolar(ray_density, 6)
             pupil_points = torch.stack([x, y, torch.full_like(x, entr_z)], -1)  # N_spp x 3
@@ -156,8 +157,8 @@ if ext.vis.mpl_available():
 
                 x, y = ray_out.x - chief_ray_out.x, ray_out.y - chief_ray_out.y
                 r2 = x.square() + y.square()
-                rms_list.append(r2.mean().sqrt())
-                geo_radius_list.append(r2.max().sqrt())
+                rms_list.append(r2[ray_out.valid].mean().sqrt())
+                geo_radius_list.append(r2[ray_out.valid].max().sqrt())
 
                 r, c = i // n_col, i % n_col
                 axs: list[list[plt.Axes]]
@@ -170,8 +171,8 @@ if ext.vis.mpl_available():
                     )
                     ax.legend()
                     ax.set_aspect('equal')
-                    ax.set_xlim(-width, width)
-                    ax.set_ylim(-width, width)
+                    ax.set_xlim(-width / 2, width / 2)
+                    ax.set_ylim(-width / 2, width / 2)
 
             rms = torch.stack(rms_list)
             geo_radius = torch.stack(geo_radius_list)
@@ -237,12 +238,12 @@ if ext.vis.mpl_available():
             if z_obj != -float('inf'):
                 max_h = height.abs().max().item()
                 y = torch.linspace(-max_h, max_h, 100, device=self.device)
-                ax.plot(utils.t4plot(torch.full_like(y, z_obj)), utils.t4plot(y), **self._ls_bold)
+                ax.plot(utils.t4plot(torch.full_like(y, z_obj)), utils.t4plot(y), **self.LS_TERMINAL)
 
             x_min = 0. if z_obj == -float('inf') else z_obj
             x_max = self.surfaces.total_length.item()
-            for s in self.surfaces:
-                z_s = s.ctx.baseline.item()
+            positions = [s.ctx.baseline.item() for s in self.surfaces] + [self.surfaces.total_length]
+            for z_s in positions:
                 if z_s < x_min:
                     x_min = z_s
                 if z_s > x_max:
@@ -254,7 +255,7 @@ if ext.vis.mpl_available():
             if self.sensor is not None:
                 diag_length = (self.sensor.h ** 2 + self.sensor.w ** 2) ** 0.5
                 sensor_z = self.surfaces.total_length.item()
-                ax.plot([sensor_z, sensor_z], [-diag_length / 2, diag_length / 2], **self._ls_bold)
+                ax.plot([sensor_z, sensor_z], [-diag_length / 2, diag_length / 2], **self.LS_TERMINAL)
 
             # rays
             sampled = self.surfaces.first.sample('diameter', init_rays, torch.pi / 2)  # N_spp x 3
@@ -284,13 +285,11 @@ if ext.vis.mpl_available():
                 sf: surf.CircularSurface
                 radius = sf.apt.radius.item()
                 if isinstance(sf, surf.CircularStop):
-                    self._plot_component_circular_stop(ax, sf)
-                    edge_z.append(None)
+                    edge_z.append(self._plot_component_circular_stop(ax, sf))
+                elif isinstance(sf, surf.Fresnel):
+                    edge_z.append(self._plot_surf_fresnel(ax, points, radius, sf))
                 else:
-                    y = torch.linspace(-radius, radius, points, device=self.device)
-                    z = sf.h_extended(torch.zeros_like(y), y) + sf.ctx.baseline
-                    ax.plot(utils.t4plot(z), utils.t4plot(y), **self._ls_surf)
-                    edge_z.append(z[-1].item())
+                    edge_z.append(self._plot_surf_common(ax, points, radius, sf))
                 if isinstance(sf, surf.ThinLens):
                     self._plot_thin_lens(ax, radius, sf)
             for i in range(len(self.surfaces) - 1):  # edges
@@ -313,6 +312,23 @@ if ext.vis.mpl_available():
                         r1, r2 = r2, r1
                     ax.plot([[z, z], [z, z]], [[r2, -r2], [r1, -r1]], color='black', linewidth=1)
 
+        def _plot_surf_common(self: 'CoaxialRayTracing', ax, points, radius, sf):
+            y = torch.linspace(-radius, radius, points, device=self.device)
+            z = sf.h_extended(torch.zeros_like(y), y) + sf.ctx.baseline
+            ax.plot(utils.t4plot(z), utils.t4plot(y), **self.LS_SURF)
+            return z[-1].item()
+
+        def _plot_surf_fresnel(self: 'CoaxialRayTracing', ax, points, radius, sf):
+            y = torch.linspace(-radius, radius, points, device=self.device)
+            z_flat = torch.full_like(y, sf.ctx.baseline.item())
+            z_latent = sf.profile(y.square()) + sf.ctx.baseline
+
+            ax.plot(utils.t4plot(z_flat), utils.t4plot(y), **self.LS_SURF)
+            latent_ls = self.LS_SURF.copy()
+            latent_ls['color'] = self.COLOR_FRESNEL
+            ax.plot(utils.t4plot(z_latent), utils.t4plot(y), **latent_ls)
+            return z_flat[-1].item()
+
         def _plot_thin_lens(self, ax, radius, sf):
             length = radius / (10 * 2 ** 0.5)
             z0 = sf.ctx.baseline.item()
@@ -322,7 +338,7 @@ if ext.vis.mpl_available():
                     [radius, radius, -radius, -radius],
                     [radius - length, radius - length, length - radius, length - radius]
                 ],
-                **self._ls_surf
+                **self.LS_SURF
             )
 
         def _plot_component_circular_stop(self, ax, sf: surf.CircularStop):
@@ -332,7 +348,7 @@ if ext.vis.mpl_available():
             ax.plot(
                 [[z, z, z - length / 2, z - length / 2], [z, z, z + length / 2, z + length / 2]],
                 [[r, -r, r, -r], [r + length, -r - length, r, -r]],
-                **self._ls_surf
+                **self.LS_SURF
             )
 
         def _plot_rays(self: 'CoaxialRayTracing', ax, ray: BatchedRay, height: Ts, wl: Ts, legend: bool):
