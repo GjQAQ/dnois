@@ -9,7 +9,7 @@ from torch import nn
 from . import _surf
 from ._surf import *
 from .. import _func, paraxial
-from ... import base, mt, torch as _t, utils
+from ... import base, conf, mt, torch as _t, utils
 from ...base.typing import Any, Ts, Scalar, Sequence
 from ...base import typing as ty
 from ..._func import zernike, zernike_cpd
@@ -201,10 +201,10 @@ class AnnularAperture(Aperture):
         return self.r2
 
     def _detection_r1(self) -> Ts:
-        return self.r1 * (1 - base.conf.DETECTION_RADIUS_EPS)
+        return self.r1 * (1 - conf.detection_radius_eps)
 
     def _detection_r2(self) -> Ts:
-        return self.r2 * (1 + base.conf.DETECTION_RADIUS_EPS)
+        return self.r2 * (1 + conf.detection_radius_eps)
 
 
 class QuasiSphereMixIn(Surface, metaclass=abc.ABCMeta):
@@ -710,7 +710,7 @@ class Zernike(Surface):
         lim2 = self.geo_radius.square()
         if lim2.isinf().all():
             return self.h_r2(r2)
-        return torch.where(r2 <= lim2, self.h_r2(r2), self.h_r2(lim2 * base.conf.EDGE_CUTTING))
+        return torch.where(r2 <= lim2, self.h_r2(r2), self.h_r2(lim2 * (1 - conf.edge_cutting)))
 
     def h(self, x: Ts, y: Ts) -> Ts:
         h_base = EvenAspherical.h(self, x, y)  # noqa

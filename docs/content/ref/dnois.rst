@@ -77,6 +77,5 @@ Miscellaneous
 .. autosummary::
     :toctree: ../generated/dnois/misc
 
-    float_print_fmt
     fmt
 

@@ -14,38 +14,10 @@ class TestZernike(unittest.TestCase):
         self.r = torch.sqrt(self.x ** 2 + self.y ** 2)
         self.theta = torch.atan2(self.y, self.x)
 
-    def test_zernike1(self):
-        self._test_zernike_item(1)
-
-    def test_zernike2(self):
-        self._test_zernike_item(2)
-
-    def test_zernike3(self):
-        self._test_zernike_item(3)
-
-    def test_zernike4(self):
-        self._test_zernike_item(4)
-
-    def test_zernike5(self):
-        self._test_zernike_item(5)
-
-    def test_zernike6(self):
-        self._test_zernike_item(6)
-
-    def test_zernike7(self):
-        self._test_zernike_item(7)
-
-    def test_zernike8(self):
-        self._test_zernike_item(8)
-
-    def test_zernike9(self):
-        self._test_zernike_item(9)
-
-    def test_zernike10(self):
-        self._test_zernike_item(10)
-
-    def test_zernike11(self):
-        self._test_zernike_item(11)
+    def test_zernike(self):
+        for i in range(1, 12):
+            with self.subTest(k=i):
+                self._test_zernike_item(i)
 
     def _test_zernike_item(self, k: int):
         self.assertTrue(torch.allclose(dnois.zernike(self.r, self.theta, k), self.zernike_gt(k)))

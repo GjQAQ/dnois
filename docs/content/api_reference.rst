@@ -14,6 +14,7 @@ TODO: description of this page
 .. toctree::
     :maxdepth: 1
 
+    ref/conf
     ref/dnois
     ref/ext
     ref/fourier
@@ -21,5 +22,5 @@ TODO: description of this page
     ref/mt
     ref/optics
     ref/sensor
-    ref/utils
     ref/torch
+    ref/utils

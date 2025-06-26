@@ -30,7 +30,7 @@ Exparam: type = type('Exparam', (), {})
 
 def fmt(v: float) -> str:
     """
-    Format a ``float`` according to :data:`dnois.float_print_fmt`.
+    Format a ``float`` according to :attr:`~dnois.base.conf.float_print_fmt`.
 
     .. seealso::
         :meth:`dnois.Unit.fmt` formats values with unit.

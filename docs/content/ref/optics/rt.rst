@@ -35,6 +35,7 @@ Apertures
 
     Aperture
     CircularAperture
+    AnnularAperture
 
 Specific surface types
 =================================

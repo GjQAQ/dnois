@@ -3,6 +3,7 @@ from functools import cache
 import math
 
 from . import typing
+from .. import conf
 
 __all__ = [
     'convert',
@@ -14,13 +15,11 @@ __all__ = [
     'Angle',
 ]
 
-float_print_fmt: str = '.6g'
-
 
 def fmt(v: float | typing.Ts) -> str:  # this function is not public and hence without docstring
     if typing.is_tensor(v):
         return str(v)
-    s = f'{{:{float_print_fmt}}}'
+    s = f'{{:{conf.float_print_fmt}}}'
     return s.format(v)
 
 

@@ -10,7 +10,7 @@ from torch import nn
 
 from .ray import BatchedRay
 from .. import paraxial
-from ... import mt, utils, torch as _t, base
+from ... import conf, mt, utils, torch as _t, base
 from ...base import typing as ty
 from ...base.typing import Sequence, Ts, Any, Callable, Scalar, Self, Size2d
 
@@ -651,7 +651,7 @@ class CircularAperture(Aperture):
         return self.diameter
 
     def _detection_radius(self) -> Ts:
-        return self.radius * (1 + base.conf.DETECTION_RADIUS_EPS)
+        return self.radius * (1 + conf.detection_radius_eps)
 
 
 class _DefaultMixIn:
@@ -1279,7 +1279,7 @@ class CircularSurface(Surface, metaclass=abc.ABCMeta):
         lim2 = self.geo_radius.square()
         if lim2.isinf().all():
             return self.h_r2(r2)
-        return torch.where(r2 <= lim2, self.h_r2(r2), self.h_r2(lim2 * base.conf.EDGE_CUTTING))
+        return torch.where(r2 <= lim2, self.h_r2(r2), self.h_r2(lim2 * (1 - conf.edge_cutting)))
 
     @property
     def geo_radius(self) -> Ts:
