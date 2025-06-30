@@ -18,14 +18,14 @@ class TestConfig(unittest.TestCase):
 
     def test_context_manager_multiple_configs(self):
         original1 = dnois.conf.float_print_fmt
-        original2 = dnois.conf.edge_cutting
+        original2 = dnois.conf.detection_radius_eps
 
-        with config(float_print_fmt='.2f', edge_cutting=1e-3):
+        with config(float_print_fmt='.2f', detection_radius_eps=1e-3):
             self.assertEqual(dnois.conf.float_print_fmt, '.2f')
-            self.assertEqual(dnois.conf.edge_cutting, 1e-3)
+            self.assertEqual(dnois.conf.detection_radius_eps, 1e-3)
 
         self.assertEqual(dnois.conf.float_print_fmt, original1)
-        self.assertEqual(dnois.conf.edge_cutting, original2)
+        self.assertEqual(dnois.conf.detection_radius_eps, original2)
 
     def test_context_manager_exception_handling(self):
         original_fmt = dnois.conf.float_print_fmt

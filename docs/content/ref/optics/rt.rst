@@ -24,7 +24,6 @@ Optical surfaces
     CoaxialSurfaceSequence
     Context
     CircularSurface
-    IntersectionConfig
     Surface
     SurfaceSequence
 
@@ -63,9 +62,10 @@ Ray-tracing-based optical systems
 
     CoaxialRayTracing
 
-.. _configuration_for_newtons_method:
+*************************************************************
+Configuration for determining ray-surface intersection
+*************************************************************
+.. autosummary::
+    :toctree: ../../generated/optics/rt/config
 
-***********************************
-Configuration for Newton's method
-***********************************
-TODO
+    IntersectionConfig

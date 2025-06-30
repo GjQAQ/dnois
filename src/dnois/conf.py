@@ -6,9 +6,6 @@ import functools
 
 #: Default format to print float numbers.
 float_print_fmt: str = '.6g'
-#: Reduction percentage of :attr:`~dnois.optics.rt.CircularSurface.geo_radius`
-#: when computing "extended value" of extended surfaces' profiles.
-edge_cutting: float = 1e-6
 #: Expansion percentage of aperture radius when determining its passing region.
 detection_radius_eps: float = 1e-5
 

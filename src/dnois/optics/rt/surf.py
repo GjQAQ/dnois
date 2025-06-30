@@ -61,7 +61,7 @@ def even_aspherical_derivative_r2(r2: Ts, c: Ts, k: Ts = None, a: Sequence[Ts] =
     return aspherical + conic_base
 
 
-class AnnularAperture(Aperture):
+class AnnularAperture(Aperture):  # TODO: derived from circular aperture
     """
     Annular aperture with a inner radius and a outer one.
     Only rays falling within the inner and outer radius are considered as valid.
@@ -226,7 +226,11 @@ class QuasiSphereMixIn(Surface, metaclass=abc.ABCMeta):
 
 class ThinLens(Planar, CircularSurface):
     """
-    A model for thin lens. See :class:`Planar` for more description of arguments.
+    A model for thin lens. Focal length in object space and image space
+    can be specified separately. Note that "object space" here means
+    the :math:`z<0` half-space in surface-local coordinate.
+
+    See :class:`Planar` for more description of arguments.
 
     :param fl1: Object focal length of this surface. A float or 0d tensor.
     :type fl1: float or Tensor
@@ -297,12 +301,11 @@ class ThinLens(Planar, CircularSurface):
         return torch.zeros_like(r2)
 
     def extra_repr(self) -> str:
-        u = base.Length.default()
         if self._fl_equal:
             fl2_text = 'identical to fl1'
         else:
-            fl2_text = utils.fmt(self.fl2.item()) + str(u)
-        return super().extra_repr() + f',\nfl1={utils.fmt(self.fl1.item())}{u}, fl2={fl2_text}'
+            fl2_text = base.Length.fmt(self.fl2.item())
+        return super().extra_repr() + f',\nfl1={base.Length(self.fl1.item())}, fl2={fl2_text}'
 
     def refract(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
         # note that the direction of the ray passing optical center changes
@@ -311,12 +314,14 @@ class ThinLens(Planar, CircularSurface):
         local_origin = self.new_tensor([0, 0, 0])
         optical_center = self.ctx.l2g(local_origin)  # 3
 
-        if forward:
+        axis_vec = torch.ones_like(ray.d_z)
+        if forward == self.context.upward_in:
             fl_obj, fl_img = self.fl1, self.fl2  # 0d
-            axis_vec = self.new_tensor([0, 0, 1])  # 3
         else:
             fl_obj, fl_img = self.fl2, self.fl1  # 0d
-            axis_vec = self.new_tensor([0, 0, -1])
+            axis_vec = -axis_vec
+        zero = torch.zeros_like(axis_vec)
+        axis_vec = torch.stack([zero, zero, axis_vec], dim=-1)
         if self.ctx.rotated:
             axis_vec = self.ctx.l2g(axis_vec, True)  # 3
 
@@ -327,7 +332,7 @@ class ThinLens(Planar, CircularSurface):
         intersection = optical_center + original_d * fl_obj / dp + (fl_img - fl_obj) * axis_vec  # ... x 3
         if forward:
             d = intersection - ray.o
-        else:
+        else:  # is this needed?
             d = ray.o - intersection
         ray.d = d
         ray = ray.update_valid(valid)
@@ -431,10 +436,6 @@ class _SphericalBase(CircularSurface, QuasiSphereMixIn, metaclass=abc.ABCMeta): 
         self.curvature = 1 / value
 
     @property
-    def geo_radius(self) -> Ts:
-        return self.roc
-
-    @property
     def px_curvature(self) -> Ts:
         return self.curvature
 
@@ -516,13 +517,6 @@ class _ConicBase(_SphericalBase, metaclass=abc.ABCMeta):  # docstring for Conic
         d = super().to_dict(keep_tensor)
         d['conic'] = self._attr2dictitem('conic', keep_tensor)
         return d
-
-    @property
-    def geo_radius(self) -> Ts:
-        if self.conic.item() <= -1:
-            return self.conic.new_tensor(float('inf'))
-        else:
-            return self.roc / torch.sqrt(1 + self.conic)
 
 
 class Conic(_ConicBase):
@@ -696,24 +690,9 @@ class Zernike(Surface):
         r += f',\n' + ','.join(f'z{i + 1}={utils.fmt(z.item())}' for i, z in enumerate(self.z))
         return r
 
-    def h_r2(self, r2: Ts) -> Ts:
-        return even_aspherical(r2, self.c, self.conic, self.a)
-
-    def h_derivative_r2(self, r2: Ts) -> Ts:
-        return even_aspherical_derivative_r2(r2, self.c, self.conic, self.a)
-
-    def h_r2_extended(self, r2: Ts) -> Ts:
-        r"""
-        Computes extended version of :math:`\hat{h}(r^2)`.
-        See :py:meth:`~h_r2` and :py:meth:`~h_extended`.
-        """
-        lim2 = self.geo_radius.square()
-        if lim2.isinf().all():
-            return self.h_r2(r2)
-        return torch.where(r2 <= lim2, self.h_r2(r2), self.h_r2(lim2 * (1 - conf.edge_cutting)))
-
     def h(self, x: Ts, y: Ts) -> Ts:
-        h_base = EvenAspherical.h(self, x, y)  # noqa
+        r2 = x.square() + y.square()
+        h_base = even_aspherical(r2, self.c, self.conic, self.a)
         if self.zernike_items <= 0:
             return h_base
 
@@ -721,7 +700,10 @@ class Zernike(Surface):
         return h
 
     def h_grad(self, x: Ts, y: Ts, r2: Ts = None) -> tuple[Ts, Ts]:
-        dx, dy = EvenAspherical.h_grad(self, x, y)  # noqa
+        if r2 is None:
+            r2 = x.square() + y.square()
+        dr2 = even_aspherical_derivative_r2(r2, self.c, self.conic, self.a)
+        dx, dy = dr2 * x, dr2 * y
         if self.zernike_items <= 0:
             return dx, dy
 
@@ -729,29 +711,11 @@ class Zernike(Surface):
         dx, dy = dx + zdx, dy + zdy
         return dx, dy
 
-    def h_extended(self, x: Ts, y: Ts) -> Ts:
-        lim2 = self.geo_radius.square()
-        if lim2.isinf().all():
-            return self.h(x, y)
-
-        r2 = x.square() + y.square()
-        return torch.where(
-            r2 <= lim2,
-            self.h(x, y),
-            EvenAspherical.h_extended(self, x, y) + self.zernike(x, y)  # noqa
-        )
-
-    def h_grad_extended(self, x: Ts, y: Ts) -> tuple[Ts, Ts]:
-        lim2 = self.geo_radius.square()
-        if lim2.isinf().all():
-            return self.h_grad(x, y)
-
-        r2 = x.square() + y.square()
-        dx, dy = self.h_grad(x, y)
-        adx, ady = EvenAspherical.h_grad_extended(self, x, y)  # noqa
-        zdx, zdy = self.zernike_grad(x, y)
-        mask = r2 <= lim2
-        return torch.where(mask, dx, adx + zdx), torch.where(mask, dy, ady + zdy)
+    def flip_(self) -> ty.Self:
+        EvenAspherical.flip_(self)
+        for i in range(self._z_n):
+            setattr(self, f'z{i + 1}', -getattr(self, f'z{i + 1}'))
+        return self
 
     def to_dict(self, keep_tensor=True) -> dict[str, Any]:
         d = EvenAspherical.to_dict(self, keep_tensor)  # noqa
@@ -865,13 +829,6 @@ class Zernike(Surface):
         self._a_n = n
 
     @property
-    def geo_radius(self) -> Ts:
-        if self.conic.item() <= -1:
-            return self.conic.new_tensor(float('inf'))
-        else:
-            return self.roc / torch.sqrt(1 + self.conic)
-
-    @property
     def norm_radius(self) -> float:
         r = self._norm_radius
         if r is not None:
@@ -925,7 +882,7 @@ class PlanarPhase(Planar, metaclass=abc.ABCMeta):
         """
         n1 = self.context.material_before.n(ray.wl)
         n2 = self.material.n(ray.wl)
-        if not forward:
+        if forward != self.context.upward_in:
             n1, n2 = n2, n1
         ray_local = self.ctx.g2l_ray(ray)
         inv_k = ray_local.wl / (2 * torch.pi)
@@ -1109,7 +1066,7 @@ class AsphericalRadialPhase(EvenAspherical):
         raise NotImplementedError()
 
     def refract(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
-        if not forward:
+        if not forward or not self.context.upward_in:
             raise NotImplementedError()
 
         n1 = self.ctx.material_before.n(ray.wl)
@@ -1268,14 +1225,8 @@ class Fresnel(Planar, EvenAspherical):
 
     def _optical_normal(self, x: Ts, y: Ts) -> Ts:
         r2 = x.square() + y.square()
-        lim2 = self.geo_radius.square()
-        r2 = r2.clamp_max(lim2)
-
         _der = EvenAspherical.h_derivative_r2(self, r2) * 2
         phpx, phpy = _der * x, _der * y
-        if not lim2.isinf().all():
-            mask = r2 <= lim2
-            phpx, phpy = torch.where(mask, phpx, 0), torch.where(mask, phpy, 0)
         f_grad = torch.stack((-phpx, -phpy, torch.ones_like(phpx)), dim=-1)
         return f_grad / f_grad.norm(2, -1, True)
 

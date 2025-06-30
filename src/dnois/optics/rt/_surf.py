@@ -84,6 +84,8 @@ class Context(_t.EnhancedModule):
 
     :param Surface surface: The host surface that this context belongs to.
     :param SurfaceSequence surface_sequence: The surface list containing ``surface``.
+    :param bool upward_in: Whether rays enter the surface along positive local z-axis.
+        Default: ``True``.
     """
     x: Ts  #: x-coordinate of the origin of local coordinate.
     y: Ts  #: y-coordinate of the origin of local coordinate.
@@ -95,10 +97,16 @@ class Context(_t.EnhancedModule):
     _transform_params = {'x', 'y', 'z', 'theta', 'phi', 'chi'}
     _writable_params = _transform_params
 
-    def __init__(self, surface: 'Surface', surface_sequence: 'SurfaceSequence'):
+    def __init__(
+        self,
+        surface: 'Surface',
+        surface_sequence: 'SurfaceSequence',
+        upward_in: bool = True,
+    ):
         super().__init__()
         self.surface: 'Surface' = surface  #: The host surface that this context belongs to.
         self.seq: 'SurfaceSequence' = surface_sequence  #: The surface list containing the surface.
+        self.upward_in: bool = upward_in  #: Whether rays enter the surface along positive local z-axis.
 
     def __setattr__(self, key, value):
         if key in {'surface', 'seq'}:
@@ -195,24 +203,26 @@ class Context(_t.EnhancedModule):
 
     @property
     def index(self) -> int:
-        """
-        The index of the host surface in the surface list.
-
-        :type: int
-        """
+        """The index of the host surface in the surface list.\n\n:type: int"""
         return self.seq.index(self.surface)
 
     @property
-    def surface_before(self) -> 'Surface':
-        """
-        The surface before the host surface.
+    def is_first(self):
+        """Whether the host surface is the first surface in the sequence.\n\n:type: bool"""
+        return self.index == 0
 
-        :type: Surface
-        """
+    @property
+    def surface_before(self) -> 'Surface':
+        """The surface before the host surface.\n\n:type: Surface"""
         idx = self.index
         if idx == 0:
             raise RuntimeError('Trying to access the surface before the first surface.')
         return self.seq[idx - 1]
+
+    @property
+    def ctx_before(self) -> ty.Self:
+        """The context of the surface before the host surface.\n\n:type: Context"""
+        return self.surface_before.ctx
 
     @property
     def material_before(self) -> mt.Material:
@@ -225,6 +235,11 @@ class Context(_t.EnhancedModule):
         if idx == 0:
             return self.seq.mt_head
         return self.seq[idx - 1].material
+
+    @property
+    def upward_out(self) -> bool:
+        """Whether rays enter the surface along positive local z-axis.\n\n:type: bool"""
+        return self.upward_in != self.surface.reflective
 
     @property
     def shifted(self) -> bool:
@@ -339,6 +354,8 @@ class CoaxialContext(Context):
 
     :param distance: Distance between baselines of the host surface and the next one.
     :type distance: float | Tensor
+    :param bool upward_in: Similar to that in :class:`Context` but
+        automatically determined by the distances by default.
     """
     distance: nn.Parameter  #: Distance between baselines of the host surface and the next one.
     _writable_params = Context._writable_params | {'distance'}
@@ -348,8 +365,9 @@ class CoaxialContext(Context):
         surface: 'Surface',
         surface_sequence: 'SurfaceSequence',
         distance: ty.Scalar = None,
+        upward_in: bool = None,
     ):
-        super().__init__(surface, surface_sequence)
+        super().__init__(surface, surface_sequence, upward_in)
         if distance is None:
             distance = 0.
         distance = ty.scalar(distance, dtype=torch.get_default_dtype())
@@ -395,6 +413,18 @@ class CoaxialContext(Context):
         for s in self.seq[1:idx]:
             z = z + s.context.distance
         return z
+
+    @property
+    def upward_in(self):
+        if self._upward_in is not None:
+            return self._upward_in
+        if self.is_first:
+            return True
+        return self.ctx_before.distance.item() >= 0
+
+    @upward_in.setter
+    def upward_in(self, value):
+        self._upward_in = value
 
     @classmethod
     def from_dict(cls, d: dict) -> Self:
@@ -667,9 +697,9 @@ class IntersectionConfig(base.AsJsonMixIn, _DefaultMixIn):
     #: Number of maximum iterations in Newton's method.
     max_iteration: int = 10
     #:Threshold for residual error in Newton's method.
-    threshold: float = 20e-9
-    #: Similar to :attr:`.threshold`, but used in validity check of rays.
-    threshold_strict: float = 20e-9
+    tolerance: float = 20e-9
+    #: Similar to :attr:`.tolerance`, but used in validity check of rays.
+    tolerance_strict: float = 20e-9
     #: Maximum absolute update to the variable to be solved in Newton's method.
     update_bound: float = 5.
     #: A small value to avoid division by zero.
@@ -687,7 +717,7 @@ class IntersectionConfig(base.AsJsonMixIn, _DefaultMixIn):
 IntersectionConfig.default = IntersectionConfig()
 
 
-# TODO: ray validity check
+# TODO: handle deepcopy involving material
 class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
     r"""
     Base class for optical surfaces in a group of lens.
@@ -696,15 +726,8 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
     :ref:`surface-local coordinate system <guide_optics_rt_slcs>`
     :math:`z=h(x,y)`, which has different forms for each surface type.
     The function :math:`h`, called *surface function*,
-    is a 2D function of lateral coordinates :math:`(x,y)` which satisfies :math:`h(0,0)=0`.
+    is a 2D function of lateral coordinates :math:`(x,y)` which usually satisfies :math:`h(0,0)=0`.
     Note that the surface function also depends on the parameters of the surface implicitly.
-
-    To ensure that a ray propagating along z-axis must have an intersection with
-    the surface, an extended surface function (see :py:meth:`~h_extended`)
-    is computed to find the intersection. Normally, the definition domain of
-    surface function covers the aperture so an extended surface does not
-    affect actual surface. If it cannot cover the aperture, however, the
-    actual surface will be extended, which is usually undesired.
 
     This is a subclass of :py:class:`torch.nn.Module`.
 
@@ -713,7 +736,9 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
     :type material: :py:class:`~dnois.mt.Material` or str
     :param Aperture aperture: :class:`Aperture` of this surface.
     :param dict intersection_config: Configuration for Newton's method.
-        See :ref:`configuration_for_newtons_method` for details.
+        See :class:`IntersectionConfig` for details.
+    :param d: Distance to the next surface in :class:`CoaxialSurfaceSequence`.
+        This parameter should not be set in a non-coaxial case. Default: ``None``.
     """
 
     def __init__(
@@ -747,12 +772,6 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
 
         self._cfg = intersection_config
 
-    def __deepcopy__(self, memo):
-        copied = super().__deepcopy__(memo)
-        if mt.registered(self.material.name):  # to avoid the materials registered globally to be deeply copied
-            copied.material = self.material
-        return copied
-
     @abc.abstractmethod
     def h(self, x: Ts, y: Ts) -> Ts:
         r"""
@@ -779,35 +798,15 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
-    def h_extended(self, x: Ts, y: Ts) -> Ts:
-        r"""
-        Computes extended surface function:
-
-        .. math::
-
-            \tilde{h}(x,y)=\left\{\begin{array}{ll}
-                h(x,y) & \text{if}(x,y)\in\text{dom} h,\\
-                \text{extended value} & \text{else}
-            \end{array}\right.
-
-        :param Tensor x: x coordinate.
-        :param Tensor y: y coordinate.
-        :return: Corresponding value of extended surface function.
-        :rtype: Tensor
+    def flip_(self) -> Self:
         """
-        pass
+        Flip the surface w.r.t. the optical axis.
 
-    @abc.abstractmethod
-    def h_grad_extended(self, x: Ts, y: Ts) -> tuple[Ts, Ts]:
-        r"""
-        Computes partial derivatives of extended surface function:
-        :math:`\pfrac{\tilde{h}(x,y)}{x}` and :math:`\pfrac{\tilde{h}(x,y)}{y}`.
-        See :py:meth:`~h_extended`.
+        .. note::
+            This method does not change material (and distance in coaxial systems).
 
-        :param Tensor x: x coordinate.
-        :param Tensor y: y coordinate.
-        :return: Corresponding value of two partial derivatives.
-        :rtype: tuple[Tensor, Tensor]
+        :return: Self.
+        :rtype: Identical to ``self``
         """
         pass
 
@@ -819,12 +818,13 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
         Returns the refracted rays of a group of incident rays ``ray``.
 
         :param BatchedRay ray: Incident rays.
-        :param bool forward: Whether the incident rays propagate along positive-z direction.
+        :param bool forward: Whether the incident rays originate from object space
+            and propagate towards image space. Default: ``True``.
         :return: Refracted rays with origin on this surface.
             A new :py:class:`~BatchedRay` object.
         :rtype: BatchedRay
         """
-        ray = self.intercept(ray)
+        ray = self.intercept(ray, forward)
         ray = self.variable_hook('forward.intercepted', ray)
         if self.reflective:
             ray = self.reflect(ray)
@@ -833,7 +833,7 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
         ray = self.variable_hook('forward.interacted', ray)
         return ray
 
-    def intercept(self, ray: BatchedRay) -> BatchedRay:
+    def intercept(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
         """
         Returns a new :py:class:`~BatchedRay` whose directions are identical to those
         of ``ray`` and origins are the intersections of ``ray`` and this surface.
@@ -843,23 +843,32 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
         and resulted from a positive marching distance will be marked as invalid.
 
         :param BatchedRay ray: Incident rays.
+        :param bool forward: Whether the incident rays originate from object space
+            and propagate towards image space. Default: ``True``.
         :return: Intercepted rays.
         :rtype: BatchedRay
         """
-        t = self._solve_t(self.context.g2l_ray(ray))
+        ray_in_local = self._global2local_check(ray, forward)
+
+        t = self._solve_t(ray_in_local)
+        tol = self._cfg.tolerance_strict
+        if self._cfg.force_non_negative:
+            non_negative = t >= -tol
+        else:
+            non_negative = None
+
         ray = ray.march(t, self.context.material_before.n(ray.wl))
 
         ray_in_local = self.context.g2l_ray(ray)
-        ray.update_valid_(
-            self.aperture.pass_ray(ray_in_local) &
-            (self._f(ray_in_local).abs() < self._cfg.threshold_strict)
-        )
+        mask = self.aperture.pass_ray(ray_in_local) & (self._f(ray_in_local).abs() < tol)
+        if non_negative is not None:
+            mask = mask & non_negative
+        ray.update_valid_(mask)
         return ray
 
     def normal(self, x: Ts, y: Ts) -> Ts:
         """
-        Returns unit normal vector of the surface pointing to positive-z direction,
-        i.e., from before the surface to behind it.
+        Returns unit normal vector of the surface pointing to positive-z direction.
 
         :param Tensor x: x coordinate.
         :param Tensor y: y coordinate.
@@ -867,7 +876,7 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
             dimension of size 3 following.
         :rtype: Tensor
         """
-        phpx, phpy = self.h_grad_extended(x, y)
+        phpx, phpy = self.h_grad(x, y)
         f_grad = torch.stack((-phpx, -phpy, torch.ones_like(phpx)), dim=-1)
         return f_grad / f_grad.norm(2, -1, True)
 
@@ -888,14 +897,15 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
             return ray
 
         xy_local = self.context.g2l(ray.o)[..., :2]
-        normal = self._optical_normal(xy_local[..., 0], xy_local[..., 1])
+        normal = self._normal4refraction(xy_local[..., 0], xy_local[..., 1], forward)
         normal = self.context.l2g(normal, True)
         if forward:
             mu = self.context.material_before.n(ray.wl) / self.material.n(ray.wl)
         else:
             mu = self.material.n(ray.wl) / self.context.material_before.n(ray.wl)
-            normal = -normal
+
         refractive = base.refract(ray.d, normal, mu)
+
         mask = refractive.isnan().any(-1)
         ray.d = torch.where(mask.unsqueeze(-1), refractive.new_tensor([0, 0, 1]), refractive)
         ray.update_valid_(~mask)
@@ -942,33 +952,17 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
             :param Sampler sampler: Sampler function. See :meth:`Aperture.sampler`.
 
         :return: A tensor with shape ``(n, 3)`` where ``n`` is number of samples.
-            ``3`` means 3D spatial coordinates.
+            ``3`` means 3D spatial coordinates. Coordinates are all global.
         :rtype: Tensor
         """
         if callable(mode):
             x, y = ty.cast(Sampler, mode)()
         else:
             x, y = self.aperture.sample(mode, *args, **kwargs)
-        z = self.h_extended(x, y)
+        z = self.h(x, y)
         points = torch.stack([x, y, z], dim=-1)
         points = self.context.l2g(points)
         return points
-
-    def flip_(self) -> Self:
-        """
-        Flip the surface along the optical axis.
-
-        .. note::
-            This method does not consider material (and distance).
-
-        :return: Self.
-        :rtype: Identical to ``self``
-        :raises RuntimeError: If the surface is reflective.
-        """
-        # aperture need not be flipped typically
-        if self.reflective:
-            raise RuntimeError(f'Reflective surface cannot be flipped.')
-        return self
 
     def paraxialize(self, wl: ty.Numeric) -> paraxial.ParaxialSystem:
         """
@@ -1035,14 +1029,15 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
         raise RuntimeError(utils.invalid_option_msg('surface type', _ty, surface_types(True)))
 
     @staticmethod
-    def backward_valid(valid: Ts) -> Ts:
+    def backward_valid(valid: Ts) -> Ts:  # for surfaces like grating
+        """:meta private:"""
         return valid
 
     def _f(self, ray: BatchedRay) -> Ts:
-        return self.h_extended(ray.x, ray.y) - ray.z
+        return self.h(ray.x, ray.y) - ray.z
 
     def _f_grad(self, ray: BatchedRay) -> Ts:
-        phpx, phpy = self.h_grad_extended(ray.x, ray.y)
+        phpx, phpy = self.h_grad(ray.x, ray.y)
         return torch.stack((phpx, phpy, -torch.ones_like(phpx)), dim=-1)
 
     def _newton_descent(self, ray: BatchedRay, f_value: Ts) -> Ts:
@@ -1061,7 +1056,7 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
             while True:
                 new_ray.o = ray.o + new_ray.d * t.unsqueeze(-1)  # do not compute opl for root finder
                 f_value = self._f(new_ray)
-                if torch.all(f_value.abs().lt(self._cfg.threshold)) or cnt >= self._cfg.max_iteration:
+                if torch.all(f_value.abs().lt(self._cfg.tolerance)) or cnt >= self._cfg.max_iteration:
                     break
 
                 t = t - self._newton_descent(new_ray, f_value)
@@ -1074,6 +1069,25 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
 
         # the second argument cannot be replaced by f_value because of computational graph
         return t - self._newton_descent(new_ray, self._f(new_ray))
+
+    def _global2local_check(self, ray: BatchedRay, forward: bool) -> BatchedRay:
+        ray_in_local = self.context.g2l_ray(ray)
+        if not self._cfg.force_before:
+            return ray_in_local
+
+        if forward:
+            upward = ray_in_local.d_z > 0
+        else:
+            upward = ray_in_local.d_z < 0
+        ray_in_local.update_valid_(upward)
+        ray.update_valid_(upward)
+        return ray_in_local
+
+    def _normal4refraction(self, x: Ts, y: Ts, forward: bool) -> Ts:
+        normal = self._optical_normal(x, y)
+        if forward != self.context.upward_in:
+            normal = -normal
+        return normal
 
     # for surfaces like Fresnel
     def _optical_normal(self, x: Ts, y: Ts) -> Ts:
@@ -1100,22 +1114,11 @@ class Planar(Surface):
     def h(self, x: Ts, y: Ts) -> Ts:
         return self.new_zeros(torch.broadcast_shapes(x.shape, y.shape))
 
-    def h_extended(self, x: Ts, y: Ts) -> Ts:
-        return self.new_zeros(torch.broadcast_shapes(x.shape, y.shape))
-
     def h_grad(self, x: Ts, y: Ts) -> tuple[Ts, Ts]:
         return torch.zeros_like(x), torch.zeros_like(y)
 
-    def h_grad_extended(self, x: Ts, y: Ts) -> tuple[Ts, Ts]:
-        return torch.zeros_like(x), torch.zeros_like(y)
-
-    def intercept(self, ray: BatchedRay) -> BatchedRay:
-        t = self._solve_t(self.context.g2l_ray(ray))
-        ray = ray.march(t, self.context.material_before.n(ray.wl))
-
-        ray_in_local = self.context.g2l_ray(ray)
-        ray.update_valid_(self.aperture.pass_ray(ray_in_local))
-        return ray
+    def flip_(self) -> Self:
+        return self
 
     def normal(self, x: Ts, y: Ts) -> Ts:
         return torch.stack([torch.zeros_like(x), torch.zeros_like(y), torch.ones_like(x)], -1)
@@ -1139,18 +1142,15 @@ class Stop(Planar):
         super().__init__('vacuum', aperture, False, d=d)  # material is ignored
         self._move_ray = move_ray
 
-    def intercept(self, ray: BatchedRay) -> BatchedRay:
-        ray_in_local = self.context.g2l_ray(ray)
-        t = self._solve_t(ray_in_local)
+    def intercept(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
         if self._move_ray:
-            ray = ray.march(t, self.context.material_before.n(ray.wl))
-            ray_in_local = self.context.g2l_ray(ray)
-            ray.update_valid_(self.aperture.pass_ray(ray_in_local))
-            return ray
-        else:
-            new_o = ray_in_local.o + t.unsqueeze(-1) * ray_in_local.d
-            valid_ap = self.aperture.evaluate(new_o[..., 0], new_o[..., 1])
-            return ray.update_valid(valid_ap)
+            return super().intercept(ray)
+
+        ray_in_local = self._global2local_check(ray, forward)
+        t = self._solve_t(ray_in_local)
+        new_o = ray_in_local.o + t.unsqueeze(-1) * ray_in_local.d
+        valid_ap = self.aperture.evaluate(new_o[..., 0], new_o[..., 1])
+        return ray.update_valid(valid_ap)
 
     def refract(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
         return ray.clone()
@@ -1173,24 +1173,21 @@ class CircularSurface(Surface, metaclass=abc.ABCMeta):
     r"""
     Derived class of :py:class:`~Surface` for optical surfaces
     with circular symmetry, i.e. its property
-    depends only on the radial distance :math:`r=\sqrt{x^2+y^2}`, in a group of lens.
+    depends only on the radial distance :math:`r=\sqrt{x^2+y^2}`.
     Therefore, their surface function can be written as
     :math:`h(x,y)=\hat{h}(x^2+y^2)=\hat{h}(r^2)`.
     Note that :math:`\hat{h}`
     takes as input squared radial distance for computational efficiency purpose.
 
-     Despite the circular symmetry of the surface, its aperture is not necessarily
-     circularly symmetric. In other words, ``aperture`` need not be an instance of
-     :class:`CircularAperture`.
+    Despite the circular symmetry of the surface, its aperture is not necessarily
+    circularly symmetric. In other words, ``aperture`` need not be an instance of
+    :class:`CircularAperture`.
 
-    :param material: Material following the surface. Either a :py:class:`~dnois.mt.Material`
-        instance or a str representing the name of a registered material.
-    :type material: :py:class:`~dnois.mt.Material` or str
+    See :class:`Surface` for description of parameters.
+
     :param aperture: Aperture of this surface. If a float, the aperture will be a
         :class:`CircularAperture` whose diameter is the given value. Default: infinity.
     :type aperture: Aperture or float
-    :param dict intersection_config: Configuration for Newton's method.
-        See :ref:`configuration_for_newtons_method` for details.
     """
 
     def __init__(
@@ -1226,6 +1223,21 @@ class CircularSurface(Surface, metaclass=abc.ABCMeta):
         """
         pass
 
+    def h(self, x: Ts, y: Ts, r2: Ts = None) -> Ts:
+        r"""
+        Computes surface function :math:`h(x,y)`.
+
+        :param Tensor x: x coordinate.
+        :param Tensor y: y coordinate.
+        :param Tensor r2: Squared radial distance. It can be passed in to avoid
+            repeated computation if already computed outside this method.
+        :return: Corresponding value of the surface function.
+        :rtype: Tensor
+        """
+        if r2 is None:
+            r2 = x.square() + y.square()
+        return self.h_r2(r2)
+
     def h_grad(self, x: Ts, y: Ts, r2: Ts = None) -> tuple[Ts, Ts]:
         r"""
         Computes the partial derivatives of surface function
@@ -1243,59 +1255,11 @@ class CircularSurface(Surface, metaclass=abc.ABCMeta):
         derivative_double = self.h_derivative_r2(r2) * 2
         return derivative_double * x, derivative_double * y
 
-    def h(self, x: Ts, y: Ts) -> Ts:
-        return self.h_r2(x.square() + y.square())
-
-    def h_extended(self, x: Ts, y: Ts) -> Ts:
-        return self.h_r2_extended(x.square() + y.square())
-
-    def h_grad_extended(self, x: Ts, y: Ts, r2: Ts = None) -> tuple[Ts, Ts]:
-        r"""
-        Computes partial derivatives of extended surface function:
-        :math:`\pfrac{\tilde{h}(x,y)}{x}` and :math:`\pfrac{\tilde{h}(x,y)}{y}`.
-        See :py:meth:`~h_extended`.
-
-        :param Tensor x: x coordinate.
-        :param Tensor y: y coordinate.
-        :param Tensor r2: Squared radial distance. It can be passed in to avoid
-            repeated computation if already computed outside this method.
-        :return: Corresponding value of two partial derivatives.
-        :rtype: tuple[Tensor, Tensor]
-        """
-        if r2 is None:
-            r2 = x.square() + y.square()
-        lim2 = self.geo_radius.square()
-        phpx, phpy = self.h_grad(x, y, r2)
-        if lim2.isinf().all():
-            return phpx, phpy
-        mask = r2 <= lim2
-        return torch.where(mask, phpx, 0), torch.where(mask, phpy, 0)
-
-    def h_r2_extended(self, r2: Ts) -> Ts:
-        r"""
-        Computes extended version of :math:`\hat{h}(r^2)`.
-        See :py:meth:`~h_r2` and :py:meth:`~h_extended`.
-        """
-        lim2 = self.geo_radius.square()
-        if lim2.isinf().all():
-            return self.h_r2(r2)
-        return torch.where(r2 <= lim2, self.h_r2(r2), self.h_r2(lim2 * (1 - conf.edge_cutting)))
-
-    @property
-    def geo_radius(self) -> Ts:
-        """
-        Geometric radius of the surface, i.e. maximum radial distance that makes
-        the surface function mathematically meaningful. A 0D tensor.
-
-        :type: Tensor
-        """
-        return self.new_tensor(float('inf'))
-
     def _f(self, ray: BatchedRay) -> Ts:
-        return self.h_r2_extended(ray.r2) - ray.z
+        return self.h_r2(ray.r2) - ray.z
 
     def _f_grad(self, ray: BatchedRay) -> Ts:
-        phpx, phpy = self.h_grad_extended(ray.x, ray.y, ray.r2)
+        phpx, phpy = self.h_grad(ray.x, ray.y, ray.r2)
         return torch.stack((phpx, phpy, -torch.ones_like(phpx)), dim=-1)
 
 

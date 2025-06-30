@@ -314,7 +314,7 @@ if ext.vis.mpl_available():
 
         def _plot_surf_common(self: 'CoaxialRayTracing', ax, points, radius, sf):
             y = torch.linspace(-radius, radius, points, device=self.device)
-            z = sf.h_extended(torch.zeros_like(y), y) + sf.ctx.baseline
+            z = sf.h(torch.zeros_like(y), y) + sf.ctx.baseline
             ax.plot(utils.t4plot(z), utils.t4plot(y), **self.LS_SURF)
             return z[-1].item()
 
@@ -1142,8 +1142,8 @@ class CoaxialRayTracing(
             This method is subject to change.
         """
         # origin is in lens' coordinate system
-        if not isinstance(self.surfaces.first.aperture, surf.CircularAperture):
-            raise NotImplementedError()
+        # if not isinstance(self.surfaces.first.aperture, surf.CircularAperture):
+        #     raise NotImplementedError()
         _t.check_3d_vector(origin, f'origin in {self._generate_rays.__qualname__}')
         wl = wl.unsqueeze(-1)
 
@@ -1153,7 +1153,7 @@ class CoaxialRayTracing(
         )  # ... x 1 x 1 x 3
 
         r = self.surfaces.first.aperture.radius  # scalar
-        edge_h = self.surfaces.first.h_extended(torch.zeros_like(r), r)  # scalar
+        edge_h = self.surfaces.first.h(torch.zeros_like(r), r)  # scalar
         r = r + torch.sqrt(d_parallel[..., 2].reciprocal().square() - 1) * edge_h  # ... x 1 x 1
         axis_tmp = torch.linspace(-1, 1, find_chief_samples, device=self.device, dtype=self.dtype)
         x, y = torch.meshgrid(axis_tmp, axis_tmp, indexing='ij')

@@ -8,6 +8,7 @@ import torch
 
 class LensSpotTest(unittest.TestCase):
     use_analytical = True
+    device = torch.device('cpu')
 
     def setUp(self):
         logging.basicConfig(
@@ -125,10 +126,9 @@ class LensSpotTest(unittest.TestCase):
         wl: float,
         target_rms: list[float],
         target_geo_radius: list[float],
-        tolerance: float = 1e-9
+        tolerance: float = 1e-10
     ):
-        o = rt.CoaxialRayTracing(sq)
-        o.double()
+        o = rt.CoaxialRayTracing(sq).to(self.device, torch.double)
 
         point = o.fovd2obj([
             (0, fov_item) for fov_item in fovs
