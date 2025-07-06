@@ -5,7 +5,7 @@
       "material": "SK2",
       "aperture": {
         "type": "CircularAperture",
-        "diameter": 0.05867840722203255
+        "radius": 0.029339203611016275
       },
       "roc": 0.05415324494242668
     },
@@ -14,7 +14,7 @@
       "material": "vacuum",
       "aperture": {
         "type": "CircularAperture",
-        "diameter": 0.056533169001340866
+        "radius": 0.028266584500670433
       },
       "roc": 0.15252192318439484
     },
@@ -23,7 +23,7 @@
       "material": "SK16",
       "aperture": {
         "type": "CircularAperture",
-        "diameter":0.04870916157960892
+        "radius":0.02435458078980446
       },
       "roc": 0.03595062345266342
     },
@@ -32,7 +32,7 @@
       "material": "F5",
       "aperture": {
         "type": "CircularAperture",
-        "diameter":0.04271645098924637
+        "radius":0.021358225494623185
       },
       "roc": Infinity
     },
@@ -41,7 +41,7 @@
       "material": "vacuum",
       "aperture": {
         "type": "CircularAperture",
-        "diameter": 0.02986566722393036
+        "radius": 0.01493283361196518
       },
       "roc": 0.022269925102591515
     },
@@ -49,7 +49,7 @@
       "type": "CircularStop",
       "aperture": {
         "type": "CircularAperture",
-        "diameter":0.02
+        "radius":0.01
       }
     },
     {
@@ -57,7 +57,7 @@
       "material": "F5",
       "aperture": {
         "type": "CircularAperture",
-        "diameter":0.026602674275636673
+        "radius":0.0133013371378183365
       },
       "roc": -0.025685032829642296
     },
@@ -66,7 +66,7 @@
       "material": "SK16",
       "aperture": {
         "type": "CircularAperture",
-        "diameter":0.03325006365776062
+        "radius":0.01662503182888031
       },
       "roc": Infinity
     },
@@ -75,7 +75,7 @@
       "material": "vacuum",
       "aperture": {
         "type": "CircularAperture",
-        "diameter":0.03812296316027641
+        "radius":0.019061481580138205
       },
       "roc": -0.036980219185352325
     },
@@ -84,7 +84,7 @@
       "material": "SK16",
       "aperture": {
         "type": "CircularAperture",
-        "diameter":0.04294765740633011
+        "radius":0.021473828703165055
       },
       "roc": 0.19641733169555664
     },
@@ -93,7 +93,7 @@
       "material": "vacuum",
       "aperture": {
         "type": "CircularAperture",
-        "diameter":0.0435943678021431
+        "radius":0.02179718390107155
       },
       "roc": -0.06714755296707153
     }

@@ -24,6 +24,7 @@ Optical surfaces
     CoaxialSurfaceSequence
     Context
     CircularSurface
+    RayCollector
     Surface
     SurfaceSequence
 
@@ -61,6 +62,8 @@ Ray-tracing-based optical systems
     :toctree: ../../generated/optics/rt/sys
 
     CoaxialRayTracing
+    CRTSpotDiagram
+    CRTVisConfig
 
 *************************************************************
 Configuration for determining ray-surface intersection

@@ -1286,9 +1286,15 @@ class CircularStop(Stop, CircularSurface):
 
 
 class RayCollector(list[BatchedRay]):
+    """
+    A subclass of ``list`` that stores rays.
+
+    See :meth:`SurfaceSequence.ray_collector`.
+    """
     handles: list[utils.HookRemover]
 
     def detach(self):
+        """Stop collecting rays from the surface sequence that creates it."""
         for handle in self.handles:
             handle.remove(True)
 
@@ -1481,7 +1487,7 @@ class SurfaceSequence(
             self._slist.insert(int(name), module)
         super().add_module(name, module)
 
-    def forward(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
+    def trace(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
         """
         Traces rays incident on the first surface and returns rays
         passing the last surface, or reversely if ``forward`` is ``False``.
@@ -1501,6 +1507,11 @@ class SurfaceSequence(
                 raise e
         return ray
 
+    def forward(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
+        """Identical to :meth:`.trace`."""
+        ray_out = self.trace(ray, forward)
+        return ray_out
+
     def to_dict(self, keep_tensor=True) -> dict[str, Any]:
         return {
             'surfaces': [s.to_dict(keep_tensor) for s in self._slist],
@@ -1510,6 +1521,15 @@ class SurfaceSequence(
         }
 
     def slice(self, ids: slice | Sequence[int]) -> Self:
+        """
+        Return a slice of the surface sequence as a new sequence.
+        This method is different from ``self[ids]`` in that a new sequence
+        object rather than a ``list`` is returned.
+
+        :param ids: A slice or a sequence of indices.
+        :return: A new surface sequence.
+        :rtype: Self
+        """
         if isinstance(ids, slice):
             s = self._slist[ids]
         else:
@@ -1531,7 +1551,13 @@ class SurfaceSequence(
         """Apply :func:`paraxialize` to this surface sequence."""
         return paraxialize(self, wl)
 
-    def ray_collector(self):
+    def ray_collector(self) -> RayCollector:
+        """
+        Create a :class:`RayCollector` to collect rays passing each surface.
+
+        :return: A :class:`RayCollector` object.
+        :rtype: RayCollector
+        """
         rc = RayCollector()
         handles = []
         for i in range(len(self)):
@@ -1654,6 +1680,17 @@ class SurfaceSequence(
 
 class CoaxialSurfaceSequence(SurfaceSequence):
     """A subclass of :class:`SurfaceSequence` to contain coaxial surfaces."""
+
+    def trace_out(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
+        """
+        Similar to :meth:`.trace`, but stops at the image plane rather than
+        after passing the last surface if ``forward`` is ``True``.
+        """
+        out_ray: BatchedRay = self(ray, forward)
+        if forward:
+            ref_idx = self.last.material.n(out_ray.wl)
+            out_ray = out_ray.march_to(self.total_length, ref_idx)
+        return out_ray
 
     def reverse(self):
         """

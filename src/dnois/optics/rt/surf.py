@@ -305,7 +305,7 @@ class ThinLens(Planar, CircularSurface):
             fl2_text = 'identical to fl1'
         else:
             fl2_text = base.Length.fmt(self.fl2.item())
-        return super().extra_repr() + f',\nfl1={base.Length(self.fl1.item())}, fl2={fl2_text}'
+        return super().extra_repr() + f',\nfl1={base.Length.fmt(self.fl1.item())}, fl2={fl2_text}'
 
     def refract(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
         # note that the direction of the ray passing optical center changes
@@ -991,6 +991,7 @@ class PolynomialPhase(PlanarPhase, CircularSurface):
         d = super().to_dict(keep_tensor)
         d['a'] = self.a if keep_tensor else [a.item() for a in self.a]
         d['b'] = self.b if keep_tensor else [b.item() for b in self.b]
+        d['norm_radius'] = self.norm_radius
         return d
 
     @property

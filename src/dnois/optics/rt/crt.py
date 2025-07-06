@@ -1,10 +1,8 @@
-import dataclasses
 import math
-import warnings
 
 import torch
 
-from . import surf, rto
+from . import crt_vis, surf, rto
 from .ray import BatchedRay
 from .. import system, _func
 from ... import scene as _sc, base, utils, fourier, torch as _t, ext
@@ -15,6 +13,8 @@ from ...sensor import Sensor
 __all__ = [
     'CoaxialRayTracing',
     'ChiefSide',
+    'CRTSpotDiagram',
+    'CRTVisConfig',
     'FlType',
     'FovType',
     'ImagingModel',
@@ -27,9 +27,8 @@ __all__ = [
 
 DEFAULT_FIND_CHIEF_SAMPLES: int = 101
 DEFAULT_SAMPLES: int = 512
-FOV_THRESHOLD4CHIEF_RAY = math.radians(0.01)
 
-PsfCenter = typing.Literal['linear', 'mean', 'mean-robust', 'chief']
+PsfCenter = typing.Literal['linear', 'mean', 'mean-robust', 'chief'] | typing.Double[float]
 PsfType = typing.Literal['inc_rect', 'inc_gaussian', 'coh_kirchoff', 'coh_huygens', 'coh_fraunhofer']
 FovType = typing.Literal['perspective', 'chief', 'average']
 PupilType = typing.Literal['probe', 'trace', 'paraxial']
@@ -38,6 +37,15 @@ ChiefSide = typing.Literal['obj', 'img', 'object', 'image']
 WlReduction = typing.Literal['none', 'mean', 'center']
 PupilSpec = typing.Double[Ts]  # radius, z-coordinate
 ImagingModel = typing.Literal['psf', 'forward_rt', 'backward_rt']
+
+CRTVisConfig = crt_vis.CRTVisConfig
+CRTSpotDiagram = crt_vis.CRTSpotDiagram
+
+if typing.TYPE_CHECKING:
+    if ext.vis.mpl_available():
+        from matplotlib.pyplot import Figure
+    else:
+        Figure = ...
 
 
 def _plot_set_ax(ax, x_range: tuple[float, float]):
@@ -49,26 +57,6 @@ def _plot_set_ax(ax, x_range: tuple[float, float]):
     # ax.set_yticks([])
     ax.set_position([0.1, 0.1, 0.9, 0.9])
     ax.set_aspect('equal')
-
-
-def _plot_linestyles(n: int) -> list[str]:
-    bases = ['-', '--', '-.', ':']
-    segs, rem = divmod(n, len(bases))
-    if segs > 0:
-        warnings.warn('More than 4 linestyles are being used. Some linestyles may be repeated')
-    lss = bases * segs + bases[:rem]
-    return lss
-
-
-def _plot_rays_3d(ax, ray1: BatchedRay, ray2: BatchedRay, colors: list[str], lss: list[str]):
-    # shape: N_fov x N_wl x N_spp x 3
-    for ls, fov_slc1, fov_slc2, v in zip(lss, ray1.o, ray2.o, ray1.valid):  # N_wl x N_spp x 3
-        for clr, wl_slc1, wl_slc2, vv in zip(colors, fov_slc1, fov_slc2, v):  # N_spp x 3
-            ax.plot(
-                (utils.t4plot(wl_slc1[:, 2][vv]), utils.t4plot(wl_slc2[:, 2][vv])),
-                (utils.t4plot(wl_slc1[:, 1][vv]), utils.t4plot(wl_slc2[:, 1][vv])),
-                color=clr, linestyle=ls, linewidth=0.75
-            )
 
 
 def _make_direction(
@@ -92,318 +80,30 @@ def _make_direction(
         return d, None
 
 
-if ext.vis.mpl_available():
-    import matplotlib.pyplot as plt
-
-
-    @dataclasses.dataclass
-    class CRTSpotDiagram:
-        fig: plt.Figure
-        rms: Ts = None
-        geo_radius: Ts = None
-
-
-    class CoaxialRayTracingVisMixIn:
-        COLOR_FRESNEL = 'orange'
-        LS_SURF = {'color': 'black', 'linewidth': 1}
-        LS_TERMINAL = {'color': 'black', 'linewidth': 2}
-
-        @torch.no_grad()
-        @utils.with_external
-        def plot_spot_diagram(
-            self: 'CoaxialRayTracing',
-            points: Ts = None,
-            wl: Vector = None,
-            ray_density: int = 6,
-            *,
-            width=None,
-            entr_d=None,
-            entr_z=None,
-        ) -> CRTSpotDiagram:
-            if points is None:
-                fov_half = self.reference.fov_half
-                fov = [0., fov_half * 0.5 ** 0.5, fov_half]
-                points = self.fovd2obj([(0., fov_item) for fov_item in fov], float('inf'))
-
-            points = self.cam2lens(points)
-            n_point = points.size(0)
-            n_row = int(math.sqrt(n_point) + 1e-5)
-            n_col = int(math.ceil(n_point / n_row))
-            fig, axs = plt.subplots(n_row, n_col, squeeze=False, figsize=(n_col * 5, n_row * 5))
-
-            if entr_d is None or entr_z is None:
-                entr_r_computed, entr_z_computed = self.entr_pupil('paraxial', wl, 'center')
-                if entr_d is None:
-                    entr_d = entr_r_computed.item() * 2
-                if entr_z is None:
-                    entr_z = entr_z_computed.item()
-
-            pupil_ap = surf.CircularAperture(entr_d / 2)
-            pupil_ap.to(device=self.device, dtype=self.dtype)
-            x, y = pupil_ap.sample_unipolar(ray_density, 6)
-            pupil_points = torch.stack([x, y, torch.full_like(x, entr_z)], -1)  # N_spp x 3
-            entr_center = self.new_tensor([0, 0, entr_z])
-
-            rms_list = []
-            geo_radius_list = []
-            for i in range(n_point):
-                direction, _ = _make_direction(pupil_points, points[i])  # N_spp|1 x 3
-                ray_in = BatchedRay(pupil_points, direction, wl.view(-1, 1))  # N_wl x N_spp
-                ray_out = self.trace_ray(ray_in).broadcast()  # N_wl x N_spp
-
-                chief_direction, _ = _make_direction(entr_center, points[i])  # 3
-                chief_ray_in = BatchedRay(entr_center, chief_direction, wl)  # N_wl
-                chief_ray_out = self.trace_ray(chief_ray_in).broadcast()  # N_wl
-
-                x, y = ray_out.x - chief_ray_out.x, ray_out.y - chief_ray_out.y
-                r2 = x.square() + y.square()
-                rms_list.append(r2[ray_out.valid].mean().sqrt())
-                geo_radius_list.append(r2[ray_out.valid].max().sqrt())
-
-                r, c = i // n_col, i % n_col
-                axs: list[list[plt.Axes]]
-                ax: plt.Axes = axs[r][c]
-                for j in range(wl.size(0)):
-                    wl_value = wl[j].item()
-                    ax.scatter(
-                        utils.t4plot(x[j]), utils.t4plot(y[j]),
-                        s=2, c=utils.wl2rgb(wl_value, output_format='hex'), label=base.Length.fmt(wl_value),
-                    )
-                    ax.legend()
-                    ax.set_aspect('equal')
-                    ax.set_xlim(-width / 2, width / 2)
-                    ax.set_ylim(-width / 2, width / 2)
-
-            rms = torch.stack(rms_list)
-            geo_radius = torch.stack(geo_radius_list)
-            return CRTSpotDiagram(fig, rms, geo_radius)
-
-        @torch.no_grad()
-        @utils.with_external
-        def plot_cross_section(
-            self: 'CoaxialRayTracing',
-            fig: plt.Figure = None,
-            depth: Scalar = float('inf'),
-            height: Vector = None,
-            wl: Vector = None,
-            init_rays: int = 20,
-            legend: bool = True,
-        ) -> tuple[plt.Figure, plt.Axes]:
-            """
-            Plot a 2D figure of this system on YZ plane, including the
-            cross-sections of optical components and rays emitted from some point sources
-            (possibly at infinity) traced through the system are plotted.
-
-            :param Figure fig: The figure to plot on. If ``None``, a new figure will be created.
-            :param depth: Depth of the point sources. A ``float`` or a 0D tensor.
-                Default: infinity.
-            :type depth: float or Tensor
-            :param height: Heights of the point source if ``depth`` is finite, or Y-FoV
-                angles of the rays otherwise. If not given, it is specified by the FoV
-                range of this system.
-            :type height: float | Sequence[float] | Tensor
-            :param wl: Wavelengths of the rays. Default: :attr:`.wl`.
-            :type wl: float | Sequence[float] | Tensor
-            :param int init_rays: Number of rays sampled on the first surface.
-                The actual number of rays displayed may be fewer. Default: 20.
-            :param bool legend: Whether to show the legend. Default: ``True``.
-            """
-
-            if torch.is_tensor(depth) and depth.numel() > 1:
-                raise RuntimeError('Cross section figure for multiple depths is not implemented yet')
-            depth = typing.scalar(depth.squeeze(), device=self.device, dtype=self.dtype)
-            if fig is None:
-                fig, ax = plt.subplots(figsize=(12.8, 9.6), subplot_kw={'frameon': True})
-            else:
-                ax = fig.axes[0][0]
-            if height is None:
-                fov_half = self.reference.fov_half
-                fovs = [0., fov_half * 0.5 ** 0.5, fov_half]
-                fovs = [(0., fov) for fov in fovs]
-                o = self.fovd2obj(fovs, depth)  # (3, 3)
-                o = self.cam2lens(o)
-                height = o[:, 1]  # (3,)
-            else:
-                height = typing.vector(height, device=self.device, dtype=self.dtype)
-                z_obj = self.cam2lens_z(depth).item()
-                if z_obj != -float('inf'):
-                    o = torch.stack([torch.zeros_like(height), height, torch.full_like(height, z_obj)], -1)
-                else:
-                    o = self.fovd2obj(torch.stack([torch.zeros_like(height), height], -1), depth)
-                    o = self.cam2lens(o)
-
-            self._plot_components(ax)
-
-            z_obj = self.cam2lens_z(depth).item()
-            if z_obj != -float('inf'):
-                max_h = height.abs().max().item()
-                y = torch.linspace(-max_h, max_h, 100, device=self.device)
-                ax.plot(utils.t4plot(torch.full_like(y, z_obj)), utils.t4plot(y), **self.LS_TERMINAL)
-
-            x_min = 0. if z_obj == -float('inf') else z_obj
-            x_max = self.surfaces.total_length.item()
-            positions = [s.ctx.baseline.item() for s in self.surfaces] + [self.surfaces.total_length]
-            for z_s in positions:
-                if z_s < x_min:
-                    x_min = z_s
-                if z_s > x_max:
-                    x_max = z_s
-            x_range = (x_min, x_max)
-            _plot_set_ax(ax, x_range)
-
-            # image_plane
-            if self.sensor is not None:
-                diag_length = (self.sensor.h ** 2 + self.sensor.w ** 2) ** 0.5
-                sensor_z = self.surfaces.total_length.item()
-                ax.plot([sensor_z, sensor_z], [-diag_length / 2, diag_length / 2], **self.LS_TERMINAL)
-
-            # rays
-            sampled = self.surfaces.first.sample('diameter', init_rays, torch.pi / 2)  # N_spp x 3
-            o = o.unsqueeze(-2).unsqueeze(-2)  # N x 1 x 1 x 3
-            d, _ = _make_direction(sampled, o, True)  # N x 1 x N_spp x 3
-            if z_obj == -float('inf'):
-                ray = BatchedRay(sampled, d, wl.reshape(1, -1, 1))  # N x N_wl x N_spp
-            else:
-                ray = BatchedRay(o, d, wl.reshape(1, -1, 1))  # N x N_wl x N_spp
-            self._plot_rays(ax, ray, height, wl, legend)
-            return fig, ax
-
-        @torch.no_grad()
-        def plot_psf_map(
-            self: 'CoaxialRayTracing',
-            depth: float = float('inf'),
-        ) -> plt.Figure:
-            pass
-
-        def _plot_components(
-            self: 'CoaxialRayTracing',
-            ax,
-            points: int = 100,
-        ):  # TODO: handle infinite radius
-            edge_z = []
-            for sf in self.surfaces:  # surfaces
-                sf: surf.CircularSurface
-                radius = sf.apt.radius.item()
-                if isinstance(sf, surf.CircularStop):
-                    edge_z.append(self._plot_component_circular_stop(ax, sf))
-                elif isinstance(sf, surf.Fresnel):
-                    edge_z.append(self._plot_surf_fresnel(ax, points, radius, sf))
-                else:
-                    edge_z.append(self._plot_surf_common(ax, points, radius, sf))
-                if isinstance(sf, surf.ThinLens):
-                    self._plot_thin_lens(ax, radius, sf)
-            for i in range(len(self.surfaces) - 1):  # edges
-                if self.surfaces[i].material.name == 'vacuum':
-                    continue
-
-                r1 = self.surfaces[i].apt.radius.item()
-                r2 = self.surfaces[i + 1].apt.radius.item()
-                r = max(r1, r2)
-                ax.plot(
-                    [[edge_z[i], edge_z[i]], [edge_z[i + 1], edge_z[i + 1]]],
-                    [[r, -r], [r, -r]],
-                    color='black', linewidth=1
-                )
-                if r1 != r2:
-                    if r1 > r2:
-                        z = edge_z[i + 1]
-                    else:
-                        z = edge_z[i]
-                        r1, r2 = r2, r1
-                    ax.plot([[z, z], [z, z]], [[r2, -r2], [r1, -r1]], color='black', linewidth=1)
-
-        def _plot_surf_common(self: 'CoaxialRayTracing', ax, points, radius, sf):
-            y = torch.linspace(-radius, radius, points, device=self.device)
-            z = sf.h(torch.zeros_like(y), y) + sf.ctx.baseline
-            ax.plot(utils.t4plot(z), utils.t4plot(y), **self.LS_SURF)
-            return z[-1].item()
-
-        def _plot_surf_fresnel(self: 'CoaxialRayTracing', ax, points, radius, sf):
-            y = torch.linspace(-radius, radius, points, device=self.device)
-            z_flat = torch.full_like(y, sf.ctx.baseline.item())
-            z_latent = sf.profile(y.square()) + sf.ctx.baseline
-
-            ax.plot(utils.t4plot(z_flat), utils.t4plot(y), **self.LS_SURF)
-            latent_ls = self.LS_SURF.copy()
-            latent_ls['color'] = self.COLOR_FRESNEL
-            ax.plot(utils.t4plot(z_latent), utils.t4plot(y), **latent_ls)
-            return z_flat[-1].item()
-
-        def _plot_thin_lens(self, ax, radius, sf):
-            length = radius / (10 * 2 ** 0.5)
-            z0 = sf.ctx.baseline.item()
-            ax.plot(
-                [[z0, z0, z0, z0], [z0 - length, z0 + length, z0 + length, z0 - length]],
-                [
-                    [radius, radius, -radius, -radius],
-                    [radius - length, radius - length, length - radius, length - radius]
-                ],
-                **self.LS_SURF
-            )
-
-        def _plot_component_circular_stop(self, ax, sf: surf.CircularStop):
-            r = sf.apt.radius.item()
-            length = r / 5
-            z = sf.ctx.baseline.item()
-            ax.plot(
-                [[z, z, z - length / 2, z - length / 2], [z, z, z + length / 2, z + length / 2]],
-                [[r, -r, r, -r], [r + length, -r - length, r, -r]],
-                **self.LS_SURF
-            )
-
-        def _plot_rays(self: 'CoaxialRayTracing', ax, ray: BatchedRay, height: Ts, wl: Ts, legend: bool):
-            # ray: N_fov x N_wl x N_spp
-            isinf = self.depth.isinf().item()
-            colors = [utils.wl2rgb(_wl, output_format='hex') for _wl in wl.tolist()]
-            lss = _plot_linestyles(height.numel())
-
-            if isinf:
-                ray.broadcast_().march_to_(ray.new_tensor(0.))
-
-            rays = [ray.broadcast_()]
-            intercepted_rays = []
-            handles = []
-            for s in self.surfaces:
-                handles.append(s.register_variable_hook('forward.intercepted', intercepted_rays.append))
-                handles.append(s.register_variable_hook('forward.interacted', rays.append))
-            intercepted_rays.append(self.trace_ray(ray).broadcast_())
-            for h in handles:
-                h.remove()
-
-            for i in reversed(list(range(len(rays) - 1))):
-                rays[i].valid = self.surfaces[i].backward_valid(rays[i + 1].valid)
-            for ray1, ray2 in zip(rays, intercepted_rays):
-                _plot_rays_3d(ax, ray1, ray2, colors, lss)
-
-            if legend:
-                import matplotlib.lines
-                color_lines = [matplotlib.lines.Line2D([], [], color=c, linewidth=0.75) for c in colors]
-                color_labels = [fr'${utils.fmt(base.convert(_wl, "m", "um"))}\mu m$' for _wl in wl.tolist()]
-                fov_lines = [matplotlib.lines.Line2D([], [], color='black', linestyle=ls, linewidth=0.75) for ls in lss]
-                if isinf:
-                    fov_labels = [fr'${utils.fmt(math.degrees(math.atan(-h)))}^\circ$' for h in height.tolist()]
-                else:
-                    fov_labels = [fr'${base.Length.fmt(h)}$' for h in height.tolist()]
-                ax.legend(color_lines + fov_lines, color_labels + fov_labels)
-
-else:
-    class CoaxialRayTracingVisMixIn:
-        _mpl_err_msg = f'matplotlib required but not installed'
-
-        def plot_cross_section(self, *args, **kwargs):
-            raise RuntimeError(self._mpl_err_msg)
-
-        def plot_spot_diagram(self, *args, **kwargs):
-            raise RuntimeError(self._mpl_err_msg)
-
-        def plot_psf_map(self, *args, **kwargs):
-            raise RuntimeError(self._mpl_err_msg)
+# class CoaxialRayTracingPsfModel(utils.ExternalParamMixIn, metaclass=abc.ABCMeta):
+#     psf_size: utils.Exparam
+#     norm_psf: utils.Exparam
+#
+#     type: str
+#
+#     def __init__(self, psf_size: Size2d = 64, norm_psf: bool = True):
+#         self.psf_size: typing.Double[int] = typing.size2d(psf_size)
+#         self.norm_psf: bool = norm_psf
+#
+#     @abc.abstractmethod
+#     def psf(self):
+#
+#     @classmethod
+#     def create(cls, type_: str, *args, **kwargs) -> Self:
+#         for sub in utils.subclasses(cls):
+#             if sub.type == type_:
+#                 return sub(*args, **kwargs)
+#         raise ValueError(f'Unknown PSF model type: {type_}')
 
 
 class CoaxialRayTracing(
     system.PsfImagingOptics,
     rto.ForwardRayTracingOptics,
-    CoaxialRayTracingVisMixIn,
     _t.FreezeParamMixIn,
 ):
     """
@@ -454,6 +154,9 @@ class CoaxialRayTracing(
 
         ``'chief'``
             PSFs are centered around the intersections of corresponding chief rays and image plane.
+
+        ``tuple[float, float]``
+            PSFs are centered around the given coordinates in :ref:`lens' coordinate system <guide_optics_rt_lcs>`.
     :param str fov_type: The way to determine range of FoV.
 
         ``'perspective'``
@@ -500,6 +203,7 @@ class CoaxialRayTracing(
     :param float robust_mean_center_threshold: Threshold for robust mean center.
         Only used when :attr:`.psf_center` is ``'mean-robust'``. Default: ``0.7``.
     :param bool intensity_aware: Whether to compute PSFs in intensity-aware manner. Default: ``False``.
+    :param CRTVisConfig vis_config: Visualization configuration. Default: see :class:`CRTVisConfig`.
     :param kwargs: Additional keyword arguments passed to :class:`PsfImagingOptics`.
 
     .. [#yang2023aberration] Yang, X., Fu, Q., Elhoseiny, M., & Heidrich, W. (2023).
@@ -540,10 +244,13 @@ class CoaxialRayTracing(
         repetitions: int = 1,
         robust_mean_center_threshold: float = 0.7,
         intensity_aware: bool = False,
+        vis_config: CRTVisConfig = None,
         **kwargs
     ):
         if imaging_model == 'backward':
             raise NotImplementedError()
+        if vis_config is None:
+            vis_config = CRTVisConfig()
 
         super().__init__(sensor, perspective_focal_length, **kwargs)
         self.surfaces: surf.CoaxialSurfaceSequence = surfaces  #: Surface list.
@@ -561,6 +268,7 @@ class CoaxialRayTracing(
         self.robust_mean_center_threshold: float = robust_mean_center_threshold  #: See :class:`CoaxialRayTracing`.
         self.imaging_model: ImagingModel = imaging_model  #: See :class:`CoaxialRayTracing`.
         self.intensity_aware: bool = intensity_aware  #: See :class:`CoaxialRayTracing`.
+        self.vis_config: CRTVisConfig = vis_config  #: See :class:`CoaxialRayTracing`.
 
     @utils.with_external
     def render_image_scene(self, scene: _sc.ImageScene, imaging_model: ImagingModel = 'psf', **kwargs) -> Ts:
@@ -660,10 +368,7 @@ class CoaxialRayTracing(
         return xy_on_sensor
 
     def trace_ray(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
-        out_ray: BatchedRay = self.surfaces(ray, forward)
-        if forward:
-            ref_idx = self.last.material.n(out_ray.wl)
-            out_ray = out_ray.march_to(self.surfaces.total_length, ref_idx)
+        out_ray = self.surfaces.trace_out(ray, forward)
         return out_ray
 
     @utils.with_external
@@ -1017,6 +722,200 @@ class CoaxialRayTracing(
         chief = BatchedRay(chief_point, d.unsqueeze(-2), wl)  # ... x N_wl
         return chief
 
+    # Visualization
+    # =============================
+
+    @ext.vis.visfunc
+    @utils.with_external
+    def plot_spot_diagram(
+        self,
+        points: Ts = None,
+        wl: Vector = None,
+        ray_density: int = 6,
+        *,
+        width=None,
+        entr_d=None,
+        entr_z=None,
+    ) -> CRTSpotDiagram:
+        import matplotlib.pyplot as plt
+
+        if points is None:
+            fov_half = self.reference.fov_half
+            fov = [0., fov_half * 0.5 ** 0.5, fov_half]
+            points = self.fovd2obj([(0., fov_item) for fov_item in fov], float('inf'))
+
+        points = self.cam2lens(points)
+        n_point = points.size(0)
+        n_row = int(math.sqrt(n_point) + 1e-5)
+        n_col = int(math.ceil(n_point / n_row))
+        fig, axs = plt.subplots(n_row, n_col, squeeze=False, figsize=(n_col * 5, n_row * 5))
+
+        if entr_d is None or entr_z is None:
+            entr_r_computed, entr_z_computed = self.entr_pupil('paraxial', wl, 'center')
+            if entr_d is None:
+                entr_d = entr_r_computed.item() * 2
+            if entr_z is None:
+                entr_z = entr_z_computed.item()
+
+        pupil_ap = surf.CircularAperture(entr_d / 2)
+        pupil_ap.to(device=self.device, dtype=self.dtype)
+        x, y = pupil_ap.sample_unipolar(ray_density, 6)
+        pupil_points = torch.stack([x, y, torch.full_like(x, entr_z)], -1)  # N_spp x 3
+        entr_center = self.new_tensor([0, 0, entr_z])
+
+        rms_list = []
+        geo_radius_list = []
+        for i in range(n_point):
+            direction, _ = _make_direction(pupil_points, points[i])  # N_spp|1 x 3
+            ray_in = BatchedRay(pupil_points, direction, wl.view(-1, 1))  # N_wl x N_spp
+            ray_out = self.trace_ray(ray_in).broadcast()  # N_wl x N_spp
+
+            chief_direction, _ = _make_direction(entr_center, points[i])  # 3
+            chief_ray_in = BatchedRay(entr_center, chief_direction, wl)  # N_wl
+            chief_ray_out = self.trace_ray(chief_ray_in).broadcast()  # N_wl
+
+            x, y = ray_out.x - chief_ray_out.x, ray_out.y - chief_ray_out.y
+            r2 = x.square() + y.square()
+            rms_list.append(r2[ray_out.valid].mean().sqrt())
+            geo_radius_list.append(r2[ray_out.valid].max().sqrt())
+
+            r, c = i // n_col, i % n_col
+            axs: list[list[plt.Axes]]
+            ax: plt.Axes = axs[r][c]
+            for j in range(wl.size(0)):
+                wl_value = wl[j].item()
+                ax.scatter(
+                    utils.t4plot(x[j]), utils.t4plot(y[j]),
+                    s=2, c=utils.wl2rgb(wl_value, output_format='hex'), label=base.Length.fmt(wl_value),
+                )
+                ax.legend()
+                ax.set_aspect('equal')
+                ax.set_xlim(-width / 2, width / 2)
+                ax.set_ylim(-width / 2, width / 2)
+
+        rms = torch.stack(rms_list)
+        geo_radius = torch.stack(geo_radius_list)
+        return CRTSpotDiagram(fig, rms, geo_radius)
+
+    @ext.vis.visfunc
+    @utils.with_external
+    def plot_cross_section(
+        self,
+        fig: 'Figure' = None,
+        depth: Scalar = float('inf'),
+        height: Vector = None,
+        wl: Vector = None,
+        init_rays: int = 20,
+        legend: bool = True,
+    ) -> 'Figure':
+        """
+        Plot a 2D figure of this system on YZ plane, including the
+        cross-sections of optical components and rays emitted from some point sources
+        (possibly at infinity) traced through the system are plotted.
+
+        :param Figure fig: The figure to plot on. If ``None``, a new figure will be created.
+        :param depth: Depth of the point sources. A ``float`` or a 0D tensor.
+            Default: infinity.
+        :type depth: float or Tensor
+        :param height: Heights of the point source if ``depth`` is finite, or Y-FoV
+            angles of the rays otherwise. If not given, it is specified by the FoV
+            range of this system.
+        :type height: float | Sequence[float] | Tensor
+        :param wl: Wavelengths of the rays. Default: :attr:`.wl`.
+        :type wl: float | Sequence[float] | Tensor
+        :param int init_rays: Number of rays sampled on the first surface.
+            The actual number of rays displayed may be fewer. Default: 20.
+        :param bool legend: Whether to show the legend. Default: ``True``.
+        """
+        import matplotlib.pyplot as plt
+
+        if torch.is_tensor(depth) and depth.numel() > 1:
+            raise RuntimeError('Cross section figure for multiple depths is not implemented yet')
+        depth = typing.scalar(depth.squeeze(), device=self.device, dtype=self.dtype)
+        if fig is None:
+            fig, ax = plt.subplots(figsize=(12.8, 9.6), subplot_kw={'frameon': True})
+        else:
+            ax = fig.axes[0][0]
+        if height is None:
+            fov_half = self.reference.fov_half
+            fovs = [0., fov_half * 0.5 ** 0.5, fov_half]
+            fovs = [(0., fov) for fov in fovs]
+            o = self.fovd2obj(fovs, depth)  # (3, 3)
+            o = self.cam2lens(o)
+            height = o[:, 1]  # (3,)
+        else:
+            height = typing.vector(height, device=self.device, dtype=self.dtype)
+            z_obj = self.cam2lens_z(depth).item()
+            if z_obj != -float('inf'):
+                o = torch.stack([torch.zeros_like(height), height, torch.full_like(height, z_obj)], -1)
+            else:
+                o = self.fovd2obj(torch.stack([torch.zeros_like(height), height], -1), depth)
+                o = self.cam2lens(o)
+
+        crt_vis.draw_surfaces(ax, self.surfaces, self.vis_config)
+
+        z_obj = self.cam2lens_z(depth).item()
+        if z_obj != -float('inf'):
+            max_h = height.abs().max().item()
+            y = torch.linspace(-max_h, max_h, 100, device=self.device)
+            ax.plot(
+                utils.t4plot(torch.full_like(y, z_obj)), utils.t4plot(y),
+                **self.vis_config.linestyle_terminal
+            )
+
+        x_min = 0. if z_obj == -float('inf') else z_obj
+        x_max = self.surfaces.total_length.item()
+        positions = [s.ctx.baseline.item() for s in self.surfaces] + [self.surfaces.total_length]
+        for z_s in positions:
+            if z_s < x_min:
+                x_min = z_s
+            if z_s > x_max:
+                x_max = z_s
+        x_range = (x_min, x_max)
+        _plot_set_ax(ax, x_range)
+
+        # image_plane
+        if self.sensor is not None:
+            diag_length = (self.sensor.h ** 2 + self.sensor.w ** 2) ** 0.5
+            sensor_z = self.surfaces.total_length.item()
+            ax.plot(
+                [sensor_z, sensor_z], [-diag_length / 2, diag_length / 2],
+                **self.vis_config.linestyle_terminal
+            )
+
+        # rays
+        sampled = self.surfaces.first.sample('diameter', init_rays, torch.pi / 2)  # N_spp x 3
+        o = o.unsqueeze(-2).unsqueeze(-2)  # N x 1 x 1 x 3
+        d, _ = _make_direction(sampled, o, True)  # N x 1 x N_spp x 3
+        if z_obj == -float('inf'):
+            ray = BatchedRay(sampled, d, wl.reshape(1, -1, 1))  # N x N_wl x N_spp
+        else:
+            ray = BatchedRay(o, d, wl.reshape(1, -1, 1))  # N x N_wl x N_spp
+        crt_vis.draw_rays(ax, self.surfaces, ray, self.depth.isinf().item(), height, wl, legend)
+        return fig
+
+    @ext.vis.visfunc
+    @utils.with_external
+    def plot_layout_3d(
+        self,
+        points: Ts = None,
+        wl: Vector = None,
+        sampler: surf.Sampler = None,
+    ) -> 'Figure':
+        if points is None:
+            fov = self.reference.fov_half
+            fov = base.Angle.as_default(fov, 'rad')
+            points = self.fovd2obj([(0, 0), (0, fov * 0.5 ** 0.5), (0, fov)], float('inf'))
+
+        raise NotImplementedError()
+
+    @ext.vis.visfunc
+    def plot_psf_map(
+        self: 'CoaxialRayTracing',
+        depth: float = float('inf'),
+    ) -> 'Figure':
+        pass
+
     # Optical parameters
     # =============================
 
@@ -1274,18 +1173,22 @@ class CoaxialRayTracing(
             chief = self.chief_ray(origins, wl, 'obj')  # ... x N_wl
             out_chief = self.trace_ray(chief)
             xy_center = out_chief.o[..., None, :2]  # ... x N_wl x 1 x 2
+        elif isinstance(psf_center, tuple):
+            xy_center = self.new_tensor(psf_center)  # (2,)
         else:
             raise ValueError(f'Unsupported PSF center type for simple incoherent PSF: {psf_center}')
+        if psf_center == 'linear' or isinstance(psf_center, tuple):
+            return xy_center
 
-        if psf_center != 'linear':
-            if wl_reduction == 'none':
-                pass  # xy_center: ... x N_wl x 1 x 2
-            elif wl_reduction == 'mean':
-                xy_center = xy_center.mean(-3, True)  # ... x 1 x 1 x 2
-            elif wl_reduction == 'center':
-                xy_center = xy_center[..., [xy_center.size(-3) // 2], :, :]  # ... x 1 x 1 x 2
-            else:
-                raise ValueError(f'Unknown WL reduction: {wl_reduction}')
+        # wavelength reduction
+        if wl_reduction == 'none':
+            pass  # xy_center: ... x N_wl x 1 x 2
+        elif wl_reduction == 'mean':
+            xy_center = xy_center.mean(-3, True)  # ... x 1 x 1 x 2
+        elif wl_reduction == 'center':
+            xy_center = xy_center[..., [xy_center.size(-3) // 2], :, :]  # ... x 1 x 1 x 2
+        else:
+            raise ValueError(f'Unknown WL reduction: {wl_reduction}')
         return xy_center
 
     @utils.with_external

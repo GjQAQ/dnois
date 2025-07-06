@@ -1,5 +1,10 @@
+import torch
+
+from .check import requires
+
 __all__ = [
     'mpl_available',
+    'visfunc',
 ]
 
 
@@ -15,3 +20,7 @@ def mpl_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+def visfunc(func):
+    return requires('matplotlib')(torch.no_grad()(func))
