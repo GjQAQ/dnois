@@ -6,16 +6,16 @@ import warnings
 import torch
 from torch import nn
 
-from . import _surf
+from . import _surf, aperture
+from .aperture import *
 from ._surf import *
 from .. import _func, paraxial
-from ... import base, conf, mt, torch as _t, utils
+from ... import base, mt, torch as _t, utils
 from ...base.typing import Any, Ts, Scalar, Sequence
 from ...base import typing as ty
 from ..._func import zernike, zernike_cpd
 
 __all__ = [
-    'AnnularAperture',
     'AsphericalRadialPhase',
     'Conic',
     'EvenAspherical',
@@ -27,6 +27,7 @@ __all__ = [
     'Zernike',
 ]
 __all__ += _surf.__all__
+__all__ += aperture.__all__
 
 
 def conical(r2: Ts, c: Ts, k: Ts = None) -> Ts:
@@ -59,152 +60,6 @@ def even_aspherical_derivative_r2(r2: Ts, c: Ts, k: Ts = None, a: Sequence[Ts] =
     coefficients = [a_item * (i + 1) for i, a_item in enumerate(a)]
     aspherical = _t.polynomial(r2, coefficients)
     return aspherical + conic_base
-
-
-class AnnularAperture(Aperture):  # TODO: derived from circular aperture
-    """
-    Annular aperture with a inner radius and a outer one.
-    Only rays falling within the inner and outer radius are considered as valid.
-
-    :param inner_r: Inner radius.
-    :type inner_r: float | Tensor
-    :param outer_r: Outer radius.
-    :type outer_r: float | Tensor
-    """
-
-    def __init__(self, inner_r: Scalar = 0., outer_r: Scalar = float('inf')):
-        super().__init__()
-
-        self.register_parameter('inner_r', None)
-        self.register_parameter('outer_r', None)
-        r1 = ty.scalar(inner_r, dtype=torch.get_default_dtype())
-        r2 = ty.scalar(outer_r, dtype=torch.get_default_dtype())
-        if r1.item() < 0 or r2.item() < 0:
-            raise ValueError('inner_r and outer_r must be non-negative')
-        if r1.item() >= r2.item():
-            raise ValueError('inner_r must be smaller than outer_r')
-
-        self.r1: nn.Parameter = nn.Parameter(r1, False)  #: Inner radius.
-        self.r2: nn.Parameter = nn.Parameter(r2, False)  #: Outer radius.
-
-    def extra_repr(self) -> str:
-        return f'R1={base.Length.fmt(self.r1.item())}, R2={base.Length.fmt(self.r2.item())}'
-
-    def evaluate(self, x: Ts, y: Ts) -> torch.BoolTensor:
-        r2 = x.square() + y.square()
-        valid = (r2 > self._detection_r1().square()) & (r2 < self._detection_r2().square())
-        return ty.cast(torch.BoolTensor, valid)
-
-    def pass_ray(self, ray: BatchedRay) -> torch.BoolTensor:
-        valid = (ray.r2 > self._detection_r1().square()) & (ray.r2 < self._detection_r2().square())
-        return ty.cast(torch.BoolTensor, valid)
-
-    def sample_random(self, n: int, sampling_curve: ty.Callable[[Ts], Ts] = None) -> tuple[Ts, Ts]:
-        r"""
-        Returns ``n`` points randomly sampled on this aperture. An optional ``sampling_curve``
-        (denoted by :math:`\Gamma`) can be specified to control the distribution of
-        radial distance: :math:`r=\Gamma(t)(R_2-R_1)+R_1` where :math:`t` is drawn uniformly from
-        :math:`[0,1]`, :math:`R_1` and :math:`R_2` are the inner and outer radii.
-
-        :param int n: Number of points.
-        :param sampling_curve: Sampling curve :math:`\Gamma(t)`. Default: :math:`\sqrt{t}`.
-        :type sampling_curve: Callable[[Tensor], Tensor]
-        :return: Two 1D tensors of length ``n``, representing x and y coordinates of the points.
-        :rtype: tuple[Tensor, Tensor]
-        """
-        raise NotImplementedError()
-        # t = torch.rand(n, device=self.device, dtype=self.dtype) * (2 * torch.pi)
-        # r = torch.rand(n, device=self.device, dtype=self.dtype)
-        # if sampling_curve is not None:
-        #     r = sampling_curve(r)
-        # else:
-        #     r = r.sqrt()
-        # r = r * (self.r2 - self.r1) + self.r1
-        # return r * t.cos(), r * t.sin()
-
-    def sample_rect(self, n: ty.Size2d, mask_invalid: bool = True) -> tuple[Ts, Ts]:
-        r"""
-        Samples points on this aperture in a evenly spaced rectangular grid,
-        where number of points in vertical and horizontal directions :math:`(H, W)`
-        are given by ``n``. Note that the points outside the aperture are dropped
-        so total number of returned points are is less than :math:`HW`.
-
-        :param n: A pair of int representing :math:`(H, W)`.
-        :type n: int | tuple[int, int]
-        :param bool mask_invalid: Whether to discard points outside the aperture. Default: ``True``.
-        :return: Two 1D tensors of representing x and y coordinates of the points.
-        :rtype: tuple[Tensor, Tensor]
-        """
-        h, w = ty.size2d(n)
-        y, x = utils.grid(
-            (h, w), (2 * self.r2 / h, 2 * self.r2 / w), symmetric=True,
-            device=self.device, dtype=self.dtype
-        )
-        y, x = torch.broadcast_tensors(y, x)
-        x, y = x.flatten(), y.flatten()
-        valid = self.evaluate(x, y)
-        if mask_invalid:
-            return x[valid], y[valid]
-        else:
-            return x, y
-
-    def sample_diameter(self, n: int = 64, theta: float | Ts = 0.) -> tuple[Ts, Ts]:
-        """
-        Samples points on diameter line segments of this aperture.
-        Polar angle of the line is given by ``theta``.
-
-        :param int n: Number of points.
-        :param theta: Polar angle of the line. A single float or a tensor with any shape.
-        :type theta: float | Tensor
-        :return: Two tensors representing x and y coordinates of the points.
-            If ``theta`` is a float, with shape ``(n,)``; if a tensor with shape ``(...)``,
-            with shape ``(..., n)``.
-        """
-        if n % 2:
-            raise ValueError(f'n must be even, but got {n}')
-        if not torch.is_tensor(theta):
-            theta = torch.tensor(theta, dtype=self.dtype, device=self.device)
-        r = torch.linspace(self.r1.item(), self.r2.item(), n // 2, device=self.device, dtype=self.dtype)
-        r = torch.cat([-r.flip(0), r])
-        theta = base.Angle.default_to(theta, 'rad')
-        theta = theta.unsqueeze(-1)
-        return r * theta.cos(), r * theta.sin()
-
-    def to_dict(self, keep_tensor=True) -> dict[str, Any]:
-        d = super().to_dict(keep_tensor)
-        d['inner_r'] = self._attr2dictitem('r1', keep_tensor)
-        d['outer_r'] = self._attr2dictitem('r2', keep_tensor)
-        return d
-
-    @property
-    def min_r(self) -> nn.Parameter:
-        """Alias for :attr:`.r1`."""
-        return self.r1
-
-    @property
-    def max_r(self) -> nn.Parameter:
-        """Alias for :attr:`.r2`."""
-        return self.r2
-
-    @property
-    def d1(self) -> Ts:
-        """The inner diameter.\n\n:type: Tensor"""
-        return 2 * self.r1
-
-    @property
-    def d2(self) -> Ts:
-        """The outer diameter.\n\n:type: Tensor"""
-        return 2 * self.r2
-
-    @property
-    def radius(self):
-        return self.r2
-
-    def _detection_r1(self) -> Ts:
-        return self.r1 * (1 - conf.detection_radius_eps)
-
-    def _detection_r2(self) -> Ts:
-        return self.r2 * (1 + conf.detection_radius_eps)
 
 
 class QuasiSphereMixIn(Surface, metaclass=abc.ABCMeta):

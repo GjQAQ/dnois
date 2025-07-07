@@ -286,6 +286,22 @@ class TensorAsDelegate:
     def new_zeros(self, size, **kwargs) -> Ts:
         return self._delegate().new_zeros(size, **kwargs)
 
+    def arange(self, *args, **kwargs) -> Ts:
+        d = self._delegate()
+        return torch.arange(*args, **kwargs, device=d.device, dtype=d.dtype)
+
+    def linspace(self, *args, **kwargs) -> Ts:
+        d = self._delegate()
+        return torch.linspace(*args, **kwargs, device=d.device, dtype=d.dtype)
+
+    def rand(self, *args, **kwargs) -> Ts:
+        d = self._delegate()
+        return torch.rand(*args, **kwargs, device=d.device, dtype=d.dtype)
+
+    def randn(self, *args, **kwargs) -> Ts:
+        d = self._delegate()
+        return torch.randn(*args, **kwargs, device=d.device, dtype=d.dtype)
+
     def _delegate(self) -> Ts:
         if not isinstance(self, nn.Module):
             raise NotImplementedError(f'A subclass of {TensorAsDelegate.__name__} that is not derived from '

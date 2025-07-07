@@ -2,25 +2,23 @@ import abc
 import copy
 import collections.abc
 import dataclasses
-import functools
 import warnings
 
 import torch
 from torch import nn
 
+from .aperture import *
 from .ray import BatchedRay
 from .. import paraxial
-from ... import conf, mt, utils, torch as _t, base
+from ... import mt, utils, torch as _t, base
 from ...base import typing as ty
-from ...base.typing import Sequence, Ts, Any, Callable, Scalar, Self, Size2d
+from ...base.typing import Sequence, Ts, Any, Callable, Scalar, Self
 
 __all__ = [
     'paraxialize',
     'surface_types',
 
-    'Aperture',
     'BatchedRay',
-    'CircularAperture',
     'CircularStop',
     'CircularSurface',
     'CoaxialContext',
@@ -29,7 +27,6 @@ __all__ = [
     'IntersectionConfig',
     'Planar',
     'RayCollector',
-    'Sampler',
     'Stop',
     'Surface',
     'SurfaceSequence',
@@ -66,9 +63,6 @@ def _rotation_mat(angles: Ts) -> Ts:
         [zero, zero, ones],
     ])
     return m1 @ m2 @ m3
-
-
-Sampler = ty.Callable[[], tuple[Ts, Ts]]
 
 
 class Context(_t.EnhancedModule):
@@ -431,257 +425,6 @@ class CoaxialContext(Context):
         obj = super().from_dict(d)
         obj.distance = d['distance']
         return obj
-
-
-class Aperture(_t.EnhancedModule, metaclass=abc.ABCMeta):
-    """
-    Base class for aperture shapes. Aperture refers to the region on a surface
-    where rays can transmit. The region outside the aperture is assumed to be
-    completely opaque. Note that the region inside is not necessarily completely
-    transparent. The most common aperture type is :class:`CircularAperture`.
-
-    Mathematically, an aperture is defined by a set of 2D points on the baseline
-    plane of associated surface. See :class:`Surface` for more details.
-    """
-
-    @abc.abstractmethod
-    def evaluate(self, x: Ts, y: Ts) -> torch.BoolTensor:
-        """
-        Returns a boolean tensor representing whether each point :math:`(x,y)` is
-        inside the aperture. To jointly represent 2D coordinates, ``x`` and ``y``
-        must be broadcastable.
-
-        :param Tensor x: x coordinates of the points.
-        :param Tensor y: y coordinates of the points.
-        :return: See description above. The shape of returned tensor is the
-            broadcast result of ``x`` and ``y``.
-        :rtype: Tensor
-        """
-        pass
-
-    @abc.abstractmethod
-    def sample_random(self, n: int) -> tuple[Ts, Ts]:
-        """
-        Returns ``n`` points randomly sampled on this aperture.
-
-        :param int n: Number of points.
-        :return: Two 1D tensors of length ``n``, representing x and y coordinates of the points.
-        :rtype: tuple[Tensor, Tensor]
-        """
-        pass
-
-    def forward(self, ray: BatchedRay) -> BatchedRay:
-        """
-        Similar to :meth:`.evaluate`, but operates on rays.
-
-        :param BatchedRay ray: Incident rays.
-        :return: New rays among which those outside the aperture are marked as invalid.
-        :rtype: BatchedRay
-        """
-        return ray.update_valid(self.pass_ray(ray))
-
-    def pass_ray(self, ray: BatchedRay) -> torch.BoolTensor:
-        """
-        Similar to :meth:`.evaluate`, but operates on rays.
-
-        :param BatchedRay ray: Incident rays.
-        :return: A mask tensor indicating whether corresponding rays can pass the aperture.
-        :rtype: torch.BoolTensor
-        """
-        return self.evaluate(ray.x, ray.y)
-
-    def sample(self, mode: str, *args, **kwargs) -> tuple[Ts, Ts]:
-        """
-        Samples points on this aperture, i.e. baseline plane of associated surface.
-        Specific distribution depends on ``mode``.
-
-        :param str mode: Sampling mode. Calling object of this method should possess a
-            ``sample_{mode}`` method.
-        :return: Two 1D tensors of representing x and y coordinates of the points.
-        :rtype: tuple[Tensor, Tensor]
-        """
-        meth_name = 'sample_' + mode
-        meth: Callable = getattr(self, meth_name, ...)
-        if meth is ...:
-            raise ValueError(f'Unknown sampling mode for {self.__class__.__name__}: {mode}')
-        return meth(*args, **kwargs)
-
-    def sample_center(self) -> tuple[Ts, Ts]:
-        """
-        Return the central point of the aperture.
-
-        :return: Two ``[0.]`` tensors.
-        :rtype: tuple[Tensor, Tensor]
-        """
-        return self.new_tensor([0.]), self.new_tensor([0.])
-
-    def sampler(self, mode: str, *args, **kwargs) -> Sampler:
-        """
-        Returns a callable object that can be used to sample points on this aperture.
-        When it is called, it will call :meth:`sample` with given arguments and return its return value.
-        See :meth:`sample` for more details.
-
-        :return: A callable object that can be used to sample points on this aperture.
-        :rtype: Callable
-        """
-        return functools.partial(self.sample, mode, *args, **kwargs)
-
-    def to_dict(self, keep_tensor=True) -> dict[str, Any]:
-        return {'type': self.__class__.__name__}
-
-    @classmethod
-    def from_dict(cls, d: dict):
-        if cls is not Aperture:
-            d.pop('type')
-            return cls(**d)  # default implementation of eponymous method
-
-        _ty = d['type']
-        subs = utils.subclasses(cls)
-        for sub in subs:
-            if sub.__name__ == _ty:
-                return ty.cast(type[Aperture], sub).from_dict(d)  # Calling eponymous method of subclass
-        aperture_types = [sub.__name__ for sub in subs]
-        raise RuntimeError(utils.invalid_option_msg('aperture type', _ty, aperture_types))
-
-
-class CircularAperture(Aperture):
-    """
-    Circular aperture with radius :attr:`radius`.
-
-    :param radius: Radius of the aperture.
-    :type radius: float | Tensor
-    """
-
-    def __init__(self, radius: Scalar = float('inf')):
-        super().__init__()
-
-        self.register_parameter('radius', None)
-        radius = ty.scalar(radius, dtype=torch.get_default_dtype())
-        #: Radius of the aperture.
-        self.radius: nn.Parameter = nn.Parameter(radius, False)
-
-    def extra_repr(self) -> str:
-        return f'radius={utils.fmt(self.radius.item())}{base.Length.default()}'
-
-    def evaluate(self, x: Ts, y: Ts) -> torch.BoolTensor:
-        return ty.cast(torch.BoolTensor, x.square() + y.square() < self._detection_radius().square())
-
-    def pass_ray(self, ray: BatchedRay) -> torch.BoolTensor:
-        return ty.cast(torch.BoolTensor, ray.r2 < self._detection_radius().square())
-
-    def sample_random(self, n: int, sampling_curve: Callable[[Ts], Ts] = None) -> tuple[Ts, Ts]:
-        r"""
-        Returns ``n`` points randomly sampled on this aperture. An optional ``sampling_curve``
-        (denoted by :math:`\Gamma`) can be specified to control the distribution of
-        radial distance: :math:`r=\Gamma(t)R` where :math:`t` is drawn uniformly from :math:`[0,1]`
-        and :math:`R` is the radius.
-
-        :param int n: Number of points.
-        :param sampling_curve: Sampling curve :math:`\Gamma(t)`. Default: :math:`\sqrt{t}`.
-        :type sampling_curve: Callable[[Tensor], Tensor]
-        :return: Two 1D tensors of length ``n``, representing x and y coordinates of the points.
-        :rtype: tuple[Tensor, Tensor]
-        """
-        t = torch.rand(n, device=self.device, dtype=self.dtype) * (2 * torch.pi)
-        r = torch.rand(n, device=self.device, dtype=self.dtype)
-        if sampling_curve is not None:
-            r = sampling_curve(r)
-        else:
-            r = r.sqrt()
-        r = r * self.radius
-        return r * t.cos(), r * t.sin()
-
-    def sample_rect(self, n: Size2d, mask_invalid: bool = True) -> tuple[Ts, Ts]:
-        r"""
-        Samples points on this aperture in a evenly spaced rectangular grid,
-        where number of points in vertical and horizontal directions :math:`(H, W)`
-        are given by ``n``. Note that the points outside the aperture are dropped
-        so total number of returned points are is less than :math:`HW`.
-
-        :param n: A pair of int representing :math:`(H, W)`.
-        :type n: int | tuple[int, int]
-        :param bool mask_invalid: Whether to discard points outside the aperture. Default: ``True``.
-        :return: Two 1D tensors of representing x and y coordinates of the points.
-        :rtype: tuple[Tensor, Tensor]
-        """
-        h, w = ty.size2d(n)
-        y, x = utils.grid(
-            (h, w), (2 * self.radius / h, 2 * self.radius / w), symmetric=True,
-            device=self.device, dtype=self.dtype
-        )
-        y, x = torch.broadcast_tensors(y, x)
-        x, y = x.flatten(), y.flatten()
-        valid = self.evaluate(x, y)
-        if mask_invalid:
-            return x[valid], y[valid]
-        else:
-            return x, y
-
-    def sample_unipolar(self, n_radius: int = 6, n_angle: int = 6) -> tuple[Ts, Ts]:
-        r"""
-        Samples points on this aperture in a unipolar manner. Specifically, the aperture
-        is divided into :math:`N_r` rings with equal widths and points are sampled on the
-        outer edge of each ring. The first ring contains :math:`N_\theta` points, the second
-        contains :math:`2N_\theta` points ... and so on, plus a point at center.
-        Thus, there are :math:`N_\theta N_r(N_r+1)/2+1` points in total.
-
-        :param int n_radius: Number of rings :math:`N_r`. Default: 6.
-        :param int n_angle: Level of points increase per ring :math:`N_\theta`. Default: 6.
-        :return: Two 1D tensors of representing x and y coordinates of the points.
-        :rtype: tuple[Tensor, Tensor]
-        """
-        zero = torch.tensor([0.], dtype=self.dtype, device=self.device)
-        r = torch.linspace(0, self.radius, n_radius + 1, device=self.device, dtype=self.dtype)
-        r = [r[i].expand(i * n_angle) for i in range(1, n_radius + 1)]  # n_t*n_r*(n_r+1)/2
-        r = torch.cat([zero] + r)  # n_t*n_r*(n_r+1)/2+1
-        t = [
-            torch.arange(i * n_angle, device=self.device, dtype=self.dtype) / (n_angle * i) * (2 * torch.pi)
-            for i in range(1, n_radius + 1)
-        ]
-        t = torch.cat([zero] + t)
-        return r * t.cos(), r * t.sin()
-
-    def sample_diameter(self, n: int = 64, theta: float | Ts = 0.) -> tuple[Ts, Ts]:
-        """
-        Samples points on diameter line segments of this aperture.
-        Polar angle of the line is given by ``theta``.
-
-        :param int n: Number of points.
-        :param theta: Polar angle of the line. A single float or a tensor with any shape.
-        :type theta: float | Tensor
-        :return: Two tensors representing x and y coordinates of the points.
-            If ``theta`` is a float, with shape ``(n,)``; if a tensor with shape ``(...)``,
-            with shape ``(..., n)``.
-        """
-        if not torch.is_tensor(theta):
-            theta = torch.tensor(theta, dtype=self.dtype, device=self.device)
-        r = torch.linspace(-1, 1, n, device=self.device, dtype=self.dtype) * self.radius
-        theta = base.Angle.default_to(theta, 'rad')
-        theta = theta.unsqueeze(-1)
-        return r * theta.cos(), r * theta.sin()
-
-    def to_dict(self, keep_tensor=True) -> dict[str, Any]:
-        d = super().to_dict(keep_tensor)
-        d['radius'] = self._attr2dictitem('radius', keep_tensor)
-        return d
-
-    @property
-    def diameter(self):
-        """Diameter of the aperture.\n\n:type: 0D Tensor"""
-        return self.radius * 2
-
-    @property
-    def r(self):
-        """Alias for :attr:`.radius`."""
-        return self.radius
-
-    @property
-    def d(self):
-        """Alias for :attr:`.diameter`."""
-        return self.diameter
-
-    def _detection_radius(self) -> Ts:
-        return self.radius * (1 + conf.detection_radius_eps)
 
 
 class _DefaultMixIn:

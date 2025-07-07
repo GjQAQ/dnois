@@ -9,6 +9,9 @@ float_print_fmt: str = '.6g'
 #: Expansion percentage of aperture radius when determining its passing region.
 detection_radius_eps: float = 1e-5
 
+#: Default radius of apertures in meters.
+default_aperture_radius: float = 5e-3
+
 _config_items = [k for k in globals().keys() if not k.startswith('_')]
 
 

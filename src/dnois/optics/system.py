@@ -406,7 +406,17 @@ def _stitch_symmetric(psf: Ts, h: int, w: int, x_symmetric: bool, y_symmetric: b
 
 # This class provides methods to inversely map points on image plane into object space.
 class RenderImageSceneMixIn(PerspectiveMixIn, metaclass=abc.ABCMeta):
-    depth: Ts | Double[Ts]
+    depth: Ts
+
+    @utils.with_external
+    def fovd2obj(
+        self, fov: typing.Sequence[Double[float]] | Ts, depth: float | Ts, in_degrees: bool = False
+    ) -> Ts:  # override to add with_external decorator, the same below
+        return super().fovd2obj(fov, depth, in_degrees)
+
+    @utils.with_external
+    def tanfovd2obj(self, tanfov: typing.Sequence[Double[float]] | Ts, depth: float | Ts) -> Ts:
+        return super().tanfovd2obj(tanfov, depth)
 
     @utils.with_external
     def seq_depth(
@@ -502,6 +512,7 @@ class RenderImageSceneMixIn(PerspectiveMixIn, metaclass=abc.ABCMeta):
                 idx = torch.multinomial(probabilities, 1).squeeze().item()
             return depth[idx]
 
+    @utils.with_external
     def points_grid(self, segments: Size2d, depth: float | Ts, depth_as_map: bool = False) -> Ts:
         """
         Creates some points in object space, each of which is mapped to the center of
@@ -589,12 +600,8 @@ class RenderImageSceneMixIn(PerspectiveMixIn, metaclass=abc.ABCMeta):
         """
         return self.fov_y_upper - self.fov_y_lower
 
-    def _normalize_depth(self, depth: Vector | Double[Ts]) -> Ts | Double[Ts]:
-        if isinstance(depth, tuple) and len(depth) == 2 and all(torch.is_tensor(t) for t in depth):
-            if depth[0].ndim != 0 or depth[1].ndim != 0:
-                raise ShapeError(f'If a pair of tensor, both of them should be 0D, got {depth}')
-        else:
-            depth = vector(depth, dtype=self.dtype, device=self.device)
+    def _normalize_depth(self, depth: Vector) -> Ts:
+        depth = vector(depth, dtype=self.dtype, device=self.device)
         return depth
 
     def _make_depth_map(self, scene: _sc.ImageScene, depth: Vector | Double[Ts]) -> Ts:
@@ -643,14 +650,7 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
     :type segments: int, tuple[int, int] or str
     :param depth: Depth adopted for rendering images when the scene to be imaged
         carries no depth information. Default: infinity.
-
-        ``float`` or ``Sequence[float]`` or 1D tensor
-            Randomly select a value from given value for each image.
-
-        A pair of 0D tensors
-            They are interpreted as minimum and maximum values
-            for random sampling (see :py:meth:`~sample_depth`).
-    :type depth: float, Sequence[float], Tensor or tuple[Tensor, Tensor]
+    :type depth: float, Sequence[float] or Tensor
     :param psf_size: Height and width of PSF (i.e. convolution kernel) used to simulate imaging.
         Default: ``(64, 64)``.
     :type psf_size: int or tuple[int, int]
@@ -679,7 +679,7 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         perspective_focal_length: float = None,
         wl: Vector = None,
         segments: SegLit | Size2d = 'uniform',
-        depth: Vector | Double[Ts] = float('inf'),
+        depth: Vector = float('inf'),
         psf_size: Size2d = 64,
         norm_psf: bool = True,
         cropping: Size2d = 0,
@@ -773,7 +773,7 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         self,
         scene: _sc.ImageScene,
         wl: Vector = None,
-        depth: Vector | Double[Ts] = None,
+        depth: Vector = None,
         psf_size: Size2d = None,
         norm_psf: bool = None,
         **kwargs,
@@ -822,7 +822,7 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         linear_conv: bool = True,
         segments: Size2d = None,
         wl: Vector = None,
-        depth: Vector | Double[Ts] = None,
+        depth: Vector = None,
         psf_size: Size2d = None,
         norm_psf: bool = None,
         point_by_point: bool = False,
@@ -867,7 +867,7 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
                           f'for {self.patchwise_render.__qualname__}')
 
         scene = scene.batch()
-        if not (torch.is_tensor(depth) and depth.numel() == 1):
+        if not depth.numel() == 1:
             depth = torch.stack([self.random_depth(depth) for _ in range(scene.image.size(0))])  # B(1)
         # B(1) x N_y x N_x x 3
         obj_points = self.points_grid(cast(Double[int], segments), depth.flatten())
@@ -902,7 +902,7 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         scene: _sc.ImageScene,
         fov: Double[float] | Callable[[], Double[float]] | str = None,
         wl: Vector = None,
-        depth: Vector | Double[Ts] = None,
+        depth: Vector = None,
         psf_size: Size2d = None,
         norm_psf: bool = None,
         pad: Size2d | str = 'linear',
@@ -973,7 +973,7 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
             q_depth = self.seq_depth(n=depth_quantization_level)  # D
             obj_points = self.fovd2obj([fov], q_depth)  # D x 3
         else:
-            if not (torch.is_tensor(depth) and depth.numel() == 1):
+            if not depth.numel() == 1:
                 depth = torch.stack([self.random_depth(depth) for _ in range(scene.batch_size)])  # B(1)
             obj_points = self.fovd2obj([fov], depth)  # B(1) x 3
 
@@ -986,7 +986,7 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         if scene.depth_aware:
             psf = psf.transpose(0, 1)  # N_wl x D x H_P x W_P
 
-            min_d, max_d = depth
+            min_d, max_d = depth  # TODO: invalid branch
             masks = _d.quantize_depth_map(scene.depth, min_d, max_d, depth_quantization_level)  # D x B x H x W
             masks = masks.transpose(0, 1).unsqueeze(1)  # B x 1 x D x H x W
             image = formation.depth_aware(scene.image, masks, psf, pad, occlusion_aware)  # B x N_wl x H x W
@@ -997,7 +997,7 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         image = self.crop(image)
         return image
 
-    @utils.with_external(exclude='segments')
+    @utils.with_external
     def psf_array(self, segments: Size2d, depth: Vector) -> Ts:
         segments = size2d(segments)
         obj_points = self.points_grid(segments, depth)  # (N_d,N_H,N_W,3)
@@ -1025,27 +1025,20 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
     def reference(self) -> 'PinholeOptics':
         return PinholeOptics(self._perspective_focal_length(), self._sensor())
 
+    # TODO: is it needed to be properties?
     @property
-    def depth(self) -> Ts | Double[Ts]:
+    def depth(self) -> Ts:
         """
         Depth values used when a scene has no depth information.
-        A 0D Tensor, 1D Tensor or a pair of 0D Tensor. See :class:`PsfImagingOptics`.
+        A 1D Tensor. See :class:`PsfImagingOptics`.
 
-        :type: Tensor or tuple[Tensor, Tensor]
+        :type: Tensor
         """
-        d = self._b_depth
-        return (self._b_depth_min, self._b_depth_max) if d is None else d
+        return self._b_depth
 
     @depth.setter
-    def depth(self, value: Ts | Double[Ts]):  # already normalized in __setattr__
-        if torch.is_tensor(value):
-            self.register_buffer('_b_depth', value)
-            self.register_buffer('_b_depth_min', None)
-            self.register_buffer('_b_depth_max', None)
-        else:
-            self.register_buffer('_b_depth', None)
-            self.register_buffer('_b_depth_min', value[0])
-            self.register_buffer('_b_depth_max', value[1])
+    def depth(self, value: Ts):  # already normalized in __setattr__
+        self.register_buffer('_b_depth', value)
 
     @property
     def wl(self) -> Ts:

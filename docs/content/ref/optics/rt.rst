@@ -33,9 +33,11 @@ Apertures
 .. autosummary::
     :toctree: ../../generated/optics/rt/surf/aperture
 
-    Aperture
-    CircularAperture
     AnnularAperture
+    Aperture
+    BoundedAperture
+    CircularAperture
+    DummyAperture
 
 Specific surface types
 =================================
