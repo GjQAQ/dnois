@@ -4,11 +4,23 @@ import warnings
 
 import torch
 
-from . import surf
-from .ray import BatchedRay
-from ... import base, ext, utils
-from ...base import typing as ty
+from .. import surf
+from ..ray import BatchedRay
+from .... import base, ext, utils
 
+__all__ = [
+    'draw_rays',
+    'draw_surfaces',
+    'draw_surface_circular_stop',
+    'draw_surface_fresnel',
+    'draw_surface_thin_lens',
+    'draw_surf_common',
+
+    'CRTSpotDiagram',
+    'CRTVisConfig',
+]
+
+ty = base.typing
 if ty.TYPE_CHECKING:
     if ext.vis.mpl_available():
         from matplotlib.axes import Axes

@@ -47,6 +47,8 @@ class ExternalParamMixIn:
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
+        cls._external = cls._external.copy()  # assign to avoid shared list
+
         annotations = inspect.get_annotations(cls)
         for k, v in annotations.items():
             if v is Exparam:

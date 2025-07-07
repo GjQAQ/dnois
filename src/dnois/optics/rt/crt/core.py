@@ -1,47 +1,45 @@
+import abc
 import math
 
 import torch
 
-from . import crt_vis, surf, rto
-from .ray import BatchedRay
-from .. import system, _func
-from ... import scene as _sc, base, utils, fourier, torch as _t, ext
-from ...base import typing
-from ...base.typing import Ts, Size2d, Vector, Scalar, Self
-from ...sensor import Sensor
+from .vis import *
+from .. import surf, rto
+from ..ray import BatchedRay
+from ... import system, _func
+from .... import scene as _sc, base, utils, fourier, torch as _t, ext
+from ....base import typing as ty
+from ....sensor import Sensor
 
 __all__ = [
-    'CoaxialRayTracing',
     'ChiefSide',
-    'CRTSpotDiagram',
-    'CRTVisConfig',
+    'CoaxialRayTracing',
+    'CrtPsfModel',
     'FlType',
     'FovType',
     'ImagingModel',
     'PupilSpec',
-    'PupilType',
     'PsfCenter',
     'PsfType',
+    'PupilType',
     'WlReduction',
 ]
 
 DEFAULT_FIND_CHIEF_SAMPLES: int = 101
 DEFAULT_SAMPLES: int = 512
 
-PsfCenter = typing.Literal['linear', 'mean', 'mean-robust', 'chief'] | typing.Double[float]
-PsfType = typing.Literal['inc_rect', 'inc_gaussian', 'coh_kirchoff', 'coh_huygens', 'coh_fraunhofer']
-FovType = typing.Literal['perspective', 'chief', 'average']
-PupilType = typing.Literal['probe', 'trace', 'paraxial']
-FlType = typing.Literal['paraxial']
-ChiefSide = typing.Literal['obj', 'img', 'object', 'image']
-WlReduction = typing.Literal['none', 'mean', 'center']
-PupilSpec = typing.Double[Ts]  # radius, z-coordinate
-ImagingModel = typing.Literal['psf', 'forward_rt', 'backward_rt']
+Ts = ty.Ts
+FovType = ty.Literal['perspective', 'chief', 'average']
+PupilType = ty.Literal['probe', 'trace', 'paraxial']
+FlType = ty.Literal['paraxial']
+ChiefSide = ty.Literal['obj', 'img', 'object', 'image']
+WlReduction = ty.Literal['none', 'mean', 'center']
+PsfCenter = ty.Literal['linear', 'mean', 'mean-robust', 'chief'] | ty.Double[float]
+PsfType = ty.Literal['inc_rect', 'inc_gaussian', 'coh_kirchoff', 'coh_huygens', 'coh_fraunhofer']
+PupilSpec = ty.Double[Ts]  # radius, z-coordinate
+ImagingModel = ty.Literal['psf', 'forward_rt', 'backward_rt']
 
-CRTVisConfig = crt_vis.CRTVisConfig
-CRTSpotDiagram = crt_vis.CRTSpotDiagram
-
-if typing.TYPE_CHECKING:
+if ty.TYPE_CHECKING:
     if ext.vis.mpl_available():
         from matplotlib.pyplot import Figure
     else:
@@ -80,25 +78,52 @@ def _make_direction(
         return d, None
 
 
-# class CoaxialRayTracingPsfModel(utils.ExternalParamMixIn, metaclass=abc.ABCMeta):
-#     psf_size: utils.Exparam
-#     norm_psf: utils.Exparam
-#
-#     type: str
-#
-#     def __init__(self, psf_size: Size2d = 64, norm_psf: bool = True):
-#         self.psf_size: typing.Double[int] = typing.size2d(psf_size)
-#         self.norm_psf: bool = norm_psf
-#
-#     @abc.abstractmethod
-#     def psf(self):
-#
-#     @classmethod
-#     def create(cls, type_: str, *args, **kwargs) -> Self:
-#         for sub in utils.subclasses(cls):
-#             if sub.type == type_:
-#                 return sub(*args, **kwargs)
-#         raise ValueError(f'Unknown PSF model type: {type_}')
+class CrtPsfModel(utils.ExternalParamMixIn, metaclass=abc.ABCMeta):
+    psf_size: utils.Exparam
+    norm_psf: utils.Exparam
+
+    type: str
+
+    def __init__(self, psf_size: ty.Size2d = 64, norm_psf: bool = True):
+        self.psf_size: ty.Double[int] = ty.size2d(psf_size)
+        self.norm_psf: bool = norm_psf
+
+    def __call__(
+        self,
+        optics: 'CoaxialRayTracing',
+        origins: ty.Ts,
+        wl: ty.Vector = None,
+        psf_size: ty.Size2d = None,
+        norm_psf: bool = None,
+        **kwargs
+    ) -> ty.Ts:
+        _t.check_3d_vector(origins, f'origins in {self.__call__.__qualname__}')
+
+        psf = self.psf(optics, origins, wl, psf_size, **kwargs)
+
+        if norm_psf:
+            psf = _func.norm_psf(psf)
+        return psf
+
+    @abc.abstractmethod
+    def psf(
+        self,
+        optics: 'CoaxialRayTracing',
+        origins: ty.Ts,
+        wl: ty.Vector = None,
+        psf_size: ty.Size2d = None,
+        **kwargs
+    ) -> ty.Ts:
+        pass
+
+    @classmethod
+    def create(cls, model_type: str, *args, **kwargs) -> ty.Self:
+        for sub in utils.subclasses(cls):
+            if sub.type == model_type:
+                return sub(*args, **kwargs)
+        raise ValueError(f'Unknown CRT PSF model type: {model_type}')
+
+    _normalize_psf_size = staticmethod(ty.size2d)
 
 
 class CoaxialRayTracing(
@@ -119,7 +144,7 @@ class CoaxialRayTracing(
 
         ``'forward_rt'``
             Rays emitting from all object points are traced and superposed on image plane simultaneously.
-    :param str psf_type: The way to calculate PSF. Default: ``inc_rect``.
+    :param str psf_model: The way to calculate PSF. Default: ``inc_rect``.
 
         ``'inc_rect'``
             Intensity distribution rays imparted on image plane are modeled as a rectangular
@@ -217,8 +242,7 @@ class CoaxialRayTracing(
     """
     _inherent = system.PsfImagingOptics._inherent + ['surfaces']
     imaging_model: utils.Exparam
-    psf_type: utils.Exparam
-    psf_center: utils.Exparam
+    psf_model: utils.Exparam
     fov_type: utils.Exparam
     sampler: utils.Exparam
     coherent_tracing_samples: utils.Exparam
@@ -233,8 +257,7 @@ class CoaxialRayTracing(
         sensor: Sensor = None,
         imaging_model: ImagingModel = 'psf',
         perspective_focal_length: float = None,
-        psf_type: PsfType = 'inc_rect',
-        psf_center: PsfCenter = 'linear',
+        psf_model: PsfType | CrtPsfModel = 'inc_rect',
         fov_type: FovType = 'perspective',
         sampler: surf.Sampler = None,
         coherent_tracing_samples: int = 512,
@@ -252,10 +275,13 @@ class CoaxialRayTracing(
         if vis_config is None:
             vis_config = CRTVisConfig()
 
+        # must prior to super() call
+        if not isinstance(psf_model, CrtPsfModel):
+            psf_model = CrtPsfModel.create(psf_model)
+        self.psf_model: CrtPsfModel = psf_model  #: See :class:`CoaxialRayTracing`.
+
         super().__init__(sensor, perspective_focal_length, **kwargs)
         self.surfaces: surf.CoaxialSurfaceSequence = surfaces  #: Surface list.
-        self.psf_type: PsfType = psf_type  #: See :class:`CoaxialRayTracing`.
-        self.psf_center: PsfCenter = psf_center  #: See :class:`CoaxialRayTracing`.
         self.fov_type: FovType = fov_type  #: See :class:`CoaxialRayTracing`.
         self.sampler: surf.Sampler = sampler  #: See :class:`CoaxialRayTracing`.
         #: See :class:`CoaxialRayTracing`.
@@ -375,7 +401,7 @@ class CoaxialRayTracing(
     def trace_point(
         self,
         point: Ts,
-        wl: Vector = None,
+        wl: ty.Vector = None,
         sampler: surf.Sampler = None,
         intensity_aware: bool = None,
         forward: bool = True,
@@ -393,7 +419,7 @@ class CoaxialRayTracing(
         return out_ray
 
     @torch.no_grad()
-    def focus_to_(self, depth: Scalar) -> Self:
+    def focus_to_(self, depth: ty.Scalar) -> ty.Self:
         """
         Make the system focus at ``depth`` by adjusting the distance between the last
         surface and image plane. The best distance is determined by minimizing mean squared radial
@@ -403,7 +429,7 @@ class CoaxialRayTracing(
         :type depth: float | Tensor
         :return: Self.
         """
-        depth = typing.scalar(depth, dtype=self.dtype, device=self.device)
+        depth = ty.scalar(depth, dtype=self.dtype, device=self.device)
         z = self.cam2lens_z(depth)
         o = torch.stack((torch.zeros_like(z), torch.zeros_like(z), z))  # 3
         points = self.surfaces.first.sample(self.sampler)  # N_spp x 3
@@ -427,36 +453,18 @@ class CoaxialRayTracing(
     def psf(
         self,
         origins: Ts,
-        psf_size: Size2d = None,
-        wl: Vector = None,
+        psf_size: ty.Size2d = None,
+        wl: ty.Vector = None,
         norm_psf: bool = None,
-        psf_type: PsfType = None,
-        psf_center: PsfCenter = None,
+        psf_model: PsfType | CrtPsfModel = None,
         **kwargs
     ) -> Ts:
-        psf_center: PsfCenter  # eliminate None for type hint
-        _t.check_3d_vector(origins, f'origins in {self.psf.__qualname__}')
-
-        if psf_type == 'inc_rect':
-            psf = self._psf_inc_rect(origins, psf_size, wl, psf_center, **kwargs)
-        elif psf_type == 'inc_gaussian':
-            psf = self._psf_inc_gaussian(origins, psf_size, wl, psf_center, **kwargs)
-        elif psf_type == 'coh_huygens':
-            psf = self._psf_coherent(origins, psf_size, wl, psf_center, False, **kwargs)
-        elif psf_type == 'coh_kirchoff':
-            psf = self._psf_coherent(origins, psf_size, wl, psf_center, True, **kwargs)
-        elif psf_type == 'coh_fraunhofer':
-            psf = self._psf_from_wavefront(origins, psf_size, wl, psf_center, **kwargs)
-        else:
-            raise ValueError(f'Unknown PSF type: {psf_type}')
-
-        if norm_psf:
-            psf = _func.norm_psf(psf)
+        psf = psf_model(self, origins, wl, psf_size, norm_psf, **kwargs)
         return psf
 
     @utils.with_external
     def focal_length1(
-        self, fl_type: FlType = 'paraxial', wl: Vector = None, wl_reduction: WlReduction = None, **kwargs
+        self, fl_type: FlType = 'paraxial', wl: ty.Vector = None, wl_reduction: WlReduction = None, **kwargs
     ):
         """
         Returns object focal length of the system.
@@ -468,11 +476,11 @@ class CoaxialRayTracing(
         :return: Object focal length. A 0D tensor.
         :rtype: Tensor
         """
-        return self._focal_length(True, fl_type, wl, typing.cast(WlReduction, wl_reduction), **kwargs)
+        return self._focal_length(True, fl_type, wl, ty.cast(WlReduction, wl_reduction), **kwargs)
 
     @utils.with_external
     def focal_length2(
-        self, fl_type: FlType = 'paraxial', wl: Vector = None, wl_reduction: WlReduction = None, **kwargs
+        self, fl_type: FlType = 'paraxial', wl: ty.Vector = None, wl_reduction: WlReduction = None, **kwargs
     ):
         """
         Returns image focal length of the system.
@@ -484,10 +492,10 @@ class CoaxialRayTracing(
         :return: Image focal length. A 0D tensor.
         :rtype: Tensor
         """
-        return self._focal_length(False, fl_type, wl, typing.cast(WlReduction, wl_reduction), **kwargs)
+        return self._focal_length(False, fl_type, wl, ty.cast(WlReduction, wl_reduction), **kwargs)
 
     @utils.with_external
-    def focal_length_paraxial(self, obj_side: bool, wl: Vector = None) -> Ts:
+    def focal_length_paraxial(self, obj_side: bool, wl: ty.Vector = None) -> Ts:
         """
         Returns focal length of the system according to paraxial optics.
 
@@ -502,8 +510,8 @@ class CoaxialRayTracing(
 
     def find_stop(
         self,
-        depth: Scalar = float('inf'),
-        ref_wl: Scalar = None,
+        depth: ty.Scalar = float('inf'),
+        ref_wl: ty.Scalar = None,
         samples: int = 1024
     ) -> int:
         """
@@ -517,8 +525,8 @@ class CoaxialRayTracing(
         self._check_circ_aperture()
         self._check_circ_surf()
 
-        depth = typing.scalar(depth, self.dtype, self.device)
-        ref_wl = typing.scalar(ref_wl, self.dtype, self.device)
+        depth = ty.scalar(depth, self.dtype, self.device)
+        ref_wl = ty.scalar(ref_wl, self.dtype, self.device)
 
         # sample points on x-axis
         points = self.surfaces.first.sample('diameter', n=samples * 2)  # 2N x 3
@@ -548,7 +556,7 @@ class CoaxialRayTracing(
 
     @utils.with_external
     def entr_pupil(
-        self, pupil_type: PupilType = 'paraxial', wl: Vector = None, wl_reduction: WlReduction = None, **kwargs
+        self, pupil_type: PupilType = 'paraxial', wl: ty.Vector = None, wl_reduction: WlReduction = None, **kwargs
     ) -> PupilSpec:
         """
         Finds the entrance pupil of the system.
@@ -561,11 +569,11 @@ class CoaxialRayTracing(
             A 2-tuple of 0D tensors.
         :rtype: tuple[Tensor, Tensor]
         """
-        return self._pupil(True, pupil_type, wl, typing.cast(WlReduction, wl_reduction), **kwargs)
+        return self._pupil(True, pupil_type, wl, ty.cast(WlReduction, wl_reduction), **kwargs)
 
     @utils.with_external
     def exit_pupil(
-        self, pupil_type: PupilType = 'paraxial', wl: Vector = None, wl_reduction: WlReduction = None, **kwargs
+        self, pupil_type: PupilType = 'paraxial', wl: ty.Vector = None, wl_reduction: WlReduction = None, **kwargs
     ) -> PupilSpec:
         """
         Finds the exit pupil of the system.
@@ -578,10 +586,10 @@ class CoaxialRayTracing(
             A 2-tuple of 0D tensors.
         :rtype: tuple[Tensor, Tensor]
         """
-        return self._pupil(False, pupil_type, wl, typing.cast(WlReduction, wl_reduction), **kwargs)
+        return self._pupil(False, pupil_type, wl, ty.cast(WlReduction, wl_reduction), **kwargs)
 
     @utils.with_external
-    def pupil_probe(self, entr: bool, ref_point: Ts, wl: Vector = None, samples: int = 512) -> PupilSpec:
+    def pupil_probe(self, entr: bool, ref_point: Ts, wl: ty.Vector = None, samples: int = 512) -> PupilSpec:
         """
         Finds pupils by sampling points on the first surface sufficiently to cover its aperture, trace rays
         originated from an origin and passing through these points. Pupils are determined
@@ -616,7 +624,7 @@ class CoaxialRayTracing(
         raise NotImplementedError()
 
     @utils.with_external
-    def pupil_trace(self, entr: bool, wl: Vector = None) -> PupilSpec:
+    def pupil_trace(self, entr: bool, wl: ty.Vector = None) -> PupilSpec:
         """
         Finds pupils by tracing a bundle of rays emitted from a point located at the edge of stop.
         The focus of them is considered as a point on the edge of pupils.
@@ -646,7 +654,7 @@ class CoaxialRayTracing(
         return r, z
 
     @utils.with_external
-    def pupil_paraxial(self, entr: bool, wl: Vector = None) -> PupilSpec:
+    def pupil_paraxial(self, entr: bool, wl: ty.Vector = None) -> PupilSpec:
         """
         Finds pupils according to paraxial ray tracing.
 
@@ -674,7 +682,7 @@ class CoaxialRayTracing(
     def wavefront_map(
         self,
         origin: Ts,
-        wl: Vector = None,
+        wl: ty.Vector = None,
         coherent_tracing_samples: int = DEFAULT_SAMPLES,
         coherent_tracing_sampling_pattern: str = 'quadrapolar',
     ) -> tuple[BatchedRay, Ts]:
@@ -692,7 +700,7 @@ class CoaxialRayTracing(
     def chief_ray(
         self,
         point: Ts,
-        wl: Vector = None,
+        wl: ty.Vector = None,
         side: ChiefSide = 'obj',
         **kwargs
     ) -> BatchedRay:
@@ -730,7 +738,7 @@ class CoaxialRayTracing(
     def plot_spot_diagram(
         self,
         points: Ts = None,
-        wl: Vector = None,
+        wl: ty.Vector = None,
         ray_density: int = 6,
         *,
         width=None,
@@ -802,9 +810,9 @@ class CoaxialRayTracing(
     def plot_cross_section(
         self,
         fig: 'Figure' = None,
-        depth: Scalar = float('inf'),
-        height: Vector = None,
-        wl: Vector = None,
+        depth: ty.Scalar = float('inf'),
+        height: ty.Vector = None,
+        wl: ty.Vector = None,
         init_rays: int = 20,
         legend: bool = True,
     ) -> 'Figure':
@@ -831,7 +839,7 @@ class CoaxialRayTracing(
 
         if torch.is_tensor(depth) and depth.numel() > 1:
             raise RuntimeError('Cross section figure for multiple depths is not implemented yet')
-        depth = typing.scalar(depth.squeeze(), device=self.device, dtype=self.dtype)
+        depth = ty.scalar(depth.squeeze(), device=self.device, dtype=self.dtype)
         if fig is None:
             fig, ax = plt.subplots(figsize=(12.8, 9.6), subplot_kw={'frameon': True})
         else:
@@ -844,7 +852,7 @@ class CoaxialRayTracing(
             o = self.cam2lens(o)
             height = o[:, 1]  # (3,)
         else:
-            height = typing.vector(height, device=self.device, dtype=self.dtype)
+            height = ty.vector(height, device=self.device, dtype=self.dtype)
             z_obj = self.cam2lens_z(depth).item()
             if z_obj != -float('inf'):
                 o = torch.stack([torch.zeros_like(height), height, torch.full_like(height, z_obj)], -1)
@@ -852,7 +860,7 @@ class CoaxialRayTracing(
                 o = self.fovd2obj(torch.stack([torch.zeros_like(height), height], -1), depth)
                 o = self.cam2lens(o)
 
-        crt_vis.draw_surfaces(ax, self.surfaces, self.vis_config)
+        draw_surfaces(ax, self.surfaces, self.vis_config)
 
         z_obj = self.cam2lens_z(depth).item()
         if z_obj != -float('inf'):
@@ -891,7 +899,7 @@ class CoaxialRayTracing(
             ray = BatchedRay(sampled, d, wl.reshape(1, -1, 1))  # N x N_wl x N_spp
         else:
             ray = BatchedRay(o, d, wl.reshape(1, -1, 1))  # N x N_wl x N_spp
-        crt_vis.draw_rays(ax, self.surfaces, ray, self.depth.isinf().item(), height, wl, legend)
+        draw_rays(ax, self.surfaces, ray, self.depth.isinf().item(), height, wl, legend)
         return fig
 
     @ext.vis.visfunc
@@ -899,7 +907,7 @@ class CoaxialRayTracing(
     def plot_layout_3d(
         self,
         points: Ts = None,
-        wl: Vector = None,
+        wl: ty.Vector = None,
         sampler: surf.Sampler = None,
     ) -> 'Figure':
         if points is None:
@@ -915,6 +923,22 @@ class CoaxialRayTracing(
         depth: float = float('inf'),
     ) -> 'Figure':
         pass
+
+    @property
+    def psf_size(self):
+        return self.psf_model.psf_size
+
+    @psf_size.setter
+    def psf_size(self, value):
+        self.psf_model.psf_size = value
+
+    @property
+    def norm_psf(self):
+        return self.psf_model.norm_psf
+
+    @norm_psf.setter
+    def norm_psf(self, value):
+        self.psf_model.norm_psf = value
 
     # Optical parameters
     # =============================
@@ -1067,6 +1091,8 @@ class CoaxialRayTracing(
         xy_mean = xy_valid.nanmean(-2, True)  # ... x N_wl x 1 x 2
         points_chief = torch.cat([xy_mean, torch.zeros_like(xy_mean[..., [0]])], -1)  # ... x N_wl x 1 x 3
         d_chief, l0_chief = _make_direction(points_chief, origin, True)  # ... x 1 x 1( x 3)
+        # entr_r, entr_z = self.entr_pupil('paraxial', wl.squeeze(), 'none')
+        # points_chief = torch.stack([torch.zeros_like(entr_z), torch.zeros_like(entr_z), entr_z], dim=-1).unsqueeze(1)
         chief_ray = BatchedRay(points_chief, d_chief, wl, 0.)  # ... x N_wl x 1
 
         # mimicking np.nanmax and np.nanmin
@@ -1094,6 +1120,7 @@ class CoaxialRayTracing(
         o[..., :, samples // 2:, 0] = o_p[:, samples // 2:, 0] * xy_shift_min[..., 0]
         o[..., :2] += xy_mean.unsqueeze(-2)
         points_sample = o.flatten(-3, -2)
+        # points_sample = self.first.sample('rect', samples, samples)
         d_sample, l0 = _make_direction(points_sample, origin, True)  # ... x 1 x N_spp'( x 3)
         # to reduce magnitude of opl and subsequently floating point error
         l0 = l0 - l0_chief  # ... x 1 x N_spp'
@@ -1111,7 +1138,7 @@ class CoaxialRayTracing(
     def _trace_opl_with_chief(
         self,
         origin: Ts,
-        wl: Vector,
+        wl: ty.Vector,
         samples: int = DEFAULT_SAMPLES,
         sampling_pattern: str = 'quadrapolar',
     ) -> tuple[BatchedRay, BatchedRay, Ts, Ts]:
@@ -1124,11 +1151,14 @@ class CoaxialRayTracing(
         d_proj = torch.sqrt(chief_ray.d[..., :2].square().sum(-1))
         rs_roc = radial_offset / d_proj  # ... x N_wl x 1
         exit_pupil_distance = torch.sqrt(rs_roc.square() - radial_offset.square()).squeeze(-1)  # ... x N_wl
+        self.variable_hook('_trace_opl_with_chief.exit_pupil_z', self.surfaces.total_length - exit_pupil_distance)
 
         shift = chief_ray.o - ray.o
         dp = torch.sum(shift * ray.d, dim=-1)  # dot product
-        length2rs = dp - torch.sqrt(dp.square() - shift.square().sum(-1) + rs_roc.square())
+        _1, mask = _t.ssqrt(dp.square() - shift.square().sum(-1) + rs_roc.square())
+        length2rs = dp - _1
         ref_idx = self.surfaces.mt_tail.n(ray.wl)
+        ray = ray.update_valid(mask)
         ray.march_(length2rs, ref_idx)
         return chief_ray, ray, rs_roc, exit_pupil_distance  # ... x N_wl x N_spp
 
@@ -1150,286 +1180,11 @@ class CoaxialRayTracing(
         else:
             raise ValueError(f'Unknown rectification type: {rectification}')
 
-    def _find_xy_center(self, psf_center, origins, out_ray, wl, wl_reduction: WlReduction):
-        if psf_center == 'linear':
-            xy_center = self.obj_proj_lens(origins)[..., None, None, :]  # ... x 1 x 1 x 2
-        elif psf_center == 'mean' or psf_center == 'mean-robust':
-            xy = out_ray.o[..., :2]  # ... x N_wl x N_spp x 2
-            valid = out_ray.valid.unsqueeze(-1)  # ... x N_wl x N_spp x 1
-            xy_center = torch.where(valid, xy, 0).sum(-2, True) / valid.sum(-2, True)  # ... x N_wl x 1 x 2
-            if psf_center == 'mean-robust':
-                while True:
-                    xy = out_ray.o[..., :2] - xy_center  # (..., N_wl, N_spp, 2)
-                    d2 = torch.where(valid, xy, float('nan')).square().sum(-1)  # (..., N_wl, N_spp)
-                    q = torch.nanquantile(d2, self.new_tensor([0.25, 0.75]), -1, True)  # (2, ..., N_wl, 1)
-                    q1, q3 = q.unbind(0)  # (..., N_wl, 1)
-                    non_outlier = d2 < q3 + self.robust_mean_center_threshold * (q3 - q1)  # (..., N_wl, N_spp)
-                    if torch.all(~valid.squeeze(-1) | non_outlier):
-                        break
-                    valid = valid & non_outlier.unsqueeze(-1)  # (..., N_wl, N_spp, 1)
-                    # (..., N_wl, N_spp, 2)
-                    xy_center = torch.where(valid, out_ray.o[..., :2], 0).sum(-2, True) / valid.sum(-2, True)
-        elif psf_center == 'chief':
-            chief = self.chief_ray(origins, wl, 'obj')  # ... x N_wl
-            out_chief = self.trace_ray(chief)
-            xy_center = out_chief.o[..., None, :2]  # ... x N_wl x 1 x 2
-        elif isinstance(psf_center, tuple):
-            xy_center = self.new_tensor(psf_center)  # (2,)
-        else:
-            raise ValueError(f'Unsupported PSF center type for simple incoherent PSF: {psf_center}')
-        if psf_center == 'linear' or isinstance(psf_center, tuple):
-            return xy_center
-
-        # wavelength reduction
-        if wl_reduction == 'none':
-            pass  # xy_center: ... x N_wl x 1 x 2
-        elif wl_reduction == 'mean':
-            xy_center = xy_center.mean(-3, True)  # ... x 1 x 1 x 2
-        elif wl_reduction == 'center':
-            xy_center = xy_center[..., [xy_center.size(-3) // 2], :, :]  # ... x 1 x 1 x 2
-        else:
-            raise ValueError(f'Unknown WL reduction: {wl_reduction}')
-        return xy_center
-
-    @utils.with_external
-    def _psf_inc_rect(
-        self,
-        origins: Ts,  # ... x 3
-        psf_size: tuple[int, int],
-        wl: Ts,  # N_wl
-        psf_center: PsfCenter,
-        sampler: surf.Sampler = None,
-        wl_reduction: WlReduction = 'center',
-    ) -> Ts:
-        f_name = self._psf_inc_rect.__name__
-
-        out_ray = self.trace_point(origins, wl, sampler)  # ... x N_wl x N_spp
-        out_ray.update_valid_(~out_ray.x.isnan() & ~out_ray.y.isnan())  # TODO:?
-        out_ray: BatchedRay = self.variable_hook(f'{f_name}.out_ray', out_ray)
-        n_spp = out_ray.shape[-1]
-
-        xy_center = self._find_xy_center(psf_center, origins, out_ray, wl, wl_reduction)
-        xy = out_ray.o[..., :2]  # ... x N_wl x N_spp x 2
-        # xy = torch.where(out_ray.valid.unsqueeze(-1), xy, 0)
-        xy = xy - xy_center  # ... x N_wl x N_spp x 2
-
-        xy = xy / self.new_tensor([self.sensor.pixel_size]).flip(0)
-        xy = self.variable_hook(f'{f_name}.xy', xy)
-        x, y = xy.unbind(-1)  # ... x N_wl x N_spp
-        # if PSF size is odd, the center is N/2, relative positions are -N//2, ..., N//2
-        # if PSF size is even, the center is (N+1)/2, relative positions are -N//2, ..., N//2-1
-        x, y = x + (psf_size[1] // 2 + 0.5), y + (psf_size[0] // 2 + 0.5)
-        c_a, r_a = torch.floor(x.detach() + 0.5).long(), torch.floor(y.detach() + 0.5).long()
-
-        in_region = c_a.ge(0) & c_a.le(psf_size[1]) & r_a.ge(0) & r_a.le(psf_size[0])  # ... x N_wl x N_spp
-        in_region = self.variable_hook(f'{f_name}.in_region', in_region)
-        mask = out_ray.valid & in_region  # ... x N_wl x N_spp
-        for t in (x, y, c_a, r_a):  # mask out invalid rays in these four tensors
-            t[~mask] = 0
-
-        c_as, r_as = c_a - 1, r_a - 1
-        w_c, w_r = c_a - x + 0.5, r_a - y + 0.5
-        iw_c, iw_r = 1 - w_c, 1 - w_r
-        if out_ray.recording_intensity:
-            w_c = w_c * out_ray.intensity
-            iw_c = iw_c * out_ray.intensity
-
-        psf = self.new_zeros(out_ray.shape[:-1] + (psf_size[0] + 2, psf_size[1] + 2))  # ... x N_wl x (H+2) x (W+2)
-        pre_idx = [
-            _t.as1d(torch.arange(dim_size, device=self.device), mask.ndim, i)
-            for i, dim_size in enumerate(mask.shape[:-1])
-        ]
-
-        psf.index_put_(pre_idx + [r_as, c_as], torch.where(mask, w_c * w_r, 0), True)  # top left
-        psf.index_put_(pre_idx + [r_a, c_as], torch.where(mask, w_c * iw_r, 0), True)  # bottom left
-        psf.index_put_(pre_idx + [r_as, c_a], torch.where(mask, iw_c * w_r, 0), True)  # top right
-        psf.index_put_(pre_idx + [r_a, c_a], torch.where(mask, iw_c * iw_r, 0), True)  # bottom right
-
-        psf = psf[..., :-2, :-2]  # ... x N_wl x H x W
-        psf = psf.flip(-1)
-        psf = psf / n_spp  # total energy of each ray is 1
-        return psf
-
-    @utils.with_external
-    def _psf_inc_gaussian(
-        self,
-        origins: Ts,  # ... x 3
-        size: tuple[int, int],
-        wl: Ts,  # N_wl
-        psf_center: PsfCenter,
-        sampler: surf.Sampler = None,
-        wl_reduction: WlReduction = 'center',
-    ) -> Ts:
-        out_ray = self.trace_point(origins, wl, sampler)  # ... x N_wl x N_spp
-        out_ray.update_valid_(~out_ray.x.isnan() & ~out_ray.y.isnan())  # TODO:?
-
-        xy_center = self._find_xy_center(psf_center, self.cam2lens(origins), out_ray, wl, wl_reduction)
-        xy = out_ray.o[..., :2] - xy_center  # ... x N_wl x N_spp x 2
-        py, px = self.sensor.pixel_size
-        valid = xy[..., 0].abs().le(px * (size[1] / 2 + 5)) & xy[..., 1].abs().le(py * (size[0] / 2 + 5))
-        valid.logical_and_(out_ray.valid)  # ... x N_wl x N_spp
-
-        psf = self.new_empty(out_ray.shape[:-1] + size)  # ... x N_wl x H x W
-        ry, rx = utils.grid(size, self.sensor.pixel_size, dtype=self.dtype, device=self.device)
-        rxy = torch.stack([rx, ry], -1)  # H x W x 2
-        pixel_diag = math.sqrt(px ** 2 + py ** 2)
-        sigma = pixel_diag / 3
-        a, b = 1 / (math.sqrt(2 * math.pi) * sigma), -1 / (2 * sigma * sigma)
-        for i in range(psf.size(-2)):
-            for j in range(psf.size(-1)):
-                r2 = torch.square(rxy[i, j] - xy).sum(-1)  # ... x N_wl x N_spp
-                w = a * torch.exp(b * r2)  # ... x N_wl x N_spp
-                psf[..., i, j] = torch.where(valid, w, 0).sum(-1)  # ... x N_wl
-
-        psf = psf.flip(-1)
-        return psf
-
-    # This method is adapted from
-    # https://github.com/TanGeeGo/ImagingSimulation/blob/master/PSF_generation/ray_tracing/difftrace/analysis.py
-    def _psf_coherent(
-        self,
-        origins: Ts,
-        size: tuple[int, int],
-        wl: Ts,
-        psf_center: PsfCenter,
-        oblique: bool,
-        samples: int = DEFAULT_SAMPLES,
-    ) -> Ts:
-        """This method is subject to change."""
-        chief_ray, ray, rs_roc, _ = self._trace_opl_with_chief(origins, wl, samples)
-
-        lim = ((size[0] - 1) // 2, (size[1] - 1) // 2)
-        # x and y should decrease when index gets large since:
-        # x coordinate of PSF should be in camera's coordinate system
-        # but the computation is performed in lens' coordinate system
-        # so a horizontal flipping is needed
-        # and large index for y means lower position i.e. small y
-        y, x = [torch.linspace(
-            lim[i], -lim[i], size[i], device=self.device, dtype=self.dtype
-        ) * self.sensor.pixel_size[i] for i in range(2)]
-        x, y = torch.meshgrid(x, y, indexing='xy')  # H x W
-
-        if psf_center == 'linear':
-            center_xy = self.obj_proj_lens(origins)[..., None, None, None, :]  # ... x 1 x 1 x 1 x 2
-        elif psf_center == 'chief':
-            center_xy = chief_ray.o[..., :2].unsqueeze(-2)  # ... x N_wl x 1 x 1 x 2
-        else:
-            raise ValueError(f'Unsupported PSF center type for coherent PSF: {psf_center}')
-
-        sampling_grid = center_xy + torch.stack([x, y], -1)  # ... x N_wl x H x W x 2
-        sampling_grid = torch.cat([
-            sampling_grid, self.surfaces.total_length.broadcast_to(sampling_grid.shape[:-1]).unsqueeze(-1)
-        ], -1)  # ... x N_wl x H x W x 3
-
-        # ... x N_wl x H x W x N_spp x 3
-        rs2grid_points = sampling_grid.unsqueeze(-2) - ray.o[..., None, None, :, :]
-        r_proj = torch.sum(ray.d[..., None, None, :, :] * rs2grid_points, -1)
-        wave_vec = base.k(wl.reshape(-1, 1, 1, 1))
-        phase = (r_proj + ray.opl[..., None, None, :]) * wave_vec
-
-        if oblique:
-            r_unit = torch.linalg.vector_norm(rs2grid_points)  # ... x N_wl x H x W x N_spp x 3
-            rs_normal = ray.o - chief_ray.o
-            rs_normal = torch.linalg.vector_norm(rs_normal)  # ... x N_wl x N_spp x 3
-            cosine_prop = torch.sum(rs_normal[..., None, None, :, :] * r_unit, -1)
-            cosine_rs = torch.sum(rs_normal * ray.d, -1)  # N_fov x N_D x N_wl x N_spp
-            obliquity = (cosine_rs[..., None, None, :] + cosine_prop) / 2
-            field = torch.polar(obliquity, phase)
-        else:
-            field = _t.expi(phase)
-        field = field.sum(-1)  # N_fov x N_D x N_wl x H x W
-        psf = _t.abs2(field)
-        return psf  # N_fov x N_D x N_wl x H x W
-
-    def _psf_from_wavefront(
-        self,
-        origins: Ts,
-        size: tuple[int, int],
-        wl: Ts,
-        psf_center: PsfCenter,
-        samples: int = DEFAULT_SAMPLES,
-    ) -> Ts:
-        """This method is subject to change."""
-        if psf_center != 'chief':
-            raise ValueError(f'Unsupported PSF center type for wavefront PSF: {psf_center}')
-
-        chief_ray, ray, rs_roc, exit_pupil_distance = self._trace_opl_with_chief(origins, wl, samples, 'rect')
-
-        ref_idx = self.surfaces.mt_tail.n(ray.wl)
-        opd = chief_ray.march(-rs_roc, ref_idx).opl - ray.opl  # ... x N_wl x N_spp
-        opd[~ray.valid] = float('nan')
-        phase = opd * base.k(wl.unsqueeze(-1))
-
-        spp = phase.size(-1)
-        grid_size = int(math.sqrt(spp))
-        # ... x N_wl x samples x samples, in lens' coordinate system
-        phase = phase.reshape(phase.shape[:-1] + (grid_size, grid_size))
-        phase = phase.flip(-2)  # phase on exit pupil in camera's coordinate system
-
-        # TODO: wfe_u and wfe_v are assumed to be uniform in current code, enabling direct bilinear interpolation
-        # ... x N_wl x samples x samples
-        wfe_u = ray.x.reshape(ray.x.shape[:-1] + (grid_size, grid_size))
-        wfe_v = ray.y.reshape(ray.y.shape[:-1] + (grid_size, grid_size))
-        u_mean, v_mean = wfe_u.nanmean(-2), wfe_v.nanmean(-1)  # ... x N_wl x samples
-        # ... x N_wl
-        du, dv = (u_mean.amax(-1) - u_mean.amin(-1)) / grid_size, (v_mean.amax(-1) - v_mean.amin(-1)) / grid_size
-        scale = exit_pupil_distance * wl  # ... x N_wl
-
-        # all: ... x N_wl
-        factor_x = grid_size * du * self.sensor.pixel_size[1] / scale
-        factor_y = grid_size * dv * self.sensor.pixel_size[0] / scale
-        factor_x, factor_y = factor_x.max().ceil().int().item(), factor_y.max().ceil().int().item()
-        range_u, range_v = factor_x * scale / self.sensor.pixel_size[1], factor_y * scale / self.sensor.pixel_size[0]
-        new_u_num, new_v_num = range_u / du, range_v / dv
-        new_u_num, new_v_num = new_u_num.mean().round().int().item(), new_v_num.mean().round().int().item()
-        du2, dv2 = range_u / new_u_num, range_v / new_v_num
-
-        # bilinear interpolation
-        new_v, new_u = utils.grid(
-            (new_v_num, new_u_num), (dv2, du2), symmetric=True, dtype=self.dtype, device=self.device,
-        )  # ... x N_wl x MH x MW
-        new_r = new_v / dv[..., None, None] + (grid_size - 1) / 2
-        new_c = new_u / du[..., None, None] + (grid_size - 1) / 2
-        upper_r, left_c = new_r.floor().int(), new_c.floor().int()
-        lower_r, right_c = upper_r + 1, left_c + 1
-        valid_r1, valid_r2 = upper_r.clamp(0, grid_size - 1), lower_r.clamp(0, grid_size - 1)
-        valid_c1, valid_c2 = left_c.clamp(0, grid_size - 1), right_c.clamp(0, grid_size - 1)
-        _r_vec = torch.stack([lower_r - new_r, new_r - upper_r], -1).unsqueeze(-2)  # ... x N_wl x MH x MW x 1 x 2
-        _c_vec = torch.stack([right_c - new_c, new_c - left_c], -1).unsqueeze(-1)  # ... x N_wl x MH x MW x 2 x 1
-        pre_idx = [torch.arange(dim_size, device=self.device) for dim_size in phase.shape[:-2]]
-        pre_idx = [_t.as1d(idx, len(pre_idx) + 2, i) for i, idx in enumerate(pre_idx)]
-        _mat = torch.stack([
-            torch.stack([phase[*pre_idx, valid_r1, valid_c1], phase[*pre_idx, valid_r1, valid_c2]], -1),
-            torch.stack([phase[*pre_idx, valid_r2, valid_c1], phase[*pre_idx, valid_r2, valid_c2]], -1),
-        ], -2)  # ... x N_wl x MH x MW x 2 x 2
-        interp_phase = _r_vec @ _mat @ _c_vec
-        interp_phase = interp_phase.squeeze(-1).squeeze(-1)  # ... x N_wl x MH x MW
-        interp_phase[
-            (upper_r != valid_r1) | (lower_r != valid_r2) | (left_c != valid_c1) | (right_c != valid_c2)
-            ] = float('nan')  # ... x N_wl x MH x MW
-
-        ep_field = _t.expi(interp_phase)
-        ep_field[interp_phase.isnan()] = 0.
-
-        psf = _t.abs2(fourier.ft2(ep_field))  # ... x N_wl x samples x samples
-
-        if factor_x == 1 and factor_y == 1:
-            psf = utils.resize(psf, size)
-        else:
-            psf = utils.resize(psf, (size[0] * factor_y, size[1] * factor_x))
-            slices = [[
-                psf[..., i::factor_y, j::factor_x] for j in range(factor_x)
-            ] for i in range(factor_y)]
-            psf = sum([sum(slc) for slc in slices]) / (factor_x * factor_y)
-
-        psf = psf.flip(-2)
-        return psf
-
     def _pupil(
         self,
         entr: bool,
         pupil_type: PupilType,
-        wl: Vector,
+        wl: ty.Vector,
         wl_reduction: WlReduction,
         **kwargs
     ) -> PupilSpec:
@@ -1461,7 +1216,7 @@ class CoaxialRayTracing(
         if not isinstance(stop.apt, surf.CircularAperture):
             raise RuntimeError(f'Stop must be circular to compute pupils')
 
-        ap = typing.cast(surf.CircularAperture, stop.aperture)
+        ap = ty.cast(surf.CircularAperture, stop.aperture)
         idx = stop.ctx.index
         z_stop = stop.ctx.baseline  # 0d
         r_stop = ap.radius  # 0d
@@ -1476,7 +1231,7 @@ class CoaxialRayTracing(
         return point, sublist
 
     def _focal_length(
-        self, obj_side: bool, fl_type: FlType, wl: Vector, wl_reduction: WlReduction, **kwargs
+        self, obj_side: bool, fl_type: FlType, wl: ty.Vector, wl_reduction: WlReduction, **kwargs
     ):
         if fl_type == 'paraxial':
             fl = self.focal_length_paraxial(obj_side, wl)
@@ -1492,3 +1247,10 @@ class CoaxialRayTracing(
             return fl[wl.size(0) // 2]
         else:
             raise ValueError(utils.invalid_option_msg('wavelength reduction', wl_reduction, WlReduction))
+
+    # normalizer of external parameters
+    @staticmethod
+    def _normalize_psf_model(value) -> CrtPsfModel:
+        if isinstance(value, CrtPsfModel):
+            return value
+        return CrtPsfModel.create(value)
