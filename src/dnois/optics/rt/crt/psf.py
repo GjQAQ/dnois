@@ -13,17 +13,22 @@ __all__ = [
     'PsfCenterDeterm',
     'LinearPsfCenter',
     'FixedPsfCenter',
-    'WaveDependentPsfCenter',
     'ChiefRayPsfCenter',
     'MeanPsfCenter',
     'RobustMeanPsfCenter',
 
+    'CoherentFraunhoferPsf',
+    'CoherentHuygensPsf',
+    'CoherentKirchoffPsf',
     'IncoherentRectKernelPsf',
+    'IncoherentGaussianKernelPsf',
 ]
 
 
 class PsfCenterDeterm(utils.ExternalParamMixIn, metaclass=abc.ABCMeta):
-    type: str
+    """A class to define the way to determine PSF center."""
+
+    type: str  #: A name to identify the way to determine PSF center.
 
     @abc.abstractmethod
     def __call__(self, optics: CoaxialRayTracing, origins: ty.Ts, out_ray: BatchedRay, wl: ty.Ts):
@@ -31,6 +36,10 @@ class PsfCenterDeterm(utils.ExternalParamMixIn, metaclass=abc.ABCMeta):
 
     @classmethod
     def create(cls, model_type: str, *args, **kwargs) -> ty.Self:
+        """
+        Create an instance whose :attr:`type` is same as ``model_type``.
+        Any other parameters are passed to the constructor of the corresponding class.
+        """
         for sub in utils.subclasses(cls):
             if sub.type == model_type:
                 return sub(*args, **kwargs)  # noqa
@@ -38,6 +47,10 @@ class PsfCenterDeterm(utils.ExternalParamMixIn, metaclass=abc.ABCMeta):
 
 
 class LinearPsfCenter(PsfCenterDeterm):
+    """
+    PSFs are centered around ideal image points thus realistic distortion is simulated.
+    See :class:`PsfCenterDeterm` for more details.
+    """
     type = 'linear'
 
     def __call__(self, optics: CoaxialRayTracing, origins: ty.Ts, *args, **kwargs):
@@ -45,9 +58,16 @@ class LinearPsfCenter(PsfCenterDeterm):
 
 
 class FixedPsfCenter(PsfCenterDeterm):
+    """
+    PSFs are centered around the given coordinates in :ref:`lens' coordinate system <guide_optics_rt_lcs>`.
+    See :class:`PsfCenterDeterm` for more details.
+
+    :param center: The coordinates of the PSF center in lens' coordinate system.
+    :type center: tuple[float, float]
+    """
     type = 'fixed'
 
-    def __init__(self, center: ty.Double[int]):
+    def __init__(self, center: ty.Double[float]):
         self.center = center
 
     def __call__(self, optics: CoaxialRayTracing, *args, **kwargs):
@@ -93,6 +113,10 @@ class WaveDependentPsfCenter(PsfCenterDeterm, metaclass=abc.ABCMeta):
 
 
 class ChiefRayPsfCenter(WaveDependentPsfCenter):
+    """
+    PSFs are centered around the intersections of corresponding chief rays and image plane.
+    See :class:`PsfCenterDeterm` for more details.
+    """
     type = 'chief'
 
     def center_mult_wl(self, optics: CoaxialRayTracing, origins: ty.Ts, out_ray: BatchedRay, wl: ty.Ts):
@@ -103,6 +127,10 @@ class ChiefRayPsfCenter(WaveDependentPsfCenter):
 
 
 class MeanPsfCenter(WaveDependentPsfCenter):
+    """
+    PSFs are centered around their "center of mass".
+    See :class:`PsfCenterDeterm` for more details.
+    """
     type = 'mean'
 
     def center_mult_wl(self, optics: CoaxialRayTracing, origins: ty.Ts, out_ray: BatchedRay, wl: ty.Ts):
@@ -112,8 +140,18 @@ class MeanPsfCenter(WaveDependentPsfCenter):
         return center
 
 
-class RobustMeanPsfCenter(WaveDependentPsfCenter):
+class RobustMeanPsfCenter(MeanPsfCenter):
+    """
+    Similar to ``'mean'`` but iteratively computes center and then weeds out outliers.
+    This is slower than ``'mean'`` but more robust.
+    See :class:`PsfCenterDeterm` for more details.
+    """
     type = 'mean-robust'
+
+    def __init__(self, wl_reduction: WlReduction = 'center', outlier_ratio: float = 0.7):
+        super().__init__()
+        self.wl_reduction = wl_reduction
+        self.outlier_ratio = outlier_ratio
 
     def center_mult_wl(self, optics: CoaxialRayTracing, origins: ty.Ts, out_ray: BatchedRay, wl: ty.Ts):
         center = super().center_mult_wl(optics, origins, out_ray, wl)
@@ -123,7 +161,7 @@ class RobustMeanPsfCenter(WaveDependentPsfCenter):
             d2 = torch.where(valid, xy, float('nan')).square().sum(-1)  # (..., N_wl, N_spp)
             q = torch.nanquantile(d2, optics.new_tensor([0.25, 0.75]), -1, True)  # (2, ..., N_wl, 1)
             q1, q3 = q.unbind(0)  # (..., N_wl, 1)
-            non_outlier = d2 < q3 + optics.robust_mean_center_threshold * (q3 - q1)  # (..., N_wl, N_spp)
+            non_outlier = d2 < q3 + self.outlier_ratio * (q3 - q1)  # (..., N_wl, N_spp)
             if torch.all(~valid.squeeze(-1) | non_outlier):
                 break
             valid = valid & non_outlier.unsqueeze(-1)  # (..., N_wl, N_spp, 1)
@@ -169,6 +207,7 @@ class IncoherentRectKernelPsf(CenterRequiredPsfModel):
         sampler: surf.Sampler = None,
         **kwargs,
     ) -> ty.Ts:
+        origins = optics.cam2lens(origins)
         out_ray = optics.trace_point(origins, wl, sampler)  # ... x N_wl x N_spp
         n_spp = out_ray.shape[-1]
 
@@ -226,6 +265,7 @@ class IncoherentGaussianKernelPsf(CenterRequiredPsfModel):
         sampler: surf.Sampler = None,
         **kwargs,
     ) -> ty.Ts:
+        origins = optics.cam2lens(origins)
         out_ray = optics.trace_point(origins, wl, sampler)  # ... x N_wl x N_spp
 
         xy_center = psf_center(optics, optics.cam2lens(origins), out_ray, wl, **kwargs)

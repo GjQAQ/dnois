@@ -12,6 +12,7 @@ from ...base.typing import Ts
 __all__ = [
     'AnnularAperture',
     'Aperture',
+    'BoundedAperture',
     'CircularAperture',
     'DummyAperture',
     'Sampler',

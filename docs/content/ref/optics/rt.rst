@@ -60,12 +60,15 @@ Specific surface types
 ************************************
 Ray-tracing-based optical systems
 ************************************
-.. autosummary::
-    :toctree: ../../generated/optics/rt/sys
+:class:`CoaxialRayTracingSystem` provides some methods to simulate, optimize, analyze
+and visualize **coaxial optical systems** modeled in a **sequential** manner.
+It is an optical system model used in most cases.
+See the following page for documentation related to it.
 
-    CoaxialRayTracing
-    CRTSpotDiagram
-    CRTVisConfig
+.. toctree::
+    :maxdepth: 1
+
+    crt
 
 *************************************************************
 Configuration for determining ray-surface intersection

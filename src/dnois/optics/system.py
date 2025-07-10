@@ -409,16 +409,6 @@ class RenderImageSceneMixIn(PerspectiveMixIn, metaclass=abc.ABCMeta):
     depth: Ts
 
     @utils.with_external
-    def fovd2obj(
-        self, fov: typing.Sequence[Double[float]] | Ts, depth: float | Ts, in_degrees: bool = False
-    ) -> Ts:  # override to add with_external decorator, the same below
-        return super().fovd2obj(fov, depth, in_degrees)
-
-    @utils.with_external
-    def tanfovd2obj(self, tanfov: typing.Sequence[Double[float]] | Ts, depth: float | Ts) -> Ts:
-        return super().tanfovd2obj(tanfov, depth)
-
-    @utils.with_external
     def seq_depth(
         self,
         depth: Vector | Double[Ts] = None,
@@ -512,7 +502,7 @@ class RenderImageSceneMixIn(PerspectiveMixIn, metaclass=abc.ABCMeta):
                 idx = torch.multinomial(probabilities, 1).squeeze().item()
             return depth[idx]
 
-    @utils.with_external
+    @utils.with_external(exclude='depth')
     def points_grid(self, segments: Size2d, depth: float | Ts, depth_as_map: bool = False) -> Ts:
         """
         Creates some points in object space, each of which is mapped to the center of

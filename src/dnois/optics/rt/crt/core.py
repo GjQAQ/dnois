@@ -165,23 +165,6 @@ class CoaxialRayTracing(
         ``'coh_fraunhofer'``
             The complex amplitude on image plane is computed as Fraunhofer diffraction,
             i.e. Fourier transform of pupil function.
-    :param str psf_center: The way to determine centers of computed PSFs.
-
-        ``'linear'``
-            PSFs are centered around ideal image points thus realistic distortion is simulated.
-
-        ``'mean'``
-            PSFs are centered around their "center of mass".
-
-        ``'mean-robust'``
-            Similar to ``'mean'`` but iteratively computes center and then weeds out outliers.
-            This is slower than ``'mean'`` but more robust.
-
-        ``'chief'``
-            PSFs are centered around the intersections of corresponding chief rays and image plane.
-
-        ``tuple[float, float]``
-            PSFs are centered around the given coordinates in :ref:`lens' coordinate system <guide_optics_rt_lcs>`.
     :param str fov_type: The way to determine range of FoV.
 
         ``'perspective'``
@@ -225,8 +208,6 @@ class CoaxialRayTracing(
         random sampler (see :meth:`dnois.optics.rt.Aperture.sampler`) with few sampling points,
         run rendering ``repetitions`` times and get their average to get rendered image
         with virtually many sampling points while memory footprint is reduced. Default: ``1``.
-    :param float robust_mean_center_threshold: Threshold for robust mean center.
-        Only used when :attr:`.psf_center` is ``'mean-robust'``. Default: ``0.7``.
     :param bool intensity_aware: Whether to compute PSFs in intensity-aware manner. Default: ``False``.
     :param CRTVisConfig vis_config: Visualization configuration. Default: see :class:`CRTVisConfig`.
     :param kwargs: Additional keyword arguments passed to :class:`PsfImagingOptics`.
@@ -265,7 +246,6 @@ class CoaxialRayTracing(
         wl_reduction: WlReduction = 'center',
         pupil_type: PupilType = 'paraxial',
         repetitions: int = 1,
-        robust_mean_center_threshold: float = 0.7,
         intensity_aware: bool = False,
         vis_config: CRTVisConfig = None,
         **kwargs
@@ -291,7 +271,6 @@ class CoaxialRayTracing(
         self.wl_reduction: WlReduction = wl_reduction  #: See :class:`CoaxialRayTracing`.
         self.pupil_type: PupilType = pupil_type  #: See :class:`CoaxialRayTracing`.
         self.repetitions: int = repetitions  #: See :class:`CoaxialRayTracing`.
-        self.robust_mean_center_threshold: float = robust_mean_center_threshold  #: See :class:`CoaxialRayTracing`.
         self.imaging_model: ImagingModel = imaging_model  #: See :class:`CoaxialRayTracing`.
         self.intensity_aware: bool = intensity_aware  #: See :class:`CoaxialRayTracing`.
         self.vis_config: CRTVisConfig = vis_config  #: See :class:`CoaxialRayTracing`.
@@ -410,7 +389,7 @@ class CoaxialRayTracing(
             sampled = self.first.sample(sampler)  # N_spp x 3
         else:
             sampled = self.last.sample(sampler)  # N_spp x 3
-        d, _ = _make_direction(sampled, self.cam2lens(point).unsqueeze(-2), forward)  # ... x N_spp|1 x 3
+        d, _ = _make_direction(sampled, point.unsqueeze(-2), forward)  # ... x N_spp|1 x 3
         ray = BatchedRay(
             sampled, d.unsqueeze(-3), wl.unsqueeze(-1),
             init_intensity=1. if intensity_aware else None

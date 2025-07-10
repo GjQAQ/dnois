@@ -818,7 +818,7 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
         if not self._cfg.force_before:
             return ray_in_local
 
-        if forward:
+        if forward == self.ctx.upward_in:
             upward = ray_in_local.d_z > 0
         else:
             upward = ray_in_local.d_z < 0

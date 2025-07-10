@@ -64,6 +64,7 @@ class ForwardRayTracingOptics(system.ImagingOptics, system.RenderImageSceneMixIn
         shape = scene.image.shape[-2:]
         o = self.points_grid(shape, depth_map, True)  # (B, H, W, 3)
         o = o.flatten(1, 2)  # (B, H*W, 3)
+        o = self.cam2lens(o)
 
         rectification_center = self._rectification_center(rectification, o, wl)  # (B, N_wl, H*W, 1, 2)
         rendered = ...
@@ -101,6 +102,7 @@ class ForwardRayTracingOptics(system.ImagingOptics, system.RenderImageSceneMixIn
             raise ValueError(f'A scene with {wl.numel()} wavelengths expected, got {scene.n_wl}')
 
         o = scene.locations  # (N, 3)
+        o = self.cam2lens(o)
         rendered = ...
         for _ in range(repetitions):
             out_ray = self.trace_point(o, wl, sampler)  # (N, N_wl, spp)
