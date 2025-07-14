@@ -205,7 +205,7 @@ class BatchedRay(_t.TensorContainerMixIn):
                 return ts
             return ts[valid]
 
-        self._update_tensor(_discard)
+        self.apply_(_discard)
         return valid
 
     def flatten_(self) -> Self:
@@ -222,7 +222,7 @@ class BatchedRay(_t.TensorContainerMixIn):
             else:
                 return torch.flatten(v.broadcast_to(shape))
 
-        self._update_tensor(_flatten)
+        self.apply_(_flatten)
         return self
 
     def copy_valid_(self) -> Self:
@@ -252,7 +252,7 @@ class BatchedRay(_t.TensorContainerMixIn):
                 ts = ts.broadcast_to(v.shape)
                 return torch.where(v, ts, ts[*idx].clone())
 
-        self._update_tensor(_copy)
+        self.apply_(_copy)
         return self
 
     def march(self, t: float | Ts, n: float | Ts = None) -> 'BatchedRay':
@@ -322,7 +322,7 @@ class BatchedRay(_t.TensorContainerMixIn):
                 nv = nv.to(torch.bool)
             return nv
 
-        self._update_tensor(_to)
+        self.apply_(_to)
         return self
 
     def update_valid(self, valid: Ts) -> Self:
@@ -420,8 +420,16 @@ class BatchedRay(_t.TensorContainerMixIn):
                     _rep[i] = 1
             return v.repeat(*_rep)
 
-        ray._update_tensor(_expand)
+        ray.apply_(_expand)
         return ray
+
+    def apply_(self, fn: Callable[[str, Ts], Ts | None]):
+        for k in list(self._ts.keys()):
+            v = self._ts[k]
+            if v is not None:
+                result = fn(k, v)
+                if result is not None:
+                    self._ts[k] = result
 
     @property
     def shape(self) -> torch.Size:
@@ -687,14 +695,6 @@ class BatchedRay(_t.TensorContainerMixIn):
         :type: Tensor
         """
         return self._ts['d'][..., 2]
-
-    def _update_tensor(self, fn: Callable[[str, Ts], Ts | None]):
-        for k in list(self._ts.keys()):
-            v = self._ts[k]
-            if v is not None:
-                result = fn(k, v)
-                if result is not None:
-                    self._ts[k] = result
 
     def _check_shape(self, shape: tuple[int, ...], name: str):
         if not _t.broadcastable(shape, self.shape):

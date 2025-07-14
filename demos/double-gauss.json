@@ -7,7 +7,8 @@
         "type": "CircularAperture",
         "radius": 0.029339203611016275
       },
-      "roc": 0.05415324494242668
+      "roc": 0.05415324494242668,
+      "distance": 0.008746657520532608
     },
     {
       "type": "Spherical",
@@ -16,25 +17,28 @@
         "type": "CircularAperture",
         "radius": 0.028266584500670433
       },
-      "roc": 0.15252192318439484
+      "roc": 0.15252192318439484,
+      "distance": 0.0005000000237487257
     },
     {
       "type": "Spherical",
       "material": "SK16",
       "aperture": {
         "type": "CircularAperture",
-        "radius":0.02435458078980446
+        "radius": 0.02435458078980446
       },
-      "roc": 0.03595062345266342
+      "roc": 0.03595062345266342,
+      "distance": 0.014000000432133675
     },
     {
       "type": "Spherical",
       "material": "F5",
       "aperture": {
         "type": "CircularAperture",
-        "radius":0.021358225494623185
+        "radius": 0.021358225494623185
       },
-      "roc": Infinity
+      "roc": Infinity,
+      "distance": 0.003776965895667672
     },
     {
       "type": "Spherical",
@@ -43,93 +47,65 @@
         "type": "CircularAperture",
         "radius": 0.01493283361196518
       },
-      "roc": 0.022269925102591515
+      "roc": 0.022269925102591515,
+      "distance": 0.014253059402108192
     },
     {
       "type": "CircularStop",
       "aperture": {
         "type": "CircularAperture",
-        "radius":0.01
-      }
+        "radius": 0.01
+      },
+      "distance": 0.012428129091858864
     },
     {
       "type": "Spherical",
       "material": "F5",
       "aperture": {
         "type": "CircularAperture",
-        "radius":0.0133013371378183365
+        "radius": 0.0133013371378183365
       },
-      "roc": -0.025685032829642296
+      "roc": -0.025685032829642296,
+      "distance": 0.003776965895667672
     },
     {
       "type": "Spherical",
       "material": "SK16",
       "aperture": {
         "type": "CircularAperture",
-        "radius":0.01662503182888031
+        "radius": 0.01662503182888031
       },
-      "roc": Infinity
-    },
-    {
-      "type": "Spherical",
-      "material": "vacuum",
-      "aperture": {
-        "type": "CircularAperture",
-        "radius":0.019061481580138205
-      },
-      "roc": -0.036980219185352325
-    },
-    {
-      "type": "Spherical",
-      "material": "SK16",
-      "aperture": {
-        "type": "CircularAperture",
-        "radius":0.021473828703165055
-      },
-      "roc": 0.19641733169555664
-    },
-    {
-      "type": "Spherical",
-      "material": "vacuum",
-      "aperture": {
-        "type": "CircularAperture",
-        "radius":0.02179718390107155
-      },
-      "roc": -0.06714755296707153
-    }
-  ],
-  "contexts": [
-    {
-      "distance": 0.008746657520532608
-    },
-    {
-      "distance": 0.0005000000237487257
-    },
-    {
-      "distance": 0.014000000432133675
-    },
-    {
-      "distance": 0.003776965895667672
-    },
-    {
-      "distance": 0.014253059402108192
-    },
-    {
-      "distance": 0.012428129091858864
-    },
-    {
-      "distance": 0.003776965895667672
-    },
-    {
+      "roc": Infinity,
       "distance": 0.010833928361535072
     },
     {
+      "type": "Spherical",
+      "material": "vacuum",
+      "aperture": {
+        "type": "CircularAperture",
+        "radius": 0.019061481580138205
+      },
+      "roc": -0.036980219185352325,
       "distance": 0.0005000000237487257
     },
     {
+      "type": "Spherical",
+      "material": "SK16",
+      "aperture": {
+        "type": "CircularAperture",
+        "radius": 0.021473828703165055
+      },
+      "roc": 0.19641733169555664,
       "distance": 0.006858174689114094
     },
     {
+      "type": "Spherical",
+      "material": "vacuum",
+      "aperture": {
+        "type": "CircularAperture",
+        "radius": 0.02179718390107155
+      },
+      "roc": -0.06714755296707153,
       "distance": 0.05731453746557236
     }
   ],

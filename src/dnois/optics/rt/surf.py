@@ -6,7 +6,7 @@ import warnings
 import torch
 from torch import nn
 
-from . import _surf, aperture
+from . import _surf, aperture as _apt
 from .aperture import *
 from ._surf import *
 from .. import _func, paraxial
@@ -27,7 +27,7 @@ __all__ = [
     'Zernike',
 ]
 __all__ += _surf.__all__
-__all__ += aperture.__all__
+__all__ += _apt.__all__
 
 
 def conical(r2: Ts, c: Ts, k: Ts = None) -> Ts:
@@ -557,7 +557,7 @@ class Zernike(Surface):
     def h_grad(self, x: Ts, y: Ts, r2: Ts = None) -> tuple[Ts, Ts]:
         if r2 is None:
             r2 = x.square() + y.square()
-        dr2 = even_aspherical_derivative_r2(r2, self.c, self.conic, self.a)
+        dr2 = even_aspherical_derivative_r2(r2, self.c, self.conic, self.a) * 2
         dx, dy = dr2 * x, dr2 * y
         if self.zernike_items <= 0:
             return dx, dy
@@ -597,9 +597,12 @@ class Zernike(Surface):
         r = torch.sqrt(x.square() + y.square())
         r = r / self.norm_radius
         theta = torch.atan2(y, x)
-        dx, dy = zernike_cpd(r, theta, 1) * self.z1
+        dx, dy = zernike_cpd(r, theta, 1)
+        dx, dy = dx * self.z1, dy * self.z1
         for i in range(2, self.zernike_items + 1):
-            ddx, ddy = zernike_cpd(r, theta, i) * getattr(self, f'z{i}')
+            ddx, ddy = zernike_cpd(r, theta, i)
+            z_item = getattr(self, f'z{i}')
+            ddx, ddy = ddx * z_item, ddy * z_item
             dx, dy = dx + ddx, dy + ddy
         return dx / self.norm_radius, dy / self.norm_radius
 

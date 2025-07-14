@@ -447,9 +447,9 @@ class IntersectionConfig(base.AsJsonMixIn, _DefaultMixIn):
     update_bound: float = 5.
     #: A small value to avoid division by zero.
     epsilon: float = 1e-9
-    #: Whether to mark rays whose origins are not before (after) the surface as invalid
+    #: Whether to mark rays whose directions are opposite (sign of :math:`d_z` is wrong)  as invalid
     #: in intersection-determination during forward (backward) ray tracing.
-    force_before: bool = True
+    check_incident_direction: bool = True
     #: Whether to mark rays whose marching distance are negative as invalid in intersection-determination.
     force_non_negative: bool = False
     #: Use analytical solution rather than Newton's method to determine
@@ -1471,6 +1471,24 @@ class CoaxialSurfaceSequence(SurfaceSequence):
         :type: Tensor
         """
         return ty.cast(Ts, sum(s.context.distance for s in self._slist))
+
+    @classmethod
+    def from_dict(cls, d: dict):
+        distances = [sd.pop('distance', ...) for sd in d['surfaces']]
+        if 'contexts' not in d:
+            if any(d is ... for d in distances):
+                raise ValueError('If contexts are not given, all distances must be specified')
+            d['contexts'] = [{'distance': d} for d in distances]
+        else:
+            for i, c in enumerate(d['contexts']):
+                if 'distance' in c:
+                    if distances[i] is not ...:
+                        raise ValueError('If contexts are given, distances must not be specified')
+                    continue
+                if distances[i] is ...:
+                    raise ValueError('Distance must be specified either in contexts or surfaces')
+                c['distance'] = distances[i]
+        return super().from_dict(d)
 
     def _make_ctx(self, s):
         d = getattr(s, '_distance', None)

@@ -21,5 +21,4 @@ license = "MIT"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"dnois" = ["builtin_materials.json"]
 "dnois.base" = ["fl.csv"]

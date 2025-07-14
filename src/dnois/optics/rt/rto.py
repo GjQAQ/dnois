@@ -69,7 +69,7 @@ class ForwardRayTracingOptics(system.ImagingOptics, system.RenderImageSceneMixIn
         rectification_center = self._rectification_center(rectification, o, wl)  # (B, N_wl, H*W, 1, 2)
         rendered = ...
         for _ in range(repetitions):
-            out_ray = self.trace_point(o, wl, sampler, True)  # (B, H*W, N_wl, spp)
+            out_ray = self.trace_point(o, wl, sampler, intensity_aware=True)  # (B, H*W, N_wl, spp)
             xy = out_ray.o[..., :2].transpose(1, 2)  # (B, N_wl, H*W, spp, 2)
             valid = out_ray.valid.transpose(1, 2)  # (B, N_wl, H*W, spp)
             value = scene.image.flatten(-2, -1).unsqueeze(-1)  # (B, N_wl, H*W, 1)

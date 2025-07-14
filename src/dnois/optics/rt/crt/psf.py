@@ -444,3 +444,104 @@ class CoherentFraunhoferPsf(CrtPsfModel):
 
         psf = psf.flip(-2)
         return psf
+
+
+# adapted from https://github.com/Zrr-ZJU/Successive-optimization.git
+# Z. Ren et al., "Successive Optimization of Optics and Post-Processing
+# With Differentiable Coherent PSF Operator and Field Information,"
+# in IEEE Transactions on Computational Imaging, vol. 11, pp. 599-608,
+# 2025, doi: 10.1109/TCI.2025.3564173.
+class _CoherentPsfOp(torch.autograd.Function):
+    @staticmethod
+    def forward(grid, o, d, opl, k, valid):
+        # grid: (...,N_wl,1,H,W,2)
+        # o, d: (...,N_wl,spp,3)
+        # opl, k, valid: (...,N_wl,spp)
+        dr = torch.sum(d[..., None, None, :2] * (grid - o[..., None, None, :2]), -1)  # (...,N_wl,spp,H,W)
+        phase = k[..., None, None] * (opl[..., None, None] + dr)  # (...,N_wl,spp,H,W)
+        field = _t.expi(phase) * d[..., None, None, 2]
+        field[~valid[..., None, None].broadcast_to(field.shape)] = 0
+        field = field.sum(-3)  # (...,N_wl,H,W)
+
+        psf = _t.abs2(field)
+        return psf  # (...,N_wl,H,W)
+
+    @staticmethod
+    def setup_context(ctx, inputs, outputs):
+        ctx.save_for_backward(*inputs)
+        ctx.set_materialize_grads(False)
+
+    @staticmethod
+    @torch.autograd.function.once_differentiable
+    def backward(ctx, *grad_output):
+        grad_output = grad_output[0]  # (...,N_wl,H,W)
+        if grad_output is None:
+            return None, None, None, None, None, None
+
+        grid, o, d, opl, k, valid = ctx.saved_tensors
+        k = k[..., None, None]  # (...,N_wl,spp,1,1)
+        d = d[..., None, None, :]  # (...,N_wl,spp,1,1,3)
+        grad_output = grad_output.unsqueeze(-3)  # (...,N_wl,1,H,W)
+        grad_grid = grad_o = grad_d = grad_opl = None
+
+        diff = grid - o[..., None, None, :2]  # (...,N_wl,1,H,W,2)
+        dr = torch.sum(d[..., :2] * diff, -1)  # (...,N_wl,spp,H,W)
+        phase = k * (opl[..., None, None] + dr)  # (...,N_wl,spp,H,W)
+        phase_factor = _t.expi(phase)
+        phase_factor[~valid[..., None, None].broadcast_to(phase_factor.shape)] = 0
+        pw = phase_factor * d[..., 2]
+        field = pw.sum(-3, True)  # (...,N_wl,1,H,W)
+
+        partial = 2 * field
+        grad_phase = (partial.imag * pw.real - partial.real * pw.imag) * grad_output  # (...,N_wl,spp,H,W)
+
+        _1 = None
+        if any(ctx.needs_input_grad[:3]):  # grad w.r.t. grid, o and d needed
+            _1 = (k * grad_phase)[..., None]  # (...,N_wl,spp,H,W,1)
+
+        if ctx.needs_input_grad[0]:
+            grad_grid = torch.sum(_1 * d[..., :2], -4)  # (...,N_wl,H,W,2)
+            grad_grid = grad_grid.unsqueeze(-4)  # (...,N_wl,1,H,W,2)
+        if ctx.needs_input_grad[1]:
+            grad_o = torch.sum(-_1 * d, (-3, -2))  # (...,N_wl,spp,3)
+            grad_o[..., 2] = 0
+        if ctx.needs_input_grad[2]:
+            _2 = partial.real * phase_factor.real + partial.imag * phase_factor.imag  # (...,N_wl,spp,H,W)
+            _3 = torch.sum(_2 * grad_output, (-2, -1))  # (...,N_wl,spp)
+            grad_d = torch.sum(_1 * diff, (-3, -2))  # (...,N_wl,spp,2)
+            grad_d = torch.cat([grad_d, _3.unsqueeze(-1)], -1)  # (...,N_wl,spp,3)
+        if ctx.needs_input_grad[3]:
+            grad_opl = k.squeeze(-1).squeeze(-1) * grad_phase.sum((-2, -1))  # (...,N_wl,1|spp)
+        if ctx.needs_input_grad[4]:
+            raise NotImplementedError(f'Grad w.r.t. wavelength is not implemented in {_CoherentPsfOp.__name__}')
+        return grad_grid, grad_o, grad_d, grad_opl, None, None
+
+
+class CoherentPsf(CenterRequiredPsfModel):
+    type = 'coherent'
+
+    @utils.with_external
+    def psf(
+        self,
+        optics: 'CoaxialRayTracing',
+        origins: ty.Ts,
+        wl: ty.Vector = None,
+        psf_size: ty.Size2d = None,
+        psf_center: PsfCenter | PsfCenterDeterm = None,
+        sampler: surf.Sampler = None,
+        **kwargs,
+    ) -> ty.Ts:
+        origins = optics.cam2lens(origins)
+        out_ray = optics.trace_point(origins, wl, sampler, opl_aware=True)  # ... x N_wl x N_spp
+
+        xy_center = psf_center(optics, origins, out_ray, wl, **kwargs)
+        xy_center = xy_center.unsqueeze(-2).unsqueeze(-2)  # (...,N_wl,1,1,1,2)
+        y, x = utils.grid(
+            psf_size, optics.sensor.pixel_size, dtype=optics.dtype, device=optics.device
+        )  # (...,N_wl,1,H,W)
+        x = x + xy_center[..., 0]
+        y = y + xy_center[..., 1]
+        grid = torch.stack([x, y], -1)  # (...,N_wl,1,H,W,2)
+
+        psf = _CoherentPsfOp.apply(grid, out_ray.o, out_ray.d, out_ray.opl, base.k(out_ray.wl), out_ray.valid)
+        return psf

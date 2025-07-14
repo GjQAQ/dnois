@@ -713,8 +713,9 @@ def load(file, exist_ok: bool = False):
         register(Material.from_dict(m), exist_ok=exist_ok)
 
 
-_lib: dict[str, Material] = {}
-with importlib.resources.open_text(__name__, 'builtin_materials.json') as f:
-    load(f)
-air: Air = cast(Air, _lib['air'])
-vacuum: Constant = cast(Constant, _lib['vacuum'])
+air: Air = Air('air')
+vacuum: Constant = Constant('vacuum', 1.)
+_lib: dict[str, Material] = {
+    'air': air,
+    'vacuum': vacuum,
+}

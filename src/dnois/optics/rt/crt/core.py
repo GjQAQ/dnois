@@ -382,19 +382,35 @@ class CoaxialRayTracing(
         point: Ts,
         wl: ty.Vector = None,
         sampler: surf.Sampler = None,
-        intensity_aware: bool = None,
         forward: bool = True,
+        intensity_aware: bool = None,
+        opl_aware: bool = False,
     ) -> BatchedRay:
         if forward:
             sampled = self.first.sample(sampler)  # N_spp x 3
         else:
             sampled = self.last.sample(sampler)  # N_spp x 3
-        d, _ = _make_direction(sampled, point.unsqueeze(-2), forward)  # ... x N_spp|1 x 3
+        d, length = _make_direction(sampled, point.unsqueeze(-2), True, forward)  # ... x N_spp|1 x 3
+
+        d = d.unsqueeze(-3)
+        wl = wl.unsqueeze(-1)
+        if opl_aware:
+            n = self.surfaces.mt_head.n(wl)
+            init_opl = utils.InfinityCond(
+                lambda z: length * n,
+                lambda _: torch.sum(sampled * d, -1) * n,
+            )(point[..., 2])
+        else:
+            init_opl = None
+
         ray = BatchedRay(
-            sampled, d.unsqueeze(-3), wl.unsqueeze(-1),
-            init_intensity=1. if intensity_aware else None
+            sampled, d, wl,
+            init_opl=init_opl,
+            init_intensity=1. if intensity_aware else None,
+            d_normed=True
         )  # ... x N_wl x N_spp x 3
-        out_ray = self.trace_ray(ray, forward)  # ... x N_wl x N_spp
+
+        out_ray = self.surfaces.trace_out(ray, forward)  # ... x N_wl x N_spp
         return out_ray
 
     @torch.no_grad()
@@ -785,7 +801,7 @@ class CoaxialRayTracing(
         return CRTSpotDiagram(fig, rms, geo_radius)
 
     @ext.vis.visfunc
-    @utils.with_external
+    @utils.with_external(exclude='depth')
     def plot_cross_section(
         self,
         fig: 'Figure' = None,
@@ -822,7 +838,7 @@ class CoaxialRayTracing(
         if fig is None:
             fig, ax = plt.subplots(figsize=(12.8, 9.6), subplot_kw={'frameon': True})
         else:
-            ax = fig.axes[0][0]
+            ax = fig.axes[0]
         if height is None:
             fov_half = self.reference.fov_half
             fovs = [0., fov_half * 0.5 ** 0.5, fov_half]

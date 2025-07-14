@@ -155,7 +155,7 @@ def draw_surface_fresnel(ax: 'Axes', sf: surf.Fresnel, config: CRTVisConfig):
 
 
 def draw_surf_common(ax: 'Axes', sf: surf.Surface, config: CRTVisConfig):
-    radius = sf.apt.radius.item()
+    radius = sf.apt.max_radius().item()
     y = torch.linspace(-radius, radius, config.surface_points, device=sf.device)
     z = sf.h(torch.zeros_like(y), y) + sf.ctx.baseline
     ax.plot(utils.t4plot(z), utils.t4plot(y), **config.linestyle_surface)
