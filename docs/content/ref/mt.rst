@@ -38,12 +38,14 @@ Accessing materials
 
     dispersion_types
     get
-    is_available
+    lib
     list_all
     register
     registered
     remove
     update
+
+    MaterialNotFoundError
 
 *****************************
 Others

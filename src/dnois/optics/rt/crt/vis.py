@@ -181,7 +181,7 @@ def draw_surfaces(
         edge_z.append(z)
 
     for i in range(len(surfaces) - 1):  # edges
-        if surfaces[i].material.name == 'vacuum':
+        if surfaces[i].material.name in {'vacuum', 'air'}:
             continue
 
         r1 = surfaces[i].apt.radius.item()

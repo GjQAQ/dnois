@@ -12,7 +12,7 @@
     },
     {
       "type": "Spherical",
-      "material": "vacuum",
+      "material": "air",
       "aperture": {
         "type": "CircularAperture",
         "radius": 0.028266584500670433
@@ -42,7 +42,7 @@
     },
     {
       "type": "Spherical",
-      "material": "vacuum",
+      "material": "air",
       "aperture": {
         "type": "CircularAperture",
         "radius": 0.01493283361196518
@@ -80,7 +80,7 @@
     },
     {
       "type": "Spherical",
-      "material": "vacuum",
+      "material": "air",
       "aperture": {
         "type": "CircularAperture",
         "radius": 0.019061481580138205
@@ -100,7 +100,7 @@
     },
     {
       "type": "Spherical",
-      "material": "vacuum",
+      "material": "air",
       "aperture": {
         "type": "CircularAperture",
         "radius": 0.02179718390107155
@@ -109,6 +109,5 @@
       "distance": 0.05731453746557236
     }
   ],
-  "foremost_material": "vacuum",
   "stop_idx": 5
 }

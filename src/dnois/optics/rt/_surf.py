@@ -486,7 +486,7 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
 
     def __init__(
         self,
-        material: mt.Material | str = 'vacuum',
+        material: mt.Material | str = 'air',
         aperture: Aperture | Scalar = None,
         reflective: bool = False,
         intersection_config: IntersectionConfig = IntersectionConfig.default,
@@ -600,7 +600,7 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
         else:
             non_negative = None
 
-        ray = ray.march(t, self.context.material_before.n(ray.wl))
+        ray = ray.march(t, self.context.material_before.n_abs(ray.wl))
 
         ray_in_local = self.context.g2l_ray(ray)
         mask = self.aperture.pass_ray(ray_in_local) & (self._f(ray_in_local).abs() < tol)
@@ -815,7 +815,7 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
 
     def _global2local_check(self, ray: BatchedRay, forward: bool) -> BatchedRay:
         ray_in_local = self.context.g2l_ray(ray)
-        if not self._cfg.force_before:
+        if not self._cfg.check_incident_direction:
             return ray_in_local
 
         if forward == self.ctx.upward_in:
@@ -846,7 +846,7 @@ class Planar(Surface):
 
     def __init__(
         self,
-        material: mt.Material | str = 'vacuum',
+        material: mt.Material | str = 'air',
         aperture: Aperture | Scalar = None,
         reflective: bool = False,
         *,
@@ -882,7 +882,7 @@ class Stop(Planar):
     """
 
     def __init__(self, aperture: Aperture | Scalar = None, move_ray: bool = False, *, d: Scalar = None):
-        super().__init__('vacuum', aperture, False, d=d)  # material is ignored
+        super().__init__('air', aperture, False, d=d)  # material is ignored
         self._move_ray = move_ray
 
     def intercept(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
@@ -935,7 +935,7 @@ class CircularSurface(Surface, metaclass=abc.ABCMeta):
 
     def __init__(
         self,
-        material: mt.Material | str = 'vacuum',
+        material: mt.Material | str = 'air',
         aperture: Aperture | Scalar = float('inf'),
         reflective: bool = False,
         intersection_config: IntersectionConfig = IntersectionConfig.default,
@@ -1068,7 +1068,7 @@ class SurfaceSequence(
     def __init__(
         self,
         surfaces: Sequence[Surface] = None,
-        foremost_material: mt.Material | str = 'vacuum',
+        foremost_material: mt.Material | str = 'air',
         stop_idx: int = None,
     ):
         super().__init__()

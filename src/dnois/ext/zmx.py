@@ -1,3 +1,4 @@
+import functools
 import warnings
 from pathlib import Path
 
@@ -161,19 +162,24 @@ def _parse_segment_common(segment: list[str], unit: str) -> tuple[str | None, ty
 
 def load_agf(
     file: str | Path | ty.TextIO,
+    qualifier: str = None,
     modifier: ty.Callable[[mt.Material], mt.Material] = None,
     existed_behavior: ty.Literal['skip', 'overwrite', 'warn', 'error'] = 'warn',
 ):
     if isinstance(file, str):
         file = Path(file)
     if isinstance(file, Path):
-        with file.open('r', encoding='utf-8') as f:
+        with file.open('r', encoding='utf-8', errors='replace') as f:
             agf_lines = f.readlines()
+        if qualifier is None:
+            qualifier = file.stem.upper()
     else:
         agf_lines = file.readlines()
+        if qualifier is None:
+            qualifier = ''
 
     material_list = list(_split_agf(agf_lines))
-    material_list = map(_construct_material, material_list)
+    material_list = map(functools.partial(_construct_material, qualifier=qualifier), material_list)
     material_list = map(modifier, material_list) if modifier is not None else material_list
     for material in material_list:
         if mt.registered(material.name):
@@ -216,39 +222,59 @@ _dispersion_list = [
 ]
 
 
-def _construct_material(fields: list[str]) -> mt.Material:
+def _construct_material(fields: list[str], qualifier: str) -> mt.Material:
     nm_line = _split_field(fields, 'NM')
     name, dispersion_id = nm_line[1], int(round(float(nm_line[2])))
     if dispersion_id >= len(_dispersion_list) or _dispersion_list[dispersion_id] is None:
         raise ZemaxParsingError(f'Undefined dispersion identifier: {dispersion_id}')
+    name = f'{qualifier}:{name}'
     cls = _dispersion_list[dispersion_id]
 
     cd_line = _split_field(fields, 'CD')
     c = [_float(param) for param in cd_line[1:]]
 
+    td_line = _split_field(fields, 'TD')
+    td = [_float(param) for param in td_line[1:]]
+    ref_t = _get_thermal_data(6, td, 20.)
+    d0 = _get_thermal_data(0, td)
+    d1 = _get_thermal_data(1, td)
+    d2 = _get_thermal_data(2, td)
+    e0 = _get_thermal_data(3, td)
+    e1 = _get_thermal_data(4, td)
+    ltk = _get_thermal_data(5, td)
+
     ld_line = _split_field(fields, 'LD')
     min_wl = float(ld_line[1])
     max_wl = float(ld_line[2])
 
+    common_args = (min_wl, max_wl, ref_t, d0, d1, d2, e0, e1, ltk)
+
     if cls == mt.Schott:
-        obj = cls(name, c[:6], min_wl, max_wl)
+        obj = cls(name, c[:6], *common_args)
     elif cls == mt.Sellmeier1:
-        obj = cls(name, c[:6:2], c[1:6:2], min_wl, max_wl)  # noqa
+        obj = cls(name, c[:6:2], c[1:6:2], *common_args)  # noqa
     elif cls == mt.Herzberger:
-        obj = cls(name, c[:6], min_wl, max_wl)
+        obj = cls(name, c[:6], *common_args)
     elif cls == mt.Sellmeier3:
-        obj = cls(name, c[:8:2], c[1:8:2], min_wl, max_wl)  # noqa
+        obj = cls(name, c[:8:2], c[1:8:2], *common_args)  # noqa
     elif cls == mt.Sellmeier4:
-        obj = cls(name, *c[:5], min_wl, max_wl)
+        obj = cls(name, *c[:5], *common_args)
     elif cls == mt.Sellmeier5:
-        obj = cls(name, c[:10:2], c[1:10:2], min_wl, max_wl)  # noqa
+        obj = cls(name, c[:10:2], c[1:10:2], *common_args)  # noqa
     else:
         raise RuntimeError('Unexpected error')
     return obj
 
 
+def _get_thermal_data(i, td, default=None):
+    return td[i] if len(td) > i else default
+
+
 def _split_field(fields, tag):
-    return next(filter(lambda line: line.startswith(tag), fields)).split()
+    try:
+        return next(filter(lambda line: line.startswith(tag), fields)).split()
+    except StopIteration:
+        return [tag]
 
 
 def _float(s, default=0.):

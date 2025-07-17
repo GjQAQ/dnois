@@ -11,3 +11,6 @@ src/dnois.egg-info/
 
 # sphinx autosummary stub
 docs/content/generated
+
+# private resources
+tests/resources/material/agf/

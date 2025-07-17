@@ -801,7 +801,7 @@ class CoaxialRayTracing(
         return CRTSpotDiagram(fig, rms, geo_radius)
 
     @ext.vis.visfunc
-    @utils.with_external(exclude='depth')
+    @utils.with_external
     def plot_cross_section(
         self,
         fig: 'Figure' = None,

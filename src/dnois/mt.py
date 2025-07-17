@@ -14,14 +14,13 @@ See :ref:`accessing_materials`.
 """
 
 import abc
-import importlib.resources
 import json
 from pathlib import Path
 import re
 
 import torch
 
-from . import utils, base
+from . import utils, base, conf, torch as _t
 from .base.typing import Numeric, Union, Any, Self, cast
 
 __all__ = [
@@ -30,7 +29,6 @@ __all__ = [
 
     'dispersion_types',
     'get',
-    'is_available',
     'list_all',
     'load',
     'refractive_index',
@@ -50,9 +48,9 @@ __all__ = [
     'Sellmeier3',
     'Sellmeier4',
     'Sellmeier5',
-]
 
-RANGE_CHECK_EPS = 1e-5
+    'MaterialNotFoundError',
+]
 
 
 def _format_flist(flist: list[float]) -> str:
@@ -67,13 +65,24 @@ class Material(base.AsJsonMixIn, metaclass=abc.ABCMeta):
     :param str name: Name of the material.
     :param float min_wl: Minimum applicable wavelength in ``default_unit``. Default: 0.
     :param float max_wl: Maximum applicable wavelength in ``default_unit``. Default: infinity.
-    :param str default_unit: Unit of wavelength for dispersion formula and ``min_wl`` and ``max_wl``.
-        Default: ``'um'``.
+    :param float ref_t: Reference temperature in degree Celsius. Default: 20.
     """
-    __slots__ = ('name', 'min_wl', 'max_wl', 'default_unit')
+    __slots__ = ('name', 'min_wl', 'max_wl', 'ref_t', 'thermal_d', 'thermal_e', 'ltk')
     _forbidden_name = ['', 'None', 'none', 'null']
 
-    def __init__(self, name: str, min_wl: float = None, max_wl: float = None, default_unit: str = 'um'):
+    def __init__(
+        self,
+        name: str,
+        min_wl: float = None,
+        max_wl: float = None,
+        ref_t: float = 20,
+        d0: float = 0.,
+        d1: float = 0.,
+        d2: float = 0.,
+        e0: float = 0.,
+        e1: float = 0.,
+        ltk: float = 0.,
+    ):
         if name in self._forbidden_name:
             raise ValueError(f'Material name cannot be {name}')
         if min_wl is not None and min_wl < 0 or max_wl is not None and max_wl < 0:
@@ -87,22 +96,68 @@ class Material(base.AsJsonMixIn, metaclass=abc.ABCMeta):
         self.min_wl = min_wl if min_wl is not None else 0.
         #: Maximum wavelength valid for the material.
         self.max_wl = max_wl if max_wl is not None else float('inf')
-        #: Default unit.
-        self.default_unit = default_unit
+        #: Reference temperature in degree Celsius.
+        self.ref_t = ref_t
+        self.thermal_d = (d0, d1, d2)
+        self.thermal_e = (e0, e1)
+        self.ltk = ltk
 
     def __repr__(self):
         return f'{self.__class__.__name__}({self._repr()})'
 
-    @abc.abstractmethod
-    def n(self, wavelength: Numeric) -> Numeric:
+    def __str__(self):
+        return self.name
+
+    def n(self, wl: Numeric, t: float = None, p: float = None, relative: bool = True) -> Numeric:
         """
         Computes refractive index.
 
-        :param wavelength: Value of wavelength.
-        :type: float or Tensor
+        .. note::
+            The result is not dependent on ``t`` if :data:`~dnois.conf.temperature_affect_n`
+            is ``False``, similarly for ``p`` and :data:`~dnois.conf.pressure_affect_n`.
+
+        :param wl: Wavelength measured in air under given condition.
+        :type wl: float or Tensor
+        :param float t: Temperature in degree Celsius. Default: :data:`~dnois.conf.default_temperature`.
+        :param float p: Pressure in atm. Default: :data:`~dnois.conf.default_pressure`.
+        :param bool relative: Whether to return relative refractive index or the
+            absolute one otherwise. Default: ``True``.
         :return: Refractive index.
-        :rtype: float or Tensor
         """
+        if relative:
+            return self.n_rel(wl, t, p)
+        else:
+            return self.n_abs(wl, t, p)
+
+    def n_rel(self, wl: Numeric, t: float = None, p: float = None) -> Numeric:
+        """
+        Computes refractive index relative to :class:`Air`.
+
+        See :meth:`.n` for description of parameters.
+        """
+        wl = self._make_wl(wl)
+        if not conf.temperature_affect_n and not conf.pressure_affect_n:
+            return self._dispersion_formula(wl)
+
+        n_abs, n_air = self._n_impl(wl, p, t)
+        n_rel = n_abs / n_air  # relative n measured in given condition
+        return n_rel
+
+    def n_abs(self, wl: Numeric, t: float = None, p: float = None) -> Numeric:
+        """
+        Computes absolute refractive index.
+
+        See :meth:`.n` for description of parameters.
+        """
+        wl = self._make_wl(wl)
+        if not conf.temperature_affect_n and not conf.pressure_affect_n:
+            return self._dispersion_formula(wl) * _air_n(wl * wl)
+
+        n_abs, _ = self._n_impl(wl, p, t)
+        return n_abs
+
+    @abc.abstractmethod
+    def _dispersion_formula(self, wl: Numeric) -> Numeric:
         pass
 
     def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
@@ -111,7 +166,10 @@ class Material(base.AsJsonMixIn, metaclass=abc.ABCMeta):
             'name': self.name,
             'min_wl': self.min_wl,
             'max_wl': self.max_wl,
-            'default_unit': self.default_unit
+            'ref_t': self.ref_t,
+            'thermal_d': self.thermal_d,
+            'thermal_e': self.thermal_e,
+            'ltk': self.ltk,
         }
 
     @classmethod
@@ -127,19 +185,42 @@ class Material(base.AsJsonMixIn, metaclass=abc.ABCMeta):
                 return cast(type[Material], sub).from_dict(d)  # calling eponymous method of subclass
         raise RuntimeError(utils.invalid_option_msg('material type', mt_type, dispersion_types(True)))
 
+    def _n_impl(self, wl, p, t):
+        if t is None:
+            t = conf.default_temperature
+        if p is None:
+            p = conf.default_pressure
+        wl2 = wl * wl
+        n_air = _air_n(wl2, t, p)  # n of air in given condition
+        n_air_ref = _air_n(wl2, self.ref_t, 1.)  # n of air in reference condition
+        wl_ref = wl * n_air / n_air_ref  # wavelength measured in reference condition
+        n_ref_rel = self._dispersion_formula(wl_ref)  # relative n measured in reference condition
+        n_ref_abs = n_ref_rel * n_air_ref  # absolute n measured in reference condition
+        dt = t - self.ref_t
+        dn = _t.polynomial(dt, self.thermal_d) * dt
+        dn = dn + _t.polynomial(dt, self.thermal_e) * dt / (wl2 - self.ltk * abs(self.ltk))
+        dn = dn * (n_ref_rel * n_ref_rel - 1) / (2 * n_ref_rel)
+        n_abs = n_ref_abs + dn  # absolute n measured in given condition
+        return n_abs, n_air
+
     def _repr(self) -> str:
-        return (f'name={self.name}, domain=('
-                f'{base.Length.fmt(base.Length.as_default(self.min_wl, self.default_unit), self.default_unit)}, '
-                f'{base.Length.fmt(base.Length.as_default(self.max_wl, self.default_unit), self.default_unit)})')
+        return ', '.join([
+            f'name={self.name}',
+            f'domain=({utils.fmt(self.min_wl)}um, {utils.fmt(self.max_wl)}um)',
+            f'T={utils.fmt(self.ref_t)}°C',
+            f'D0={utils.fmt(self.thermal_d[0])}',
+            f'D1={utils.fmt(self.thermal_d[1])}',
+            f'D2={utils.fmt(self.thermal_d[2])}',
+            f'E0={utils.fmt(self.thermal_e[0])}',
+            f'E1={utils.fmt(self.thermal_e[1])}',
+            f'Ltk={utils.fmt(self.ltk)}',
+        ])
 
     def _make_wl(self, wl: Numeric) -> Numeric:
-        wl = base.Length.default_to(wl, self.default_unit)
+        wl = base.Length.default_to(wl, 'um')
         m1, m2 = (wl.min().item(), wl.max().item()) if torch.is_tensor(wl) else (wl, wl)
-        if m1 < self.min_wl * (1 - RANGE_CHECK_EPS) or m2 > self.max_wl * (1 + RANGE_CHECK_EPS):
-            raise ValueError(
-                f'Unsupported wavelength for material \'{self.name}\': '
-                f'{wl}(unit: {self.default_unit})'
-            )
+        if m1 < self.min_wl * (1 - conf.detection_wl_eps) or m2 > self.max_wl * (1 + conf.detection_wl_eps):
+            raise ValueError(f'Unsupported wavelength for material "{self.name}": {wl}um')
         else:
             return wl
 
@@ -154,15 +235,8 @@ class Constant(Material):
     """
     __slots__ = ('refractive_index',)
 
-    def __init__(
-        self,
-        name: str,
-        n: float,
-        min_wl: float = None,
-        max_wl: float = None,
-        default_unit: str = 'um'
-    ):
-        super().__init__(name, min_wl, max_wl, default_unit)
+    def __init__(self, name: str, n: float, *args, **kwargs):
+        super().__init__(name, *args, **kwargs)
         self.refractive_index: float = n  #: Refractive index.
 
     def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
@@ -173,10 +247,35 @@ class Constant(Material):
     def _repr(self) -> str:
         return super()._repr() + f', n={utils.fmt(self.refractive_index)}'
 
-    def n(self, wl: Numeric) -> Numeric:
-        wl = self._make_wl(wl)
+    def _dispersion_formula(self, wl: Numeric) -> Numeric:
         n = self.refractive_index
         return torch.full_like(wl, n) if torch.is_tensor(wl) else n
+
+
+class Air(Material):
+    r"""
+    Air in normal temperature and pressure, whose dispersion formula is:
+
+    .. math::
+        n=1+\left(6432.8+\frac{2949810}{146\lambda^2-1}+\frac{25540}{41\lambda^2-1}\right)10^{-8}
+
+    See :class:`Material` for descriptions of parameters.
+    """
+
+    def n_rel(self, wl: Numeric, t: float = None, p: float = None) -> Numeric:
+        return torch.ones_like(wl) if torch.is_tensor(wl) else 1.
+
+    def n_abs(self, wl: Numeric, t: float = None, p: float = None) -> Numeric:
+        if t is None:
+            t = conf.default_temperature
+        if p is None:
+            p = conf.default_pressure
+
+        wl = self._make_wl(wl)
+        return _air_n(wl * wl, t, p)
+
+    def _dispersion_formula(self, wavelength: Numeric) -> Numeric:
+        return torch.ones_like(wavelength) if torch.is_tensor(wavelength) else 1
 
 
 class Cauchy(Material):
@@ -194,20 +293,11 @@ class Cauchy(Material):
     """
     __slots__ = ('a', 'b', 'c')
 
-    def __init__(
-        self, name: str, a: float, b: float, c: float,
-        min_wl: float = None, max_wl: float = None, default_unit: str = 'um'
-    ):
-        super().__init__(name, min_wl, max_wl, default_unit)
+    def __init__(self, name: str, a: float, b: float, c: float, *args, **kwargs):
+        super().__init__(name, *args, **kwargs)
         self.a = a  #: :math:`A` in Cauchy formula.
         self.b = b  #: :math:`B` in Cauchy formula.
         self.c = c  #: :math:`C` in Cauchy formula.
-
-    def n(self, wl: Numeric) -> Numeric:
-        wl = self._make_wl(wl)
-        iw2 = 1 / cast(Numeric, wl ** 2)
-        n = (self.c * iw2 + self.b) * iw2 + self.a
-        return n
 
     def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
         d = super().to_dict(keep_tensor)
@@ -215,6 +305,11 @@ class Cauchy(Material):
         d['b'] = self.b
         d['c'] = self.c
         return d
+
+    def _dispersion_formula(self, wl: Numeric) -> Numeric:
+        iw2 = 1 / cast(Numeric, wl ** 2)
+        n = _t.polynomial(iw2, (self.a, self.b, self.c))
+        return n
 
     def _repr(self) -> str:
         return super()._repr() + f', A={utils.fmt(self.a)}, B={utils.fmt(self.b)}, C={utils.fmt(self.c)}'
@@ -233,11 +328,8 @@ class Schott(Material):
     """
     __slots__ = ('coefficients',)
 
-    def __init__(
-        self, name: str, coefficients: list[float],
-        min_wl: float = None, max_wl: float = None, default_unit: str = 'um'
-    ):
-        super().__init__(name, min_wl, max_wl, default_unit)
+    def __init__(self, name: str, coefficients: list[float], *args, **kwargs):
+        super().__init__(name, *args, **kwargs)
 
         if len(coefficients) != 6:
             raise ValueError(f'Number of coefficients in Schott formula must be 6.')
@@ -248,8 +340,12 @@ class Schott(Material):
             return self.coefficients[int(name[1]) - 1]
         return super().__getattribute__(name)
 
-    def n(self, wl: Numeric) -> Numeric:
-        wl = self._make_wl(wl)
+    def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
+        d = super().to_dict(keep_tensor)
+        d['coefficients'] = self.coefficients
+        return d
+
+    def _dispersion_formula(self, wl: Numeric) -> Numeric:
         wl2 = wl * wl
         iw2 = 1 / wl2
         iw4 = iw2 * iw2
@@ -257,11 +353,6 @@ class Schott(Material):
         n2 = a[0] + a[1] * wl2 + a[2] * iw2 + a[3] * iw4 + a[4] * (iw4 * iw2) + a[5] * (iw4 * iw4)
         n = n2 ** 0.5
         return n
-
-    def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
-        d = super().to_dict(keep_tensor)
-        d['coefficients'] = self.coefficients
-        return d
 
     def _repr(self) -> str:
         return f'{super()._repr()}, coefficients={_format_flist(self.coefficients)}'
@@ -271,11 +362,8 @@ class _Sellmeier(Material):
     __slots__ = ('ks', 'ls')
     _n_terms: int
 
-    def __init__(
-        self, name: str, ks: list[float], ls: list[float],
-        min_wl: float = None, max_wl: float = None, default_unit: str = 'um'
-    ):
-        super().__init__(name, min_wl, max_wl, default_unit)
+    def __init__(self, name: str, ks: list[float], ls: list[float], *args, **kwargs):
+        super().__init__(name, *args, **kwargs)
 
         if len(ks) != self._n_terms or len(ls) != self._n_terms:
             raise ValueError(f'Numbers of K and L coefficients should be {self._n_terms}.')
@@ -296,18 +384,17 @@ class _Sellmeier(Material):
         else:
             super().__setattr__(key, value)
 
-    def n(self, wl: Numeric) -> Numeric:
-        wl = self._make_wl(wl)
-        w2 = cast(Numeric, wl ** 2)
-        n2 = 1 + sum([kc * w2 / (w2 - lc) for kc, lc in zip(self.ks, self.ls)])
-        n = n2 ** 0.5
-        return n
-
     def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
         d = super().to_dict(keep_tensor)
         d['ks'] = self.ks
         d['ls'] = self.ls
         return d
+
+    def _dispersion_formula(self, wl: Numeric) -> Numeric:
+        w2 = cast(Numeric, wl ** 2)
+        n2 = 1 + sum([kc * w2 / (w2 - lc) for kc, lc in zip(self.ks, self.ls)])
+        n = n2 ** 0.5
+        return n
 
     def _repr(self) -> str:
         return f'{super()._repr()}, K={_format_flist(self.ks)}, L={_format_flist(self.ls)}'
@@ -351,23 +438,13 @@ class Sellmeier2(Material):
     """
     __slots__ = ('a_pp', 'b1', 'b2', 'swl1', 'swl2')
 
-    def __init__(
-        self, name: str, a: float, b1: float, b2: float, wl1: float, wl2: float,
-        min_wl: float = None, max_wl: float = None, default_unit: str = 'um'
-    ):
-        super().__init__(name, min_wl, max_wl, default_unit)
+    def __init__(self, name: str, a: float, b1: float, b2: float, wl1: float, wl2: float, *args, **kwargs):
+        super().__init__(name, *args, **kwargs)
         self.a_pp = a + 1  #: :math:`A+1` in Sellmeier2 formula.
         self.b1 = b1  #: :math:`B_1` in Sellmeier2 formula.
         self.b2 = b2  #: :math:`B_2` in Sellmeier2 formula.
         self.swl1 = wl1 * wl1  #: :math:`\lambda_1^2` in Sellmeier2 formula.
         self.swl2 = wl2 * wl2  #: :math:`\lambda_2^2` in Sellmeier2 formula.
-
-    def n(self, wl: Numeric) -> Numeric:
-        wl = self._make_wl(wl)
-        w2 = cast(Numeric, wl ** 2)
-        n2 = self.a_pp + self.b1 * w2 / (w2 - self.swl1) + self.b2 / (w2 - self.swl2)
-        n = n2 ** 0.5
-        return n
 
     def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
         d = super().to_dict(keep_tensor)
@@ -377,6 +454,12 @@ class Sellmeier2(Material):
         d['wl1'] = self.swl1 ** 0.5
         d['wl2'] = self.swl2 ** 0.5
         return d
+
+    def _dispersion_formula(self, wl: Numeric) -> Numeric:
+        w2 = cast(Numeric, wl ** 2)
+        n2 = self.a_pp + self.b1 * w2 / (w2 - self.swl1) + self.b2 / (w2 - self.swl2)
+        n = n2 ** 0.5
+        return n
 
     def _repr(self) -> str:
         return (f'{super()._repr()}, '
@@ -402,29 +485,25 @@ class Sellmeier4(Material):
     """
     __slots__ = ('a', 'b', 'c', 'd', 'e')
 
-    def __init__(
-        self, name: str, a: float, b: float, c: float, d: float, e: float,
-        min_wl: float = None, max_wl: float = None, default_unit: str = 'um'
-    ):
-        super().__init__(name, min_wl, max_wl, default_unit)
+    def __init__(self, name: str, a: float, b: float, c: float, d: float, e: float, *args, **kwargs):
+        super().__init__(name, *args, **kwargs)
         self.a = a  #: :math:`A` in Sellmeier4 formula.
         self.b = b  #: :math:`B` in Sellmeier4 formula.
         self.c = c  #: :math:`C` in Sellmeier4 formula.
         self.d = d  #: :math:`D` in Sellmeier4 formula.
         self.e = e  #: :math:`E` in Sellmeier4 formula.
 
-    def n(self, wl: Numeric) -> Numeric:
-        wl = self._make_wl(wl)
-        w2 = cast(Numeric, wl ** 2)
-        n2 = self.a + self.b * w2 / (w2 - self.c) + self.d * w2 / (w2 - self.e)
-        n = n2 ** 0.5
-        return n
-
     def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
         d = super().to_dict(keep_tensor)
         for k in ['a', 'b', 'c', 'd', 'e']:
             d[k] = getattr(self, k)
         return d
+
+    def _dispersion_formula(self, wl: Numeric) -> Numeric:
+        w2 = cast(Numeric, wl ** 2)
+        n2 = self.a + self.b * w2 / (w2 - self.c) + self.d * w2 / (w2 - self.e)
+        n = n2 ** 0.5
+        return n
 
     def _repr(self) -> str:
         return (f'{super()._repr()}, '
@@ -449,11 +528,8 @@ class Herzberger(Material):
     """
     __slots__ = ('coefficients',)
 
-    def __init__(
-        self, name: str, coefficients: list[float],
-        min_wl: float = None, max_wl: float = None, default_unit: str = 'um'
-    ):
-        super().__init__(name, min_wl, max_wl, default_unit)
+    def __init__(self, name: str, coefficients: list[float], *args, **kwargs):
+        super().__init__(name, *args, **kwargs)
 
         if len(coefficients) != 6:
             raise ValueError(f'Number of coefficients in Herzberger formula must be 6.')
@@ -464,18 +540,17 @@ class Herzberger(Material):
             return self.coefficients[int(name[1]) - 1]
         return super().__getattribute__(name)
 
-    def n(self, wl: Numeric) -> Numeric:
-        wl = self._make_wl(wl)
+    def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
+        d = super().to_dict(keep_tensor)
+        d['coefficients'] = self.coefficients
+        return d
+
+    def _dispersion_formula(self, wl: Numeric) -> Numeric:
         w2 = cast(Numeric, wl ** 2)
         m = 1 / (w2 - 0.028)
         _1, _2, _3, _4, _5, _6 = self.coefficients
         n = _1 + m * (_2 + m * _3) + w2 * (_4 + w2 * (_5 + w2 * _6))
         return n
-
-    def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
-        d = super().to_dict(keep_tensor)
-        d['coefficients'] = self.coefficients
-        return d
 
     def _repr(self) -> str:
         return f'{super()._repr()}, coefficients={_format_flist(self.coefficients)}'
@@ -496,19 +571,11 @@ class Conrady(Material):
     """
     __slots__ = ('n0', 'a', 'b')
 
-    def __init__(
-        self, name: str, n0: float, a: float, b: float,
-        min_wl: float = None, max_wl: float = None, default_unit: str = 'um'
-    ):
-        super().__init__(name, min_wl, max_wl, default_unit)
+    def __init__(self, name: str, n0: float, a: float, b: float, *args, **kwargs):
+        super().__init__(name, *args, **kwargs)
         self.n0 = n0  #: :math:`n_0` in Conrady formula.
         self.a = a  #: :math:`a` in Conrady formula.
         self.b = b  #: :math:`b` in Conrady formula.
-
-    def n(self, wl: Numeric) -> Numeric:
-        wl = self._make_wl(wl)
-        n = self.n0 + self.a / wl + self.b / cast(Numeric, wl ** 3.5)
-        return n
 
     def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
         d = super().to_dict(keep_tensor)
@@ -517,28 +584,48 @@ class Conrady(Material):
         d['b'] = self.b
         return d
 
+    def _dispersion_formula(self, wl: Numeric) -> Numeric:
+        n = self.n0 + self.a / wl + self.b / cast(Numeric, wl ** 3.5)
+        return n
+
     def _repr(self) -> str:
         return f'{super()._repr()}, n0={utils.fmt(self.n0)}, A={utils.fmt(self.a)}, B={utils.fmt(self.b)}'
 
 
-class Air(Material):
-    r"""
-    Air in normal temperature and pressure, whose dispersion formula is:
-
-    .. math::
-        n=1+\left(6432.8+\frac{2949810}{146\lambda^2-1}+\frac{25540}{41\lambda^2-1}\right)10^{-8}
-
-    See :class:`Material` for descriptions of parameters.
-    """
-
-    def n(self, wavelength: Numeric) -> Numeric:
-        wl = self._make_wl(wavelength)
-        n = _ref_n(wl * wl)
-        return n
-
-
 def _ref_n(wl2):
     return 1 + 6.4328e-5 + 2.94981e-2 * wl2 / (146 * wl2 - 1) + 2.5540e-4 * wl2 / (41 * wl2 - 1)
+
+
+def _air_n(wl2, t=None, p=None):  # p default to 1, t default to 15
+    n = _ref_n(wl2)
+    if not conf.temperature_affect_n and not conf.pressure_affect_n:
+        return n
+    if p is None and t is None:
+        return n
+
+    numerator = n - 1
+    if conf.pressure_affect_n and p is not None:
+        numerator = numerator * p
+    if not conf.temperature_affect_n or t is None:
+        return 1 + numerator
+    else:
+        return 1 + numerator / (1 + (t - 15) * 3.4785e-3)
+
+
+class MaterialNotFoundError(LookupError):
+    """Raised when a material is not found in the database."""
+
+    def __init__(self, name: str, *args, **kwargs):
+        super().__init__(f'Material {name} not found', *args, **kwargs)
+        self.material_name = name
+
+
+def _resolve_name(name):
+    if ':' in name:
+        qualifier, name = name.split(':')
+    else:
+        qualifier = None
+    return name, qualifier
 
 
 def get(name: str, default_none: bool = False) -> Union[Material, None]:
@@ -547,15 +634,29 @@ def get(name: str, default_none: bool = False) -> Union[Material, None]:
 
     :param str name: Name of the material.
     :param bool default_none: If true, return ``None`` when the material does not exist.
-        Otherwise, an ``ValueError`` is raised.
+        Otherwise, an error is raised.
     :return: Specified material.
     :rtype: Material
+    :raises MaterialNotFoundError: If the material does not exist and ``default_none`` is ``False``.
     """
+    name, qualifier = _resolve_name(name)
+
     m = _lib.get(name, None)
+    if m is None or len(m) == 0:
+        if default_none:
+            return None
+        raise MaterialNotFoundError(name)
+
+    if not qualifier:
+        if '' in m:
+            return m['']  # empty qualifier is default
+        m = next(iter(m.values()))  # pick an arbitrary material
+    else:
+        m = m.get(qualifier, None)
     if m is None:
         if default_none:
             return None
-        raise KeyError(f'Unknown material: {name}')
+        raise MaterialNotFoundError(f'{qualifier}:{name}')
     return m
 
 
@@ -570,7 +671,7 @@ def registered(name: str) -> bool:
     :return: If the material is registered.
     :rtype: bool
     """
-    return name in _lib
+    return get(name, True) is not None
 
 
 def search(pattern: str | re.Pattern) -> list[Material]:
@@ -583,7 +684,7 @@ def search(pattern: str | re.Pattern) -> list[Material]:
     """
     if isinstance(pattern, str):
         pattern = re.compile(pattern)
-    return [v for k, v in _lib.items() if pattern.search(k)]
+    return [v for k, v in lib() if pattern.search(k)]
 
 
 def register(material: Material, exist_ok: bool = False):
@@ -595,35 +696,30 @@ def register(material: Material, exist_ok: bool = False):
         Otherwise, overwrite the existing material. Default: ``False``.
     """
     name = material.name
-    if name in _lib and not exist_ok:
+    if registered(name) and not exist_ok:
         raise KeyError(f'Material {name} already exists.')
-    _lib[name] = material
+
+    name, qualifier = _resolve_name(name)
+    if name not in _lib:
+        _lib[name] = {}
+    if qualifier is None:
+        qualifier = ''
+    _lib[name][qualifier] = material
 
 
-def refractive_index(wavelength: Numeric, material: str) -> Numeric:
+def refractive_index(wl: Numeric, material: str, t: float = None, p: float = None) -> Numeric:
     """
     Compute refractive index for given wavelength and material.
 
-    :param wavelength: Specified wavelength.
+    :param wl: Specified wavelength.
     :type: float or Tensor
     :param str material: Specified material.
     :return: Refractive index.
     :rtype: float or Tensor
     """
     m = get(material)
-    n = m.n(wavelength)
+    n = m.n(wl, t, p)
     return n
-
-
-def is_available(name: str) -> bool:
-    """
-    Check if given material is available in material library.
-
-    :param str name: Name of the material.
-    :return: If the material is available.
-    :rtype: bool
-    """
-    return name in _lib
 
 
 def list_all() -> list[str]:
@@ -633,22 +729,51 @@ def list_all() -> list[str]:
     :return: List of the names of available materials.
     :rtype: list[str]
     """
-    return list(_lib.keys())
+    keys = []
+    for name, d in _lib.items():
+        for qualifier, m in d.items():
+            keys.append(f'{qualifier}:{name}' if qualifier else name)
+    return keys
+
+
+def lib() -> dict[str, Material]:
+    """
+    Return a snapshot of the material library.
+
+    :return: A map from qualified material name to material instance.
+    :rtype: dict[str, Material]
+    """
+    snapshot = {}
+    for name, d in _lib.items():
+        for qualifier, m in d.items():
+            snapshot[f'{qualifier}:{name}'] = m
+    return snapshot
 
 
 def remove(name: str, ignore_if_absent: bool = False):
     """
     Remove a material from material library.
 
+    .. warning::
+        If no qualifier in ``name``, all materials with the same name will be removed.
+        Specify an empty qualifier if only the material with empty qualifier should be removed.
+
     :param str name: Name of the material.
-    :param bool ignore_if_absent: If true, ignore material if it does not exist.
-        A :py:exc:`KeyError` will be raised otherwise.
-    :return: None
+    :param bool ignore_if_absent: If true, ignore material if it does not exist,
+        or raise an error if false.
+    :raises MaterialNotFoundError: If the material does not exist and ``ignore_if_absent`` is ``False``.
     """
-    if name in _lib:
+    if not registered(name):
+        if ignore_if_absent:
+            return
+        raise MaterialNotFoundError(name)
+    name, qualifier = _resolve_name(name)
+    if qualifier is None:
         del _lib[name]
-    elif not ignore_if_absent:
-        raise KeyError(f'Unknown material: {name}')
+    else:
+        del _lib[name][qualifier]
+        if len(_lib[name]) == 0:
+            del _lib[name]
 
 
 def update(name: str, material: Material):
@@ -658,11 +783,13 @@ def update(name: str, material: Material):
     :param str name: Original name of the material.
     :param Material material: The new material instance.
     """
-    if name in _lib:
-        del _lib[name]
-    if material.name in _lib:
-        raise KeyError(f'Material {material.name} already exists.')
-    register(material, exist_ok=True)
+    name, qualifier = _resolve_name(name)
+    if qualifier is None:
+        qualifier = ''
+
+    if name not in _lib:
+        _lib[name] = {}
+    _lib[name][qualifier] = material
 
 
 def dispersion_types(name_only: bool = False) -> list[type[Material]] | list[str]:
@@ -688,7 +815,7 @@ def save(file):
     :param file: The JSON file to save. Either its path (``str`` or ``pathlib.Path``)
         or a file-like object.
     """
-    materials = [m.to_dict() for m in _lib.values()]
+    materials = [m.to_dict() for m in lib().values()]
     json.dump(materials, file, separators=(',', ':'))
 
 
@@ -715,7 +842,7 @@ def load(file, exist_ok: bool = False):
 
 air: Air = Air('air')
 vacuum: Constant = Constant('vacuum', 1.)
-_lib: dict[str, Material] = {
-    'air': air,
-    'vacuum': vacuum,
+_lib: dict[str, dict[str, Material]] = {
+    'air': {'': air},
+    'vacuum': {'': vacuum},
 }

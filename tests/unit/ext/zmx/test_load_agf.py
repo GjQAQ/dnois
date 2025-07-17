@@ -13,7 +13,7 @@ class TestLoadAGF(unittest.TestCase):
     ]
 
     def test_load_agf(self):
-        load_agf('resources/SCHOTT.AGF')
+        load_agf('resources/material/agf/2024R2/SCHOTT.AGF')
 
         for material, n in self.materials:
             with self.subTest(material=material):

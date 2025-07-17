@@ -103,7 +103,7 @@ class ThinLens(Planar, CircularSurface):
     def __init__(
         self,
         fl1: Scalar,
-        material: mt.Material | str = 'vacuum',
+        material: mt.Material | str = 'air',
         aperture: Aperture | Scalar = None,
         fl2: Scalar = None,
         reflective: bool = False,
@@ -248,7 +248,7 @@ class _SphericalBase(CircularSurface, QuasiSphereMixIn, metaclass=abc.ABCMeta): 
 
     def __init__(
         self, roc: Scalar = float('inf'),
-        material: mt.Material | str = 'vacuum',
+        material: mt.Material | str = 'air',
         aperture: Aperture | Scalar = float('inf'),
         reflective: bool = False,
         intersection_config: IntersectionConfig = IntersectionConfig.default,
@@ -349,7 +349,7 @@ class _ConicBase(_SphericalBase, metaclass=abc.ABCMeta):  # docstring for Conic
     def __init__(
         self, roc: Scalar = float('inf'),
         conic: Scalar = 0,
-        material: mt.Material | str = 'vacuum',
+        material: mt.Material | str = 'air',
         aperture: Aperture | Scalar = float('inf'),
         reflective: bool = False,
         intersection_config: IntersectionConfig = IntersectionConfig.default,
@@ -434,7 +434,7 @@ class EvenAspherical(_ConicBase):
         self, roc: Scalar = float('inf'),
         conic: Scalar = 0,
         coefficients: Sequence[Scalar] = (),
-        material: mt.Material | str = 'vacuum',
+        material: mt.Material | str = 'air',
         aperture: Aperture | Scalar = float('inf'),
         reflective: bool = False,
         intersection_config: IntersectionConfig = IntersectionConfig.default,
@@ -512,7 +512,7 @@ class Zernike(Surface):
         a: Sequence[Scalar] = (),
         z: Sequence[Scalar] = (),
         norm_radius: float = None,
-        material: mt.Material | str = 'vacuum',
+        material: mt.Material | str = 'air',
         aperture: Aperture | Scalar = float('inf'),
         reflective: bool = False,
         intersection_config: IntersectionConfig = IntersectionConfig.default,
@@ -896,7 +896,7 @@ class AsphericalRadialPhase(EvenAspherical):
         coefficients: Sequence[Scalar] = (),
         phase_coef: Sequence[Scalar] = (),
         norm_radius: float = None,
-        material: mt.Material | str = 'vacuum',
+        material: mt.Material | str = 'air',
         aperture: Aperture | Scalar = float('inf'),
         reflective: bool = False,
         intersection_config: IntersectionConfig = IntersectionConfig.default,
@@ -914,6 +914,12 @@ class AsphericalRadialPhase(EvenAspherical):
         r += f',\nnorm_radius={self.norm_radius}'
         r += f',\n' + ','.join(f'b{i + 1}={utils.fmt(b.item())}' for i, b in enumerate(self.phase_coefficients))
         return r
+
+    def phase(self, x: Ts, y: Ts) -> Ts:
+        r2 = x.square() + y.square()
+        r2 = r2 / self.norm_radius ** 2
+        phase = _t.polynomial(r2, self.phase_coefficients) * r2
+        return phase
 
     def phase_grad(self, x: Ts, y: Ts) -> tuple[Ts, Ts]:
         r2 = x.square() + y.square()
@@ -942,6 +948,13 @@ class AsphericalRadialPhase(EvenAspherical):
         t_vertical = n_cross_t.cross(normal, -1)
         t_parallel, valid = _t.ssqrt(1 - t_vertical.square().sum(-1))
         new_d = t_vertical + t_parallel.unsqueeze(-1) * normal
+
+        if ray.coherent:
+            phase = self.phase(ray_local.x, ray_local.y)
+            if ray.recording_opl:
+                ray.opl = ray.opl + phase / base.k(ray.wl)
+            if ray.recording_phase:
+                ray.phase = ray.phase + phase
 
         new_d = self.ctx.l2g(new_d, True)
         ray.d = new_d
@@ -1020,7 +1033,7 @@ class Fresnel(Planar, EvenAspherical):
         self, roc: Scalar = float('inf'),
         conic: Scalar = 0,
         coefficients: Sequence[Scalar] = (),
-        material: mt.Material | str = 'vacuum',
+        material: mt.Material | str = 'air',
         aperture: Aperture | Scalar = float('inf'),
         reflective: bool = False,
         wrapping: float = 0.,
@@ -1130,7 +1143,7 @@ class Grating(Planar):
 
     def __init__(
         self,
-        material: mt.Material | str = 'vacuum',
+        material: mt.Material | str = 'air',
         aperture: Aperture | Scalar = None,
         period: Scalar = None,
         orders: int | ty.Double[int] = 5,

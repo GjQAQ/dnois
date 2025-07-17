@@ -6,23 +6,29 @@ from dnois.optics import rt
 import torch
 
 
+def global_setup():
+    logging.basicConfig(
+        format='[%(asctime)s](%(levelname)s)%(threadName)s/%(name)s:%(message)s',
+        level=logging.INFO
+    )
+    logger = logging.getLogger(__name__)
+
+    torch.set_grad_enabled(False)
+    torch.set_default_dtype(torch.double)
+    logger.info('Testing using double precision')
+
+    dnois.conf.detection_radius_eps = 1e-2
+    logger.info(f'Detection radius eps: {dnois.conf.detection_radius_eps}')
+
+    dnois.ext.zmx.load_agf('resources/material/agf/2024R2/SCHOTT.AGF')
+
+
+global_setup()
+
+
 class LensSpotTest(unittest.TestCase):
     use_analytical = True
     device = torch.device('cpu')
-
-    def setUp(self):
-        logging.basicConfig(
-            format='[%(asctime)s](%(levelname)s)%(threadName)s/%(name)s:%(message)s',
-            level=logging.INFO
-        )
-        logger = logging.getLogger(__name__)
-
-        torch.set_grad_enabled(False)
-        torch.set_default_dtype(torch.double)
-        logger.info('Testing using double precision')
-
-        dnois.conf.detection_radius_eps = 1e-2
-        logger.info(f'Detection radius eps: {dnois.conf.detection_radius_eps}')
 
     def test_refractive(self):
         self._test_case(
@@ -36,7 +42,7 @@ class LensSpotTest(unittest.TestCase):
                 ),
                 rt.Spherical(
                     -3.594420479495210E-001,
-                    material='vacuum',
+                    material='air',
                     aperture=1.245562055844115E-002,
                     intersection_config=rt.IntersectionConfig(use_analytical=self.use_analytical),
                     d=9.267049525903452E-002
@@ -54,7 +60,7 @@ class LensSpotTest(unittest.TestCase):
         self._test_case(
             rt.CoaxialSurfaceSequence([
                 rt.Conic(
-                    -1.992156741645932E+000, -1, 'vacuum', 0.125, True,
+                    -1.992156741645932E+000, -1, 'air', 0.125, True,
                     rt.IntersectionConfig(use_analytical=self.use_analytical),
                     d=-9.960783704872819E-001)
             ]),

@@ -8,9 +8,22 @@ import functools
 float_print_fmt: str = '.6g'
 #: Expansion percentage of aperture radius when determining its passing region.
 detection_radius_eps: float = 1e-5
+#: Expansion percentage of wavelength range when determining
+#: whether a wavelength is valid for a material.
+detection_wl_eps: float = 1e-5
 
 #: Default radius of apertures in meters.
 default_aperture_radius: float = 5e-3
+
+#: Whether temperature affects refractive index.
+temperature_affect_n: bool = False
+#: Whether pressure affects refractive index of air.
+#: Note that pressure does not affect common materials.
+pressure_affect_n: bool = False
+#: Default temperature of the system in degree Celsius (if meaningful).
+default_temperature: float = 20.
+#: Default pressure of the system in atm (if meaningful).
+default_pressure: float = 1.
 
 _config_items = [k for k in globals().keys() if not k.startswith('_')]
 
