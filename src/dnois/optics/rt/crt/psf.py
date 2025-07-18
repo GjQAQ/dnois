@@ -121,7 +121,7 @@ class ChiefRayPsfCenter(WaveDependentPsfCenter):
 
     def center_mult_wl(self, optics: CoaxialRayTracing, origins: ty.Ts, out_ray: BatchedRay, wl: ty.Ts):
         chief = optics.chief_ray(origins, wl, 'obj')  # ... x N_wl
-        out_chief = optics.trace_ray(chief)
+        out_chief = optics.surfaces.trace_out(chief, aperture=False)
         center = out_chief.o[..., None, :2]  # ... x N_wl x 1 x 2
         return center
 
@@ -374,7 +374,7 @@ class CoherentFraunhoferPsf(CrtPsfModel):
         """This method is subject to change."""
         chief_ray, ray, rs_roc, exit_pupil_distance = optics._trace_opl_with_chief(origins, wl, samples, 'rect')
 
-        ref_idx = optics.surfaces.mt_tail.n(ray.wl)
+        ref_idx = optics.surfaces.mt_tail.n_abs(ray.wl)
         opd = chief_ray.march(-rs_roc, ref_idx).opl - ray.opl  # ... x N_wl x N_spp
         opd[~ray.valid] = float('nan')
         phase = opd * base.k(wl.unsqueeze(-1))

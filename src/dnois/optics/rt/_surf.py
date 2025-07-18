@@ -477,7 +477,9 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
     :param material: Material following the surface. Either a :py:class:`~dnois.mt.Material`
         instance or a str representing the name of a registered material.
     :type material: :py:class:`~dnois.mt.Material` or str
-    :param Aperture aperture: :class:`Aperture` of this surface.
+    :param Aperture aperture: :class:`Aperture` of this surface. If a float, the aperture
+        will be a :class:`CircularAperture` whose radius is the given value.
+        Default: see :class:`CircularAperture`.
     :param dict intersection_config: Configuration for Newton's method.
         See :class:`IntersectionConfig` for details.
     :param d: Distance to the next surface in :class:`CoaxialSurfaceSequence`.
@@ -556,18 +558,20 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
     def extra_repr(self) -> str:
         return f'material={self.material.name}, reflective={self.reflective}'
 
-    def forward(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
+    def forward(self, ray: BatchedRay, forward: bool = True, aperture: bool = True) -> BatchedRay:
         """
         Returns the refracted rays of a group of incident rays ``ray``.
 
         :param BatchedRay ray: Incident rays.
         :param bool forward: Whether the incident rays originate from object space
             and propagate towards image space. Default: ``True``.
+        :param bool aperture: Whether to block out rays that are outside the aperture.
+            Default: ``True``.
         :return: Refracted rays with origin on this surface.
             A new :py:class:`~BatchedRay` object.
         :rtype: BatchedRay
         """
-        ray = self.intercept(ray, forward)
+        ray = self.intercept(ray, forward, aperture)
         ray = self.variable_hook('forward.intercepted', ray)
         if self.reflective:
             ray = self.reflect(ray)
@@ -576,7 +580,7 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
         ray = self.variable_hook('forward.interacted', ray)
         return ray
 
-    def intercept(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
+    def intercept(self, ray: BatchedRay, forward: bool = True, aperture: bool = True) -> BatchedRay:
         """
         Returns a new :py:class:`~BatchedRay` whose directions are identical to those
         of ``ray`` and origins are the intersections of ``ray`` and this surface.
@@ -588,6 +592,8 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
         :param BatchedRay ray: Incident rays.
         :param bool forward: Whether the incident rays originate from object space
             and propagate towards image space. Default: ``True``.
+        :param bool aperture: Whether to block out rays that are outside the aperture.
+            Default: ``True``.
         :return: Intercepted rays.
         :rtype: BatchedRay
         """
@@ -603,7 +609,9 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
         ray = ray.march(t, self.context.material_before.n_abs(ray.wl))
 
         ray_in_local = self.context.g2l_ray(ray)
-        mask = self.aperture.pass_ray(ray_in_local) & (self._f(ray_in_local).abs() < tol)
+        mask = self._f(ray_in_local).abs() < tol
+        if aperture:
+            mask = mask & self.aperture.pass_ray(ray_in_local)
         if non_negative is not None:
             mask = mask & non_negative
         ray.update_valid_(mask)
@@ -885,9 +893,11 @@ class Stop(Planar):
         super().__init__('air', aperture, False, d=d)  # material is ignored
         self._move_ray = move_ray
 
-    def intercept(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
+    def intercept(self, ray: BatchedRay, forward: bool = True, aperture: bool = True) -> BatchedRay:
         if self._move_ray:
-            return super().intercept(ray)
+            return super().intercept(ray, forward, aperture)
+        if not aperture:
+            return ray
 
         ray_in_local = self._global2local_check(ray, forward)
         t = self._solve_t(ray_in_local)
@@ -927,10 +937,6 @@ class CircularSurface(Surface, metaclass=abc.ABCMeta):
     :class:`CircularAperture`.
 
     See :class:`Surface` for description of parameters.
-
-    :param aperture: Aperture of this surface. If a float, the aperture will be a
-        :class:`CircularAperture` whose diameter is the given value. Default: infinity.
-    :type aperture: Aperture or float
     """
 
     def __init__(
@@ -1011,15 +1017,7 @@ class CircularStop(Stop, CircularSurface):
     Stops whose aperture is circularly symmetric.
 
     See :class:`Stop` for description of more parameters.
-
-    :param aperture: Diameter of the aperture. Default: infinity.
-    :type aperture: float or 0D Tensor
     """
-
-    def __init__(self, aperture: Scalar = float('inf'), *, d: Scalar = None):
-        if isinstance(aperture, float):
-            aperture = CircularAperture(aperture)
-        super().__init__(aperture, d=d)
 
     def h_derivative_r2(self, r2: Ts) -> Ts:
         return torch.zeros_like(r2)
@@ -1230,19 +1228,21 @@ class SurfaceSequence(
             self._slist.insert(int(name), module)
         super().add_module(name, module)
 
-    def trace(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
+    def trace(self, ray: BatchedRay, forward: bool = True, aperture: bool = True) -> BatchedRay:
         """
         Traces rays incident on the first surface and returns rays
         passing the last surface, or reversely if ``forward`` is ``False``.
 
         :param BatchedRay ray: Input rays.
         :param bool forward: Whether rays are forward or not.
+        :param bool aperture: Whether to block out rays that are outside apertures.
+            Default: ``True``.
         :return: Output rays.
         :rtype: BatchedRay
         """
         for i, s in enumerate(self._slist if forward else reversed(self._slist)):
             try:
-                ray = s(ray, forward)
+                ray = s(ray, forward, aperture)
                 ray = self.variable_hook(f'forward.out_ray[{i}]', ray)
             except Exception as e:
                 idx = self.index(s)
@@ -1250,9 +1250,9 @@ class SurfaceSequence(
                 raise e
         return ray
 
-    def forward(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
+    def forward(self, ray: BatchedRay, forward: bool = True, aperture: bool = True) -> BatchedRay:
         """Identical to :meth:`.trace`."""
-        ray_out = self.trace(ray, forward)
+        ray_out = self.trace(ray, forward, aperture)
         return ray_out
 
     def to_dict(self, keep_tensor=True) -> dict[str, Any]:
@@ -1424,14 +1424,14 @@ class SurfaceSequence(
 class CoaxialSurfaceSequence(SurfaceSequence):
     """A subclass of :class:`SurfaceSequence` to contain coaxial surfaces."""
 
-    def trace_out(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
+    def trace_out(self, ray: BatchedRay, forward: bool = True, aperture: bool = True) -> BatchedRay:
         """
         Similar to :meth:`.trace`, but stops at the image plane rather than
         after passing the last surface if ``forward`` is ``True``.
         """
-        out_ray: BatchedRay = self(ray, forward)
+        out_ray: BatchedRay = self(ray, forward, aperture)
         if forward:
-            ref_idx = self.last.material.n(out_ray.wl)
+            ref_idx = self.last.material.n_abs(out_ray.wl)
             out_ray = out_ray.march_to(self.total_length, ref_idx)
         return out_ray
 

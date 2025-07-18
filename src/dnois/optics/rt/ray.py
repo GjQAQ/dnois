@@ -265,7 +265,7 @@ class BatchedRay(_t.TensorContainerMixIn):
 
         :param Tensor t: Propagation distance. A tensor whose shape must be broadcastable
             with the shape of rays.
-        :param n: Refractive index of the medium in where the rays propagate.
+        :param n: Absolute refractive index of the medium in where the rays propagate.
             A float or a tensor with shape of rays. Default: 1.
         :type n: float or Tensor
         :return: self
@@ -295,7 +295,7 @@ class BatchedRay(_t.TensorContainerMixIn):
 
         :param Tensor z: Target value of z coordinate.
             A tensor whose shape must be broadcastable with the shape of rays.
-        :param n: Refractive index of the medium in where the rays propagate.
+        :param n: Absolute refractive index of the medium in where the rays propagate.
             A float or a tensor with shape of rays. Default: 1.
         :type n: float or Tensor
         :return: self

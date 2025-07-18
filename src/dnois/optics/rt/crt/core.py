@@ -372,7 +372,7 @@ class CoaxialRayTracing(
         xy_on_sensor[..., 0] = -xy_on_sensor[..., 0]
         return xy_on_sensor
 
-    def trace_ray(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
+    def trace_ray(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:  # deprecated
         out_ray = self.surfaces.trace_out(ray, forward)
         return out_ray
 
@@ -686,7 +686,7 @@ class CoaxialRayTracing(
         chief_ray, ray, rs_roc, exit_pupil_distance = self._trace_opl_with_chief(
             origin, wl, coherent_tracing_samples, coherent_tracing_sampling_pattern
         )
-        ref_idx = self.surfaces.mt_tail.n(ray.wl)
+        ref_idx = self.surfaces.mt_tail.n_abs(ray.wl)
         opd = chief_ray.march(-rs_roc, ref_idx).opl - ray.opl  # ... x N_wl x N_spp
         opd[~ray.valid] = float('nan')
         return ray, opd / wl.unsqueeze(-1)  # ... x N_wl x N_spp
@@ -896,28 +896,6 @@ class CoaxialRayTracing(
             ray = BatchedRay(o, d, wl.reshape(1, -1, 1))  # N x N_wl x N_spp
         draw_rays(ax, self.surfaces, ray, self.depth.isinf().item(), height, wl, legend)
         return fig
-
-    @ext.vis.visfunc
-    @utils.with_external
-    def plot_layout_3d(
-        self,
-        points: Ts = None,
-        wl: ty.Vector = None,
-        sampler: surf.Sampler = None,
-    ) -> 'Figure':
-        if points is None:
-            fov = self.reference.fov_half
-            fov = base.Angle.as_default(fov, 'rad')
-            points = self.fovd2obj([(0, 0), (0, fov * 0.5 ** 0.5), (0, fov)], float('inf'))
-
-        raise NotImplementedError()
-
-    @ext.vis.visfunc
-    def plot_psf_map(
-        self: 'CoaxialRayTracing',
-        depth: float = float('inf'),
-    ) -> 'Figure':
-        pass
 
     @property
     def psf_size(self):
@@ -1152,7 +1130,7 @@ class CoaxialRayTracing(
         dp = torch.sum(shift * ray.d, dim=-1)  # dot product
         _1, mask = _t.ssqrt(dp.square() - shift.square().sum(-1) + rs_roc.square())
         length2rs = dp - _1
-        ref_idx = self.surfaces.mt_tail.n(ray.wl)
+        ref_idx = self.surfaces.mt_tail.n_abs(ray.wl)
         ray = ray.update_valid(mask)
         ray.march_(length2rs, ref_idx)
         return chief_ray, ray, rs_roc, exit_pupil_distance  # ... x N_wl x N_spp
@@ -1162,7 +1140,7 @@ class CoaxialRayTracing(
             return None
         elif rectification == 'chief':
             chief = self.chief_ray(origins, wl, 'obj')  # (B, H*W, N_wl)
-            out_chief = self.trace_ray(chief)  # (B, H*W, N_wl)
+            out_chief = self.surfaces.trace_out(chief, aperture=False)  # (B, H*W, N_wl)
             xy_chief = out_chief.o[..., None, :2]  # (B, H*W, N_wl, 1, 2)
             xy_chief = xy_chief.transpose(1, 2)  # (B, N_wl, H*W, 1, 2)
             y, x = utils.grid(

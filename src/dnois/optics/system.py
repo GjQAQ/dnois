@@ -607,6 +607,15 @@ class RenderImageSceneMixIn(PerspectiveMixIn, metaclass=abc.ABCMeta):
         return depth_map  # B|1 x H x W
 
 
+def _random_fov(lower: float, upper: float = None):
+    if upper is None:
+        lower, upper = -lower, lower
+    lower, upper = math.tan(lower), math.tan(upper)
+    value = random.uniform(lower, upper)
+    value = math.atan(value)
+    return value
+
+
 class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn):
     """
     Base class for optical systems that renders images through PSFs.
@@ -947,7 +956,7 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
             fov = (0., 0.)
         if isinstance(fov, str) and fov == 'random':
             rm = self.reference
-            fov = (random.uniform(-rm.fov_half_x, rm.fov_half_x), random.uniform(-rm.fov_half_y, rm.fov_half_y))
+            fov = (_random_fov(rm.fov_half_x), _random_fov(rm.fov_half_y))
             fov = self.variable_hook('conv_render.fov', fov)
         elif callable(fov):
             fov = cast(Callable, fov)()
