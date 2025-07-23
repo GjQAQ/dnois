@@ -4,7 +4,7 @@ import torch
 
 from .. import base, utils
 from ..base import typing
-from ..base.typing import Numeric, Ts, overload
+from ..base.typing import Numeric, overload
 
 __all__ = [
     'circle_of_confusion',
@@ -13,7 +13,6 @@ __all__ = [
     'fresnel_pt',
     'fresnel_pr',
     'imgd',
-    'norm_psf',
     'objd',
 ]
 
@@ -223,25 +222,6 @@ def imgd(obj_d: Numeric, fl_obj: Numeric, fl_img: Numeric = None, diopter: Numer
     else:
         n_obj, n_img = fl_obj, fl_img
         return objd(obj_d, n_img, n_obj, diopter)
-
-
-def norm_psf(psf: Ts, dims: tuple[int, int] = (-2, -1)) -> Ts:
-    r"""
-    Normalizes PSF so that all its pixels sum up to 1.
-
-    :param Tensor psf: PSF to normalize. It cannot be complex of have negative elements.
-    :param dims: Indices of spatial dimensions of ``psf``. Default: ``(-2, -1)``.
-    :type dims: tuple[int, int]
-    :return: Normalized PSF.
-    :rtype: Tensor
-    """
-    if torch.is_complex(psf):
-        raise ValueError(f'Complex PSF cannot be normalized')
-    if psf.lt(0).any():
-        raise ValueError(f'PSF with negative values cannot be normalized')
-    den = psf.sum(dims, True)
-    psf = torch.where(den.ne(0), psf / den, 0)
-    return psf
 
 
 def snell(incident_angle: Numeric, n1: Numeric, n2: Numeric) -> Numeric:

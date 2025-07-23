@@ -13,7 +13,6 @@ This module maintains a material library to add, delete or retrieve materials.
 See :ref:`accessing_materials`.
 """
 
-import abc
 import json
 from pathlib import Path
 import re
@@ -40,6 +39,7 @@ __all__ = [
     'Cauchy',
     'Conrady',
     'Constant',
+    'ConstantRelative',
     'Herzberger',
     'Material',
     'Schott',
@@ -58,7 +58,7 @@ def _format_flist(flist: list[float]) -> str:
 
 
 # TODO: replace deep copy of registered materials with shallow copy
-class Material(base.AsJsonMixIn, metaclass=abc.ABCMeta):
+class Material(base.AsJsonMixIn):
     """
     Class representing an optical material type.
 
@@ -131,7 +131,7 @@ class Material(base.AsJsonMixIn, metaclass=abc.ABCMeta):
 
     def n_rel(self, wl: Numeric, t: float = None, p: float = None) -> Numeric:
         """
-        Computes refractive index relative to :class:`Air`.
+        Computes refractive index relative to :data:`air`.
 
         See :meth:`.n` for description of parameters.
         """
@@ -156,9 +156,8 @@ class Material(base.AsJsonMixIn, metaclass=abc.ABCMeta):
         n_abs, _ = self._n_impl(wl, p, t)
         return n_abs
 
-    @abc.abstractmethod
     def _dispersion_formula(self, wl: Numeric) -> Numeric:
-        pass
+        raise NotImplementedError()
 
     def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
         return {
@@ -239,6 +238,16 @@ class Constant(Material):
         super().__init__(name, *args, **kwargs)
         self.refractive_index: float = n  #: Refractive index.
 
+    def n_abs(self, wl: Numeric, t: float = None, p: float = None) -> Numeric:
+        n = self.refractive_index
+        return torch.full_like(wl, n) if torch.is_tensor(wl) else n
+
+    def n_rel(self, wl: Numeric, t: float = None, p: float = None) -> Numeric:
+        wl = self._make_wl(wl)
+        air_n = _air_n(wl * wl, t, p)
+        n_abs = self.n_abs(wl, t, p)
+        return n_abs / air_n
+
     def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
         d = super().to_dict(keep_tensor)
         d['n'] = self.refractive_index
@@ -247,23 +256,25 @@ class Constant(Material):
     def _repr(self) -> str:
         return super()._repr() + f', n={utils.fmt(self.refractive_index)}'
 
-    def _dispersion_formula(self, wl: Numeric) -> Numeric:
-        n = self.refractive_index
-        return torch.full_like(wl, n) if torch.is_tensor(wl) else n
 
-
-class Air(Material):
+class ConstantRelative(Material):
     r"""
-    Air in normal temperature and pressure, whose dispersion formula is:
-
-    .. math::
-        n=1+\left(6432.8+\frac{2949810}{146\lambda^2-1}+\frac{25540}{41\lambda^2-1}\right)10^{-8}
+    Material with constant refractive index relative to air.
 
     See :class:`Material` for descriptions of parameters.
+
+    :param float n_relative: Relative refractive index. Default: 1.
     """
 
+    def __init__(self, name: str, n_relative: float = None, *args, **kwargs):
+        super().__init__(name, *args, **kwargs)
+        self.n_relative: float = n_relative  #: Relative refractive index.
+
     def n_rel(self, wl: Numeric, t: float = None, p: float = None) -> Numeric:
-        return torch.ones_like(wl) if torch.is_tensor(wl) else 1.
+        n_rel = self.n_relative
+        if n_rel is None:
+            n_rel = 1.
+        return torch.full_like(wl, n_rel) if torch.is_tensor(wl) else n_rel
 
     def n_abs(self, wl: Numeric, t: float = None, p: float = None) -> Numeric:
         if t is None:
@@ -272,10 +283,10 @@ class Air(Material):
             p = conf.default_pressure
 
         wl = self._make_wl(wl)
-        return _air_n(wl * wl, t, p)
-
-    def _dispersion_formula(self, wavelength: Numeric) -> Numeric:
-        return torch.ones_like(wavelength) if torch.is_tensor(wavelength) else 1
+        n = _air_n(wl * wl, t, p)
+        if self.n_relative is not None:
+            n = n * self.n_relative
+        return n
 
 
 class Cauchy(Material):
@@ -548,8 +559,7 @@ class Herzberger(Material):
     def _dispersion_formula(self, wl: Numeric) -> Numeric:
         w2 = cast(Numeric, wl ** 2)
         m = 1 / (w2 - 0.028)
-        _1, _2, _3, _4, _5, _6 = self.coefficients
-        n = _1 + m * (_2 + m * _3) + w2 * (_4 + w2 * (_5 + w2 * _6))
+        n = _t.polynomial(m, self.coefficients[:3]) + w2 * _t.polynomial(w2, (self.coefficients[3:]))
         return n
 
     def _repr(self) -> str:
@@ -596,7 +606,7 @@ def _ref_n(wl2):
     return 1 + 6.4328e-5 + 2.94981e-2 * wl2 / (146 * wl2 - 1) + 2.5540e-4 * wl2 / (41 * wl2 - 1)
 
 
-def _air_n(wl2, t=None, p=None):  # p default to 1, t default to 15
+def _air_n(wl2, t=None, p=None):
     n = _ref_n(wl2)
     if not conf.temperature_affect_n and not conf.pressure_affect_n:
         return n
@@ -840,7 +850,7 @@ def load(file, exist_ok: bool = False):
         register(Material.from_dict(m), exist_ok=exist_ok)
 
 
-air: Air = Air('air')
+air: ConstantRelative = ConstantRelative('air')
 vacuum: Constant = Constant('vacuum', 1.)
 _lib: dict[str, dict[str, Material]] = {
     'air': {'': air},

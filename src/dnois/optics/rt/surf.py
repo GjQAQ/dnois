@@ -75,8 +75,16 @@ class QuasiSphereMixIn(Surface, metaclass=abc.ABCMeta):
 
     def paraxialize(self, wl: ty.Numeric) -> paraxial.ParaxialSystem:
         z = self.context.baseline if isinstance(self.context, CoaxialContext) else None
-        n1, n2 = self.context.material_before.n(wl), self.material.n(wl)
-        return paraxial.ParaxialSystem.from_interface(1 / self.px_curvature, n1, n2, z)
+        roc = 1 / self.px_curvature
+        if self.reflective:
+            ps = paraxial.ParaxialSystem.from_reflective_interface(roc, z)
+        else:
+            n1, n2 = self.context.material_before.n(wl), self.material.n(wl)
+            ps = paraxial.ParaxialSystem.from_refractive_interface(roc, n1, n2, z)
+
+        if not self.context.upward_in:
+            ps = ps.flip()
+        return ps
 
 
 class ThinLens(Planar, CircularSurface):
@@ -225,7 +233,10 @@ class ThinLens(Planar, CircularSurface):
 
     def paraxialize(self, wl: ty.Numeric) -> paraxial.ParaxialSystem:
         z = self.context.baseline if isinstance(self.context, CoaxialContext) else None
-        return paraxial.FiniteParaxialSystem(z, z, fl1=self.fl1, fl2=self.fl2)
+        ps = paraxial.FiniteParaxialSystem(z, z, fl1=self.fl1, fl2=self.fl2)
+        if not self.context.upward_in:
+            ps = ps.flip()
+        return ps
 
 
 class _SphericalBase(CircularSurface, QuasiSphereMixIn, metaclass=abc.ABCMeta):  # docstring for Spherical

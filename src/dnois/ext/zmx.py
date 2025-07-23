@@ -210,7 +210,7 @@ _dispersion_list = [
     mt.Sellmeier1,
     mt.Herzberger,
     None,
-    None,
+    mt.Conrady,
     mt.Sellmeier3,
     None,
     None,
@@ -255,6 +255,8 @@ def _construct_material(fields: list[str], qualifier: str) -> mt.Material:
         obj = cls(name, c[:6:2], c[1:6:2], *common_args)  # noqa
     elif cls == mt.Herzberger:
         obj = cls(name, c[:6], *common_args)
+    elif cls == mt.Conrady:
+        obj = cls(name, *c[:3], *common_args)
     elif cls == mt.Sellmeier3:
         obj = cls(name, c[:8:2], c[1:8:2], *common_args)  # noqa
     elif cls == mt.Sellmeier4:

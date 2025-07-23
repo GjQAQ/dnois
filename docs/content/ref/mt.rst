@@ -16,10 +16,10 @@ Materials
 .. autosummary::
     :toctree: ../generated/mt
 
-    Air
     Cauchy
     Conrady
     Constant
+    ConstantRelative
     Herzberger
     Schott
     Sellmeier1

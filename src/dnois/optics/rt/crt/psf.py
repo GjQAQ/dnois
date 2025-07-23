@@ -173,16 +173,11 @@ class RobustMeanPsfCenter(MeanPsfCenter):
 class CenterRequiredPsfModel(CrtPsfModel, metaclass=abc.ABCMeta):
     psf_center: utils.Exparam
 
-    def __init__(
-        self,
-        psf_size: ty.Size2d = 64,
-        norm_psf: bool = True,
-        psf_center: PsfCenter | PsfCenterDeterm = 'linear',
-    ):
+    def __init__(self, psf_size: ty.Size2d = 64, psf_center: PsfCenter | PsfCenterDeterm = 'linear'):
         if not isinstance(psf_center, PsfCenterDeterm):
             psf_center = PsfCenterDeterm.create(psf_center)  # no parameter assumed
 
-        super().__init__(psf_size, norm_psf)
+        super().__init__(psf_size)
         self.psf_center = psf_center
 
     # normalizer of external parameters

@@ -5,7 +5,7 @@ import warnings
 
 import torch
 
-from . import formation, _func
+from . import formation, _func, psf_util
 from .. import base, utils, depth as _d, scene as _sc, torch as _t
 from ..base import ShapeError, typing
 from ..base.typing import (
@@ -15,6 +15,7 @@ from ..base.typing import (
 from ..sensor import Sensor
 
 __all__ = [
+    'GeneralPsfRecenterType',
     'IdealOptics',
     'ImagingOptics',
     'PinholeOptics',
@@ -24,6 +25,7 @@ __all__ = [
 
 SegLit = typing.Literal['uniform', 'pointwise']
 Seg = SegLit | Double[int]
+GeneralPsfRecenterType = bool | int | psf_util.PsfRecenterType
 
 DEFAULT_WL = base.fline('d', 'He', unit='m')
 
@@ -668,6 +670,7 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
     depth: utils.Exparam
     psf_size: utils.Exparam
     norm_psf: utils.Exparam
+    psf_recenter: utils.Exparam
     cropping: utils.Exparam
     x_symmetric: utils.Exparam
     y_symmetric: utils.Exparam
@@ -681,6 +684,7 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         depth: Vector = float('inf'),
         psf_size: Size2d = 64,
         norm_psf: bool = True,
+        psf_recenter: GeneralPsfRecenterType = False,
         cropping: Size2d = 0,
         x_symmetric: bool = False,
         y_symmetric: bool = False,
@@ -688,6 +692,9 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         super().__init__(sensor)
         if wl is None:
             wl = base.Length.as_default(DEFAULT_WL, 'm')  # self.wl is assumed to never be None
+
+        self.register_buffer('depth', None)
+        self.register_buffer('wl', None)
 
         self.perspective_focal_length: float | None = perspective_focal_length
         self.wl = wl  # property setter
@@ -698,6 +705,7 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         #: See :class:`PsfImagingOptics`.
         self.psf_size: Double[int] = size2d(psf_size)
         self.norm_psf: bool = norm_psf  #: Whether to normalize PSFs to have unit total energy.
+        self.psf_recenter: psf_util.PsfRecenter = cast(psf_util.PsfRecenter, psf_recenter)
         self.cropping: Double[int] = size2d(cropping)  #: See :class:`PsfImagingOptics`.
         self.x_symmetric: bool = x_symmetric  #: See :class:`PsfImagingOptics`.
         self.y_symmetric: bool = y_symmetric  #: See :class:`PsfImagingOptics`.
@@ -709,6 +717,7 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         psf_size: Size2d = None,
         wl: Vector = None,
         norm_psf: bool = None,
+        psf_recenter: GeneralPsfRecenterType = None,
         **kwargs
     ) -> Ts:
         r"""
@@ -733,6 +742,9 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         :type wl: float, Sequence[float] or Tensor
         :param bool norm_psf: Whether to normalize PSF to have unit total energy.
             Default: :attr:`.norm_psf`.
+        :param psf_recenter:
+            Default: :attr:`.psf_recenter`.
+        :type psf_recenter: bool or int or str
         :return: PSF conditioned on ``origins``. A tensor with shape ``(..., N_wl, H, W)``.
         :rtype: Tensor
         """
@@ -768,15 +780,7 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         raise NotImplementedError()
 
     @utils.with_external
-    def pointwise_render(
-        self,
-        scene: _sc.ImageScene,
-        wl: Vector = None,
-        depth: Vector = None,
-        psf_size: Size2d = None,
-        norm_psf: bool = None,
-        **kwargs,
-    ) -> Ts:
+    def pointwise_render(self, scene: _sc.ImageScene, wl: Vector = None, depth: Vector = None, **kwargs) -> Ts:
         r"""
         Renders :ref:`imaged radiance field <guide_overview_irf>` in a point-wise manner,
         i.e. PSFs of all the pixels are computed and superposed.
@@ -785,8 +789,6 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         :type scene: :class:`~dnois.scene.Scene`
         :param wl: See :class:`PsfImagingOptics`. Default: :attr:`.wl`.
         :param depth: See :class:`PsfImagingOptics`. Default: :attr:`.depth`.
-        :param psf_size: See :class:`PsfImagingOptics`. Default: :attr:`.psf_size`.
-        :param bool norm_psf: See :class:`PsfImagingOptics`. Default: :attr:`.norm_psf`.
         :param kwargs: Additional keyword arguments passed to :meth:`.psf`.
         :return: Computed :ref:`imaged radiance field <guide_overview_irf>`.
             A tensor of shape :math:`(B, N_\lambda, H, W)`.
@@ -803,7 +805,7 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         if not scene.depth_aware:
             obj_points = _symmetric_patch(obj_points, self.x_symmetric, self.y_symmetric)
 
-        psf = self.psf(obj_points, psf_size, wl, norm_psf, **kwargs)  # B|1 x H x W x N_wl x H_P x W_P
+        psf = self.psf(obj_points, wl=wl, **kwargs)  # B|1 x H x W x N_wl x H_P x W_P
         if not scene.depth_aware:
             psf = _stitch_symmetric(psf, n_h, n_w, self.x_symmetric, self.y_symmetric)
         psf = psf.permute(0, 3, 1, 2, 4, 5)  # B|1 x N_wl x H x W x H_P x W_P
@@ -822,8 +824,6 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         segments: Size2d = None,
         wl: Vector = None,
         depth: Vector = None,
-        psf_size: Size2d = None,
-        norm_psf: bool = None,
         point_by_point: bool = False,
         **kwargs
     ) -> Ts:
@@ -843,8 +843,6 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         :param segments: See :class:`PsfImagingOptics`. Default: :attr:`.segments`.
         :param wl: See :class:`PsfImagingOptics`. Default: :attr:`.wl`.
         :param depth: See :class:`PsfImagingOptics`. Default: :attr:`.depth`.
-        :param psf_size: See :class:`PsfImagingOptics`. Default: :attr:`.psf_size`.
-        :param bool norm_psf: See :class:`PsfImagingOptics`. Default: :attr:`.norm_psf`.
         :param bool point_by_point: This method may take up huge amount of memory when
             ``segments`` is large. If ``point_by_point`` is ``True``, the method will
             compute PSFs of all patches one-by-one to ensure feasibility at the cost
@@ -880,12 +878,12 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
                 psf = torch.stack([
                     torch.stack([
                         torch.stack([
-                            self.psf(p3, psf_size, wl, norm_psf, **kwargs) for p3 in p2.unbind()  # (3,)
+                            self.psf(p3, wl=wl, **kwargs) for p3 in p2.unbind()  # (3,)
                         ]) for p2 in p1.unbind()  # (N_x, 3)
                     ]) for p1 in obj_points.unbind()  # (N_y, N_x, 3)
                 ])  # B(1) x N_y x N_x x N_wl x H x W
             else:
-                psf = self.psf(obj_points, psf_size, wl, norm_psf, **kwargs)  # B(1) x N_y x N_x x N_wl x H x W
+                psf = self.psf(obj_points, wl=wl, **kwargs)  # B(1) x N_y x N_x x N_wl x H x W
             psf = _stitch_symmetric(psf, segments[0], segments[1], self.x_symmetric, self.y_symmetric)
         psf = self.variable_hook('patchwise_render.psf', psf)
 
@@ -902,8 +900,6 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         fov: Double[float] | Callable[[], Double[float]] | str = None,
         wl: Vector = None,
         depth: Vector = None,
-        psf_size: Size2d = None,
-        norm_psf: bool = None,
         pad: Size2d | str = 'linear',
         occlusion_aware: bool = False,
         depth_quantization_level: int = 16,
@@ -934,8 +930,6 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
             Default: ``(0., 0.)``
         :param wl: See :class:`PsfImagingOptics`. Default: :attr:`.wl`.
         :param depth: See :class:`PsfImagingOptics`. Default: :attr:`.depth`.
-        :param psf_size: See :class:`PsfImagingOptics`. Default: :attr:`.psf_size`.
-        :param bool norm_psf: See :class:`PsfImagingOptics`. Default: :attr:`.norm_psf`.
         :param pad: Padding width used to mitigate aliasing. See :func:`dnois.fourier.dconv2`
             for more details. Default: ``'linear'``.
         :type pad: int, tuple[int, int] or str
@@ -977,7 +971,7 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
             obj_points = self.fovd2obj([fov], depth)  # B(1) x 3
 
         if psf_cache is None:
-            psf = self.psf(obj_points, psf_size, wl, norm_psf, **kwargs)
+            psf = self.psf(obj_points, wl=wl, **kwargs)
         else:
             psf = psf_cache
         psf = self.variable_hook(f'conv_render.psf', psf)
@@ -1024,30 +1018,6 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
     def reference(self) -> 'PinholeOptics':
         return PinholeOptics(self._perspective_focal_length(), self._sensor())
 
-    # TODO: is it needed to be properties?
-    @property
-    def depth(self) -> Ts:
-        """
-        Depth values used when a scene has no depth information.
-        A 1D Tensor. See :class:`PsfImagingOptics`.
-
-        :type: Tensor
-        """
-        return self._b_depth
-
-    @depth.setter
-    def depth(self, value: Ts):  # already normalized in __setattr__
-        self.register_buffer('_b_depth', value)
-
-    @property
-    def wl(self) -> Ts:
-        """Wavelength for rendering. A 1D tensor.\n\n:type: Tensor"""
-        return self._b_wl
-
-    @wl.setter
-    def wl(self, value: Ts):  # already normalized in __setattr__
-        self.register_buffer('_b_wl', value)
-
     def _check_image_scene(self, scene: _sc.Scene):
         if not isinstance(scene, _sc.ImageScene):
             raise RuntimeError(f'An {_sc.ImageScene.__name__} expected, but got {type(scene).__name__}')
@@ -1066,6 +1036,7 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         return segments
 
     _normalize_psf_size = staticmethod(size2d)
+    _normalize_psf_recenter = staticmethod(utils.type_normalizer(psf_util.PsfRecenter))
 
     def _todict_depth(self, keep_tensor: bool = True):
         depth = self.depth
@@ -1145,7 +1116,7 @@ class IdealOptics(PsfImagingOptics):
         y, x = utils.grid(psf_size, self.sensor.pixel_size, device=origins.device, dtype=origins.dtype)
         r2 = x.square() + y.square()  # H x W
         psf[r2 <= radius.square()] = 1
-        psf = _func.norm_psf(psf)
+        psf = psf_util.norm_psf(psf)
         psf = psf.unsqueeze(-3)  # ... x 1 x H x W
         return psf
 

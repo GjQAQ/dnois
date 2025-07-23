@@ -558,7 +558,9 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
     def extra_repr(self) -> str:
         return f'material={self.material.name}, reflective={self.reflective}'
 
-    def forward(self, ray: BatchedRay, forward: bool = True, aperture: bool = True) -> BatchedRay:
+    def forward(
+        self, ray: BatchedRay, forward: bool = True, aperture: bool = True, intercept_only: bool = False
+    ) -> BatchedRay:
         """
         Returns the refracted rays of a group of incident rays ``ray``.
 
@@ -567,12 +569,17 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
             and propagate towards image space. Default: ``True``.
         :param bool aperture: Whether to block out rays that are outside the aperture.
             Default: ``True``.
+        :param bool intercept_only: Whether to only intercept rays, without refraction
+            or reflection. Default: ``False``.
         :return: Refracted rays with origin on this surface.
             A new :py:class:`~BatchedRay` object.
         :rtype: BatchedRay
         """
         ray = self.intercept(ray, forward, aperture)
         ray = self.variable_hook('forward.intercepted', ray)
+        if intercept_only:
+            return ray
+
         if self.reflective:
             ray = self.reflect(ray)
         else:
@@ -1228,7 +1235,14 @@ class SurfaceSequence(
             self._slist.insert(int(name), module)
         super().add_module(name, module)
 
-    def trace(self, ray: BatchedRay, forward: bool = True, aperture: bool = True) -> BatchedRay:
+    def trace(
+        self,
+        ray: BatchedRay,
+        forward: bool = True,
+        aperture: bool = True,
+        max_n: int = None,
+        last_intercept_only: bool = False
+    ) -> BatchedRay:
         """
         Traces rays incident on the first surface and returns rays
         passing the last surface, or reversely if ``forward`` is ``False``.
@@ -1237,12 +1251,21 @@ class SurfaceSequence(
         :param bool forward: Whether rays are forward or not.
         :param bool aperture: Whether to block out rays that are outside apertures.
             Default: ``True``.
+        :param int max_n: Maximum number of surfaces to trace. Default: no limit.
+        :param bool last_intercept_only: ``intercept_only`` of :meth:`Surface.forward`
+            for the last surface. Default: ``False``.
         :return: Output rays.
         :rtype: BatchedRay
         """
+        if max_n is None:
+            max_n = len(self)
         for i, s in enumerate(self._slist if forward else reversed(self._slist)):
+            if i >= max_n:
+                break
+
             try:
-                ray = s(ray, forward, aperture)
+                intercept_only = last_intercept_only and i == max_n - 1
+                ray = s(ray, forward, aperture, intercept_only)
                 ray = self.variable_hook(f'forward.out_ray[{i}]', ray)
             except Exception as e:
                 idx = self.index(s)
@@ -1250,10 +1273,9 @@ class SurfaceSequence(
                 raise e
         return ray
 
-    def forward(self, ray: BatchedRay, forward: bool = True, aperture: bool = True) -> BatchedRay:
+    def forward(self, *args, **kwargs) -> BatchedRay:
         """Identical to :meth:`.trace`."""
-        ray_out = self.trace(ray, forward, aperture)
-        return ray_out
+        return self.trace(*args, **kwargs)
 
     def to_dict(self, keep_tensor=True) -> dict[str, Any]:
         return {
@@ -1429,7 +1451,7 @@ class CoaxialSurfaceSequence(SurfaceSequence):
         Similar to :meth:`.trace`, but stops at the image plane rather than
         after passing the last surface if ``forward`` is ``True``.
         """
-        out_ray: BatchedRay = self(ray, forward, aperture)
+        out_ray: BatchedRay = self.trace(ray, forward, aperture)
         if forward:
             ref_idx = self.last.material.n_abs(out_ray.wl)
             out_ray = out_ray.march_to(self.total_length, ref_idx)

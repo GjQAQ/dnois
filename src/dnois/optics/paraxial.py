@@ -6,7 +6,7 @@ import torch
 
 from . import _func
 from .. import base, utils
-from ..base.typing import Numeric, Ts, cast
+from ..base.typing import Numeric, Ts, Self, cast
 
 __all__ = [
     'ConjugatePointFeature',
@@ -51,9 +51,6 @@ class ConjugatePointFeature:
 
 
 class ParaxialSystem(metaclass=abc.ABCMeta):
-    fl1: Numeric
-    fl2: Numeric
-
     """
     Model of paraxial (or ideal, Gaussian) optical system. Its main properties include
     the positions of two principal points. Principal points can also be left unspecified.
@@ -66,6 +63,9 @@ class ParaxialSystem(metaclass=abc.ABCMeta):
     :param principal2: Position of image principal point. Default: not specified.
     """
 
+    fl1: Numeric
+    fl2: Numeric
+
     def __init__(self, principal1: Numeric = None, principal2: Numeric = None):
         self.principal1 = principal1
         self.principal2 = principal2
@@ -74,7 +74,7 @@ class ParaxialSystem(metaclass=abc.ABCMeta):
         return f'{self.__class__.__name__}({self._repr_fields()})'
 
     @abc.abstractmethod
-    def composite(self, other: 'ParaxialSystem', delta: Numeric = None, d: Numeric = None) -> 'ParaxialSystem':
+    def composite(self, other: 'ParaxialSystem', delta: Numeric = None, d: Numeric = None) -> Self:
         """
         Composite two paraxial systems. To compute the focal lengths of resulted system,
         their distance must be determined, which can be specified by the distance between their
@@ -84,6 +84,16 @@ class ParaxialSystem(metaclass=abc.ABCMeta):
         :param ParaxialSystem other: Another paraxial system.
         :param delta: Distance between the two focal points.
         :param d: Distance between the two principal points.
+        :return: A new paraxial system.
+        :rtype: ParaxialSystem
+        """
+        pass
+
+    @abc.abstractmethod
+    def flip(self) -> Self:
+        """
+        Flip the paraxial system.
+
         :return: A new paraxial system.
         :rtype: ParaxialSystem
         """
@@ -179,9 +189,11 @@ class ParaxialSystem(metaclass=abc.ABCMeta):
         return torch.cat([lateral, z_obj], dim=-1)
 
     @classmethod
-    def from_interface(cls, roc: Numeric, n1: Numeric, n2: Numeric, location: Numeric = None) -> 'ParaxialSystem':
+    def from_refractive_interface(
+        cls, roc: Numeric, n1: Numeric, n2: Numeric, location: Numeric = None
+    ) -> Self:
         """
-        Construct a paraxial system from the interface between two media given its radius of curvature.
+        Construct a paraxial system from a refractive interface between two media given its radius of curvature.
         See :doc:`/content/guide/optics/paraxial` for the rule about the sign of radius of curvature.
 
         :param roc: Radius of curvature of the interface.
@@ -208,6 +220,19 @@ class ParaxialSystem(metaclass=abc.ABCMeta):
                 raise RuntimeError('roc must be either all infinite or all finite')
         else:
             raise TypeError(f'roc must be a float or a tensor, got {type(roc).__name__}')
+
+    @classmethod
+    def from_reflective_interface(cls, roc: Numeric, location: Numeric = None) -> Self:
+        """
+        Construct a paraxial system from a reflective interface between two media given its radius of curvature.
+        See :doc:`/content/guide/optics/paraxial` for the rule about the sign of radius of curvature.
+
+        :param roc: Radius of curvature of the interface.
+        :param location: Location of the interface which serves as the principal points. Default: not specified.
+        :return: A paraxial system.
+        :rtype: ParaxialSystem
+        """
+        return cls.from_refractive_interface(roc, 1, -1, location)
 
     def _determine_distance(self, other: 'ParaxialSystem', d: Numeric = None) -> Numeric:
         p2a, p1b = self.principal2, other.principal1
@@ -265,6 +290,9 @@ class FiniteParaxialSystem(ParaxialSystem):
             return self._composite_infinite(other, d)
         else:
             raise TypeError(f'Composition between {type(self).__name__} and {type(other).__name__} is not supported')
+
+    def flip(self) -> Self:
+        return FiniteParaxialSystem(self.principal2, self.principal1, fl1=-self.fl2, fl2=-self.fl1)
 
     @property
     def focal1(self) -> Numeric | None:
@@ -362,6 +390,9 @@ class InfiniteParaxialSystem(ParaxialSystem):
             return self._composite_infinite(other, d)
         else:
             raise TypeError(f'Composition between {type(self).__name__} and {type(other).__name__} is not supported')
+
+    def flip(self) -> Self:
+        return InfiniteParaxialSystem(1 / self.focal_ratio, self.principal2, self.principal1)
 
     def imgd(self, obj_d: Numeric) -> Numeric:
         return obj_d * -self.focal_ratio

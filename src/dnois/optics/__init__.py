@@ -15,6 +15,7 @@ systems.
 from ._func import *
 from .formation import *
 from .paraxial import *
+from .psf_util import *
 from .system import *
 
 from . import df, formation, paraxial, rt, system

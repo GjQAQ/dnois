@@ -6,8 +6,8 @@ import torch
 from .vis import *
 from .. import surf, rto
 from ..ray import BatchedRay
-from ... import system, _func
-from .... import scene as _sc, base, utils, fourier, torch as _t, ext
+from ... import system, psf_util
+from .... import conf, scene as _sc, base, utils, torch as _t, ext
 from ....base import typing as ty
 from ....sensor import Sensor
 
@@ -31,7 +31,7 @@ DEFAULT_SAMPLES: int = 512
 Ts = ty.Ts
 FovType = ty.Literal['perspective', 'chief', 'average']
 PupilType = ty.Literal['probe', 'trace', 'paraxial']
-FlType = ty.Literal['paraxial']
+FlType = ty.Literal['paraxial', 'trace']
 ChiefSide = ty.Literal['obj', 'img', 'object', 'image']
 WlReduction = ty.Literal['none', 'mean', 'center']
 PsfCenter = ty.Literal['linear', 'mean', 'mean-robust', 'chief'] | ty.Double[float]
@@ -80,13 +80,11 @@ def _make_direction(
 
 class CrtPsfModel(utils.ExternalParamMixIn, metaclass=abc.ABCMeta):
     psf_size: utils.Exparam
-    norm_psf: utils.Exparam
 
     type: str
 
-    def __init__(self, psf_size: ty.Size2d = 64, norm_psf: bool = True):
+    def __init__(self, psf_size: ty.Size2d = 64):
         self.psf_size: ty.Double[int] = ty.size2d(psf_size)
-        self.norm_psf: bool = norm_psf
 
     def __call__(
         self,
@@ -94,15 +92,11 @@ class CrtPsfModel(utils.ExternalParamMixIn, metaclass=abc.ABCMeta):
         origins: ty.Ts,
         wl: ty.Vector = None,
         psf_size: ty.Size2d = None,
-        norm_psf: bool = None,
         **kwargs
     ) -> ty.Ts:
         _t.check_3d_vector(origins, f'origins in {self.__call__.__qualname__}')
 
-        psf = self.psf(optics, origins, wl, psf_size, **kwargs)
-
-        if norm_psf:
-            psf = _func.norm_psf(psf)
+        psf = self.psf(optics, origins, wl, psf_size, **kwargs)  # (...,N_wl,H,W)
         return psf
 
     @abc.abstractmethod
@@ -451,10 +445,15 @@ class CoaxialRayTracing(
         psf_size: ty.Size2d = None,
         wl: ty.Vector = None,
         norm_psf: bool = None,
+        psf_recenter: system.GeneralPsfRecenterType = None,
         psf_model: PsfType | CrtPsfModel = None,
         **kwargs
     ) -> Ts:
-        psf = psf_model(self, origins, wl, psf_size, norm_psf, **kwargs)
+        psf = psf_model(self, origins, wl, psf_size, **kwargs)
+
+        if norm_psf:
+            psf = psf_util.norm_psf(psf)
+        psf = psf_recenter(psf)
         return psf
 
     @utils.with_external
@@ -502,6 +501,36 @@ class CoaxialRayTracing(
         """
         paraxial = self.surfaces.paraxialize(wl)
         return paraxial.fl1 if obj_side else paraxial.fl2
+
+    @utils.with_external
+    def focal_length_trace(self, obj_side: bool, r: float = None, wl: ty.Vector = None) -> Ts:
+        if r is None:
+            r = base.Length.as_default(conf.focal_length_trace_radius, 'm')
+        sampling_aperture = surf.CircularAperture(r)
+        sampling_aperture.to(self.device, self.dtype)
+        x, y = sampling_aperture.sample_unipolar(10, 10)
+        if obj_side:
+            z = self.last.context.baseline
+        else:
+            z = self.first.context.baseline
+        z = z.broadcast_to(x.shape)
+        r2 = x.square() + y.square()  # (spp,)
+        points = torch.stack((x, y, z), -1)  # (spp,3)
+
+        inf = self.fovd2obj([(0, 0)], float('inf')).squeeze()  # (3,)
+        d, _ = _make_direction(points, inf, forward=not obj_side)  # (spp,3)
+        ray = BatchedRay(points, d, wl.unsqueeze(-1))  # (N_wl,spp,3)
+
+        ray_out = self.surfaces.trace_out(ray, not obj_side, False)
+        avg_d = ray_out.d.sum(-2, True)  # (N_wl,1,3)
+        avg_d = avg_d / avg_d.norm(dim=-1, keepdim=True)
+        cos = torch.sum(ray_out.d * avg_d, dim=-1)  # (N_wl,spp)
+        tan2 = 1 / cos.square() - 1  # (N_wl,spp)
+
+        fl = torch.sqrt(r2 / tan2)  # (N_wl,spp)
+        fl[~ray_out.valid] = float('nan')
+        fl = fl.nanmean(-1)  # (N_wl,)
+        return fl
 
     def find_stop(
         self,
@@ -771,11 +800,11 @@ class CoaxialRayTracing(
         for i in range(n_point):
             direction, _ = _make_direction(pupil_points, points[i])  # N_spp|1 x 3
             ray_in = BatchedRay(pupil_points, direction, wl.view(-1, 1))  # N_wl x N_spp
-            ray_out = self.trace_ray(ray_in).broadcast()  # N_wl x N_spp
+            ray_out = self.surfaces.trace_out(ray_in).broadcast()  # N_wl x N_spp
 
             chief_direction, _ = _make_direction(entr_center, points[i])  # 3
             chief_ray_in = BatchedRay(entr_center, chief_direction, wl)  # N_wl
-            chief_ray_out = self.trace_ray(chief_ray_in).broadcast()  # N_wl
+            chief_ray_out = self.surfaces.trace_out(chief_ray_in, aperture=False).broadcast()  # N_wl
 
             x, y = ray_out.x - chief_ray_out.x, ray_out.y - chief_ray_out.y
             r2 = x.square() + y.square()
@@ -789,7 +818,7 @@ class CoaxialRayTracing(
                 wl_value = wl[j].item()
                 ax.scatter(
                     utils.t4plot(x[j]), utils.t4plot(y[j]),
-                    s=2, c=utils.wl2rgb(wl_value, output_format='hex'), label=base.Length.fmt(wl_value),
+                    s=2, c=utils.wl2rgb(wl_value, output_format='hex'), label=base.Length.fmt(wl_value, 'um'),
                 )
                 ax.legend()
                 ax.set_aspect('equal')
@@ -1208,6 +1237,8 @@ class CoaxialRayTracing(
     ):
         if fl_type == 'paraxial':
             fl = self.focal_length_paraxial(obj_side, wl)
+        elif fl_type == 'trace':
+            fl = self.focal_length_trace(obj_side, wl=wl, **kwargs)
         else:
             raise ValueError(utils.invalid_option_msg('focal length type', fl_type, FlType))
 
@@ -1222,8 +1253,4 @@ class CoaxialRayTracing(
             raise ValueError(utils.invalid_option_msg('wavelength reduction', wl_reduction, WlReduction))
 
     # normalizer of external parameters
-    @staticmethod
-    def _normalize_psf_model(value) -> CrtPsfModel:
-        if isinstance(value, CrtPsfModel):
-            return value
-        return CrtPsfModel.create(value)
+    _normalize_psf_model = staticmethod(utils.type_normalizer(CrtPsfModel))

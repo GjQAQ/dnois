@@ -10,6 +10,7 @@ from ..base import typing, unit
 __all__ = [
     'fmt',
     'invalid_option_msg',
+    'type_normalizer',
     'with_external',
 
     'Conditional',
@@ -114,6 +115,15 @@ def with_external(func: typing.Callable = None, *, exclude: str | typing.Sequenc
         return functools.partial(decorator, _exclude=exclude)
     else:  # directly apply on a function without arguments
         return decorator(func, ())  # exclude is virtually the decorated function
+
+
+def type_normalizer(t: type) -> typing.Callable:
+    def normalizer(v):
+        if isinstance(v, t):
+            return v
+        return t.create(v)  # noqa
+
+    return normalizer
 
 
 class FixStateMixIn:  # warning: experimental

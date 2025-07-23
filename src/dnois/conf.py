@@ -25,6 +25,9 @@ default_temperature: float = 20.
 #: Default pressure of the system in atm (if meaningful).
 default_pressure: float = 1.
 
+#: Radius of beam used to compute focal length using ``trace`` method.
+focal_length_trace_radius: float = 1e-4
+
 _config_items = [k for k in globals().keys() if not k.startswith('_')]
 
 

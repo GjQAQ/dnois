@@ -103,7 +103,7 @@ def draw_rays(
     if legend:
         import matplotlib.lines
         color_lines = [matplotlib.lines.Line2D([], [], color=c, linewidth=0.75) for c in colors]
-        color_labels = [fr'${utils.fmt(base.convert(_wl, "m", "um"))}\mu m$' for _wl in wl.tolist()]
+        color_labels = [base.Length.fmt(_wl, 'um') for _wl in wl.tolist()]
         fov_lines = [matplotlib.lines.Line2D([], [], color='black', linestyle=ls, linewidth=0.75) for ls in lss]
         if isinf:
             fov_labels = [fr'${utils.fmt(math.degrees(math.atan(-h)))}^\circ$' for h in height.tolist()]
