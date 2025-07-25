@@ -57,7 +57,6 @@ def _format_flist(flist: list[float]) -> str:
     return f'[{", ".join(f"{utils.fmt(c)}" for c in flist)}]'
 
 
-# TODO: replace deep copy of registered materials with shallow copy
 class Material(base.AsJsonMixIn):
     """
     Class representing an optical material type.
@@ -265,6 +264,7 @@ class ConstantRelative(Material):
 
     :param float n_relative: Relative refractive index. Default: 1.
     """
+    __slots__ = ('n_relative',)
 
     def __init__(self, name: str, n_relative: float = None, *args, **kwargs):
         super().__init__(name, *args, **kwargs)

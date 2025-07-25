@@ -10,6 +10,11 @@ __all__ = [
     'space_variant',
     'spots2image',
     'superpose',
+
+    'DepthAware',
+    'PSFAugSimple',
+    'Simple',
+    'SpaceVariant',
 ]
 
 
@@ -271,3 +276,71 @@ def spots2image(size: Size2d, r: Ts, c: Ts, value: Ts, mask: Ts = None):
     image.index_put_(pre_idx + [r_a, c_a], torch.where(mask, v2 * iw_r, 0), True)  # bottom right
     image = image[..., :-2, :-2] / mask.size(-1)
     return image
+
+
+class Simple(torch.nn.Module):
+    """Module wrapper for :func:`simple`."""
+
+    def __init__(self, pad: Size2d | str = 'linear', compensate_edge: bool = False, eps: float = 1e-3):
+        super().__init__()
+        self.pad = pad
+        self.compensate_edge = compensate_edge
+        self.eps = eps
+
+    def forward(self, psf: Ts, obj: Ts) -> Ts:
+        """See :func:`simple`."""
+        return simple(obj, psf, self.pad, self.compensate_edge, self.eps)
+
+
+class PSFAugSimple(Simple):
+    def __init__(self, aug_type: str = 'flip', **kwargs):
+        super().__init__(**kwargs)
+        self.aug_type = aug_type
+
+    def forward(self, psf: Ts, obj: Ts) -> Ts:
+        psf = psf.squeeze()
+        if psf.ndim != 3:
+            raise RuntimeError(f'Unexpected PSF shape {psf.shape} for {self.__class__.__name__}')
+        if obj.ndim != 4:
+            raise RuntimeError(f'Image of shape (B,C,H,W) expected, got {psf.shape}')
+
+        if self.aug_type == 'flip':
+            b = obj.size(0)
+            single_size, r = divmod(b, 4)
+            psf = psf.unsqueeze(0)
+            psf = torch.stack([
+                psf.expand(single_size + int(r >= 1), -1, -1, -1),
+                psf.fliplr().expand(single_size + int(r >= 2), -1, -1, -1),
+                psf.flipud().expand(single_size + int(r >= 3), -1, -1, -1),
+                psf.flip(-2, -1).expand(single_size, -1, -1, -1),
+            ])
+            return super().forward(psf, obj)
+        else:
+            raise RuntimeError(f'Unknown aug_type: {self.aug_type}')
+
+
+class DepthAware(torch.nn.Module):
+    """Module wrapper for :func:`depth_aware`."""
+
+    def __init__(self, pad: Size2d | str = 'linear', occlusion_aware: bool = False):
+        super().__init__()
+        self.pad = pad
+        self.occlusion_aware = occlusion_aware
+
+    def forward(self, psf: Ts, obj: Ts, mask: Ts) -> Ts:
+        """See :func:`depth_aware`."""
+        return depth_aware(obj, mask, psf, self.pad, self.occlusion_aware)
+
+
+class SpaceVariant(torch.nn.Module):
+    """Module wrapper for :func:`space_variant`."""
+
+    def __init__(self, pad: Size2d = 0, linear_conv: bool = False, _one_by_one: bool = False):
+        super().__init__()
+        self.pad = pad
+        self.linear_conv = linear_conv
+        self._one_by_one = _one_by_one
+
+    def forward(self, psf: Ts, obj: Ts) -> Ts:
+        """See :func:`space_variant`."""
+        return space_variant(obj, psf, self.pad, self.linear_conv, self._one_by_one)

@@ -66,6 +66,11 @@ Image formation
     space_variant
     superpose
 
+    Simple
+    PSFAugSimple
+    DepthAware
+    SpaceVariant
+
 **************************************
 Optics
 **************************************

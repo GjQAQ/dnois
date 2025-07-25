@@ -74,16 +74,16 @@ def circle_of_confusion(pupil_diameter: Numeric, fl: Numeric, d: Numeric, focal_
 
 
 @overload
-def objd(img_d: Numeric, fl_obj: Numeric, fl_img: Numeric = None) -> Numeric:
+def objd(img_d, fl_obj, fl_img = None):
     pass
 
 
 @overload
-def objd(img_d: Numeric, n_obj: Numeric, n_img: Numeric, diopter: Numeric) -> Numeric:
+def objd(img_d, n_obj, n_img, diopter):
     pass
 
 
-def objd(img_d: Numeric, fl_obj: Numeric, fl_img: Numeric = None, diopter: Numeric = None) -> Numeric:
+def objd(img_d, fl_obj, fl_img = None, diopter = None):
     r"""
     Returns object distance :math:`s` given image distance :math:`s'`.
 
@@ -157,16 +157,16 @@ def objd(img_d: Numeric, fl_obj: Numeric, fl_img: Numeric = None, diopter: Numer
 
 
 @overload
-def imgd(obj_d: Numeric, fl_obj: Numeric, fl_img: Numeric = None) -> Numeric:
+def imgd(obj_d, fl_obj, fl_img = None):
     pass
 
 
 @overload
-def imgd(obj_d: Numeric, n_obj: Numeric, n_img: Numeric, diopter: Numeric) -> Numeric:
+def imgd(obj_d, n_obj, n_img, diopter):
     pass
 
 
-def imgd(obj_d: Numeric, fl_obj: Numeric, fl_img: Numeric = None, diopter: Numeric = None) -> Numeric:
+def imgd(obj_d, fl_obj, fl_img = None, diopter = None):
     r"""
     Returns image distance :math:`s'` given object distance :math:`s`.
 

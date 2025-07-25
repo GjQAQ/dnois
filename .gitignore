@@ -3,6 +3,7 @@
 
 # for development
 .tmp/
+.local/
 
 # built artifacts, no matter code or doc
 dist/

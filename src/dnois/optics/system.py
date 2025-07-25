@@ -410,7 +410,6 @@ def _stitch_symmetric(psf: Ts, h: int, w: int, x_symmetric: bool, y_symmetric: b
 class RenderImageSceneMixIn(PerspectiveMixIn, metaclass=abc.ABCMeta):
     depth: Ts
 
-    @utils.with_external
     def seq_depth(
         self,
         depth: Vector | Double[Ts] = None,
@@ -455,7 +454,6 @@ class RenderImageSceneMixIn(PerspectiveMixIn, metaclass=abc.ABCMeta):
             warnings.warn(f'sampling_curve and n are ignored because depth is already specified')
         return depth
 
-    @utils.with_external
     def random_depth(
         self,
         depth: Vector | Double[Ts] = None,
@@ -664,7 +662,6 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
     :param bool y_symmetric: Whether this system is symmetric w.r.t. y-axis.
         See descriptions above. Default: ``False``.
     """
-    _inherent = ['sensor', 'perspective_focal_length']
     wl: utils.Exparam
     segments: utils.Exparam
     depth: utils.Exparam
@@ -688,17 +685,20 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         cropping: Size2d = 0,
         x_symmetric: bool = False,
         y_symmetric: bool = False,
+        formation_model: torch.nn.Module = None,  # currently used by conv_render exclusively
     ):
         super().__init__(sensor)
         if wl is None:
             wl = base.Length.as_default(DEFAULT_WL, 'm')  # self.wl is assumed to never be None
+        if formation_model is None:
+            formation_model = formation.Simple()
 
         self.register_buffer('depth', None)
         self.register_buffer('wl', None)
 
         self.perspective_focal_length: float | None = perspective_focal_length
-        self.wl = wl  # property setter
-        self.depth = depth  # property setter
+        self.wl = wl  #: Wavelengths.
+        self.depth = depth  #: Depths.
         #: Number of field-of-view segments when rendering images. See :class:`PsfImagingOptics`.
         self.segments: Seg = cast(Seg, segments)
         #: Height and width of PSF (i.e. convolution kernel) used to simulate imaging.
@@ -709,6 +709,7 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         self.cropping: Double[int] = size2d(cropping)  #: See :class:`PsfImagingOptics`.
         self.x_symmetric: bool = x_symmetric  #: See :class:`PsfImagingOptics`.
         self.y_symmetric: bool = y_symmetric  #: See :class:`PsfImagingOptics`.
+        self.conv_formation = formation_model
 
     @abc.abstractmethod
     def psf(
@@ -903,8 +904,7 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         pad: Size2d | str = 'linear',
         occlusion_aware: bool = False,
         depth_quantization_level: int = 16,
-        compensate_edge: bool = False,
-        eps: float = 1e-3,
+        depth_range: typing.Double[float] = None,
         psf_cache: Ts = None,
         **kwargs
     ) -> Ts:
@@ -938,8 +938,8 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
             This matters only when ``scene`` carries depth map. Default: ``False``.
         :param int depth_quantization_level: Number of quantization levels for depth-aware imaging.
             This matters only when ``scene`` carries depth map. Default: ``16``.
-        :param bool compensate_edge: See :func:`dnois.optics.simple`. Default: ``False``.
-        :param float eps: See :func:`dnois.optics.simple`. Default: ``1e-3``.
+        :param depth_range: Minimum and maximum depth in depth-aware imaging.
+        :type depth_range: tuple[float, float]
         :param Tensor psf_cache: If given, use this tensor as PSF rather than compute it. Default: ``None``.
         :param kwargs: Additional keyword arguments passed to :meth:`.psf`.
         :return: Computed :ref:`imaged radiance field <guide_overview_irf>`.
@@ -962,7 +962,7 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         scene = scene.batch()
         if scene.depth_aware:
             if not isinstance(depth, tuple):
-                raise ValueError(f'depth must be a pair of 0D tensors for depth-aware imaging')
+                raise ValueError(f'depth must be a pair of floats for depth-aware imaging')
             q_depth = self.seq_depth(n=depth_quantization_level)  # D
             obj_points = self.fovd2obj([fov], q_depth)  # D x 3
         else:
@@ -979,13 +979,13 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         if scene.depth_aware:
             psf = psf.transpose(0, 1)  # N_wl x D x H_P x W_P
 
-            min_d, max_d = depth  # TODO: invalid branch
+            min_d, max_d = depth_range
             masks = _d.quantize_depth_map(scene.depth, min_d, max_d, depth_quantization_level)  # D x B x H x W
             masks = masks.transpose(0, 1).unsqueeze(1)  # B x 1 x D x H x W
             image = formation.depth_aware(scene.image, masks, psf, pad, occlusion_aware)  # B x N_wl x H x W
         else:
             # PSF: B(1) x N_wl x H_P x W_P
-            image = formation.simple(scene.image, psf, pad, compensate_edge, eps)  # B x N_wl x H x W
+            image = self.conv_formation(psf, scene.image)  # B x N_wl x H x W
 
         image = self.crop(image)
         return image
@@ -1008,11 +1008,6 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         :rtype: Tensor
         """
         return utils.crop(image, self.cropping)
-
-    def to_dict(self, keep_tensor=True) -> dict[str, typing.Any]:
-        d = {k: self._attr2dictitem(k, keep_tensor) for k in self._inherent}
-        d.update({k: self._attr2dictitem(k, keep_tensor) for k in self._external})
-        return d
 
     @property
     def reference(self) -> 'PinholeOptics':
@@ -1074,7 +1069,6 @@ class IdealOptics(PsfImagingOptics):
     :param float fl2: Focal length in image space.
     :param kwargs: Additional keyword arguments passed to :class:`PsfImagingOptics`.
     """
-    _inherent = PsfImagingOptics._inherent + ['pupil_diameter', 'fl1', 'fl2']
 
     def __init__(
         self,

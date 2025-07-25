@@ -215,7 +215,6 @@ class CoaxialRayTracing(
         Optical aberrations correction in postprocessing using imaging simulation.
         ACM Transactions on Graphics (TOG), 40(5), 1-15.
     """
-    _inherent = system.PsfImagingOptics._inherent + ['surfaces']
     imaging_model: utils.Exparam
     psf_model: utils.Exparam
     fov_type: utils.Exparam
@@ -509,6 +508,7 @@ class CoaxialRayTracing(
         sampling_aperture = surf.CircularAperture(r)
         sampling_aperture.to(self.device, self.dtype)
         x, y = sampling_aperture.sample_unipolar(10, 10)
+        x, y = x[1:], y[1:]  # remove center point
         if obj_side:
             z = self.last.context.baseline
         else:
@@ -527,9 +527,10 @@ class CoaxialRayTracing(
         cos = torch.sum(ray_out.d * avg_d, dim=-1)  # (N_wl,spp)
         tan2 = 1 / cos.square() - 1  # (N_wl,spp)
 
-        fl = torch.sqrt(r2 / tan2)  # (N_wl,spp)
-        fl[~ray_out.valid] = float('nan')
-        fl = fl.nanmean(-1)  # (N_wl,)
+        fl = torch.sqrt(r2 / (tan2 + 1e-20))  # (N_wl,spp)
+        v = ray_out.valid & fl.isnan().logical_not()  # (N_wl,spp)
+        fl = torch.where(v, fl, 0)
+        fl = fl.sum(-1) / (v.sum(-1) + 1e-10)  # (N_wl,)
         return fl
 
     def find_stop(
