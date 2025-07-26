@@ -42,6 +42,11 @@ class Unit(Enum):
     def __str__(self):
         return self.symbol
 
+    def __truediv__(self, other):
+        if not isinstance(other, self.__class__):
+            return NotImplemented
+        return self.scale / other.scale
+
     def convert_to(self, value, target_unit: str | typing.Self):
         """
         Convert this unit to another unit.

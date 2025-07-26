@@ -7,6 +7,7 @@
 # Converter functions must conduct rigorous type checking and should be named
 # as the lower case of corresponding type alias.
 
+from pathlib import Path
 import numbers
 from numbers import *
 import typing
@@ -37,6 +38,7 @@ __all__ = [
     'Sizend',
     'Spacing',
     'Tensor',
+    'TextFile',
     'Triple',
     'Ts',
     'Vector',
@@ -68,6 +70,8 @@ Triple = tuple[_T, _T, _T]
 # options
 ConvOut = Literal['full', 'same', 'valid']
 RGBFormat = Literal['floats', 'ints', 'hex']
+
+TextFile = str | Path | TextIO
 
 
 def pair(arg: Pair[_T], type_: type[_T] = None) -> tuple[_T, _T]:

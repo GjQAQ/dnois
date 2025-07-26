@@ -1,17 +1,42 @@
+import dataclasses
 import functools
 import warnings
 from pathlib import Path
 
-from .. import base, mt
+import torch
+
+from .. import base, mt, utils
 from ..base import typing as ty
 from ..optics import rt
 
 __all__ = [
     'load_agf',
-    'slist_from_zmx',
+    'sq2zmx',
+    'zmx2sq',
 
+    'ZemaxFile',
     'ZemaxParsingError',
 ]
+
+_zmx_surf_keys = [
+    'SSID', 'STOP', 'TYPE', 'FIMP', 'CURV', 'TCED', 'HIDE', 'MIRR', 'SLAB', 'PARM', 'XDAT', 'DISZ', 'GLAS', 'CONI',
+    'PZUP', 'DIAM', 'MEMA', 'POPS', 'CLAP',
+]
+_zmx_surf_key_order = functools.cache(_zmx_surf_keys.index)
+
+
+def _cmp_zmx_surf_field(f1: str, f2):
+    k1, k2 = f1[:4], f2[:4]
+    o1, o2 = _zmx_surf_key_order(k1), _zmx_surf_key_order(k2)
+    if o1 != o2:
+        return o1 - o2
+    # same key
+    if k1 == 'PARM' or k1 == 'XDAT':
+        idx1 = int(f1.split()[1])
+        idx2 = int(f2.split()[1])
+        return idx1 - idx2
+    else:
+        return 0
 
 
 class ZemaxParsingError(RuntimeError):
@@ -19,7 +44,382 @@ class ZemaxParsingError(RuntimeError):
     pass
 
 
-def slist_from_zmx(file: str | Path | ty.TextIO) -> rt.CoaxialSurfaceSequence:
+@dataclasses.dataclass
+class ZemaxFile:
+    version: str = None
+    unit: dict[str, str] = None
+    catalogs: list[str] = None
+    fov_angles: list[tuple[float, float]] = None
+    surfaces: list[list[str]] = dataclasses.field(default_factory=list)
+    stop_idx: int = None
+
+    def dump(self, file: ty.TextFile):
+        zmx_lines = []
+        if self.version is not None:
+            zmx_lines.append('VERS ' + self.version)
+        zmx_lines.extend([
+            'MODE SEQ',
+            'NAME Lens from dnois',
+        ])
+        if self.unit is not None:
+            zmx_lines.append('UMIT ' + self.unit['length'])
+        if self.catalogs is not None:
+            zmx_lines.append('GCAT ' + ' '.join(self.catalogs))
+        if self.fov_angles is not None:
+            zmx_lines.extend([
+                'XFLN ' + ' '.join(map(str, [fov[0] for fov in self.fov_angles])),
+                'YFLN ' + ' '.join(map(str, [fov[1] for fov in self.fov_angles])),
+            ])
+        else:
+            zmx_lines.extend(['XFLN 0', 'YFLN 0'])  # FOV must be provided
+
+        for i, s_info in enumerate(self.surfaces):
+            zmx_lines.append(f'SURF {i}')
+
+            s_info = s_info.copy()
+            if self.stop_idx is not None and self.stop_idx == i:
+                s_info.append('STOP')
+
+            s_info = sorted(s_info, key=functools.cmp_to_key(_cmp_zmx_surf_field))
+            for field in s_info:
+                zmx_lines.append('  ' + field)
+
+        utils.file_op(file, lambda f: f.write(b'\xFF\xFE'), 'wb')
+        utils.writelines(file, zmx_lines, 'at', 'utf-16le')
+
+    @classmethod
+    def load(cls, file: ty.TextFile) -> ty.Self:
+        zmx_lines = utils.readlines(file, encoding='utf-16le')
+
+        obj = cls()
+        x_fov = y_fov = None
+        current_surf_idx = None
+        for line_num, line in enumerate(zmx_lines):
+            if len(line.strip()) == 0:
+                continue
+
+            if line.startswith('  '):  # with indentation
+                if current_surf_idx is None:  # not in the context of a surface
+                    continue
+
+                line = line.strip()
+                if line.startswith('STOP'):
+                    obj.stop_idx = current_surf_idx
+                    continue
+
+                obj.surfaces[current_surf_idx].append(line)
+            elif line.startswith('VERS'):
+                obj.version = line[5:].strip()
+            elif line.startswith('MODE'):
+                mode = line[5:].strip()
+                if mode != 'SEQ':
+                    raise ZemaxParsingError(f'Cannot parse .zmx file with mode={mode}')
+            elif line.startswith('UNIT'):
+                units = line.split()[1:]
+                obj.unit = {'length': units[0]}
+            elif line.startswith('GCAT'):
+                obj.catalogs = line.split()[1:]
+            elif line.startswith('XFLN'):
+                x_fov = map(float, line.split()[1:])
+            elif line.startswith('YFLN'):
+                y_fov = map(float, line.split()[1:])
+            elif line.startswith('SURF'):  # start of a surface
+                current_surf_idx = int(line[5:])
+                while len(obj.surfaces) <= current_surf_idx:  # use loop to handle out-of-order
+                    obj.surfaces.append([])
+            # else:
+            #     raise ZemaxParsingError(f'Unexpected field {line[:4]} in line {line_num}')
+
+        if x_fov is not None:
+            obj.fov_angles = list(zip(x_fov, y_fov))
+
+        return obj
+
+
+class ZemaxSurfaceParser:
+    name: str
+    type: type[rt.Surface]
+
+    def __init__(self, unit: str):
+        self.unit = unit
+
+    def dump(self, surface: rt.Surface) -> list[str]:
+        fields = [
+            f'TYPE {self.name}',
+            f'FIMP',
+            f'DISZ {self.icl(surface.distance):.15E}',
+        ]
+
+        apt = surface.aperture
+        fields.append(f'DIAM {self.icl(apt.max_radius()):.15E} 0 0 0 1 ""')
+        if isinstance(apt, rt.AnnularAperture):
+            fields.append(f'CLAP {self.icl(apt.r1):.15E} {self.icl(apt.r2):.15E} 0')
+
+        if surface.reflective:
+            fields.append(f'GLAS MIRROR')
+        elif surface.material.name != 'air':
+            fields.append(f'GLAS {surface.material.primitive_name}')
+        return fields
+
+    def parse(self, fields: list[str]) -> rt.Surface:
+        kwargs = {}
+        for field_line in fields:
+            field_line = field_line.split()
+            field_name, field_value = field_line[0], field_line[1:]
+            self.handle_field(field_name, field_value, kwargs)
+        return self.type(**kwargs)
+
+    def handle_field(self, key: str, values: list[str], kwargs: dict):
+        # modify kwargs dict in place
+        if key == 'CLAP':
+            kwargs['aperture'] = rt.AnnularAperture(self.cl(values[0]), self.cl(values[1]))
+        elif key == 'DIAM':
+            kwargs.setdefault('aperture', self.cl(values[0]))
+        elif key == 'DISZ':
+            kwargs['d'] = self.cl(values[0])
+        elif key == 'GLAS':
+            if values[0] == 'MIRROR':
+                kwargs['reflective'] = True
+            else:
+                kwargs['material'] = values[0]
+
+    def cl(self, value: float | str):  # convert length
+        if isinstance(value, str):
+            value = float(value)
+        return base.Length.as_default(value, self.unit)
+
+    def icl(self, value: float | ty.Ts) -> float:  # inverse convert length
+        if torch.is_tensor(value):
+            value = value.item()
+        return base.Length.default_to(value, self.unit)
+
+    @classmethod
+    @ty.overload
+    def create(cls, name: str, *args, **kwargs):
+        subclasses = utils.subclasses(cls)
+        for subclass in subclasses:
+            if subclass.name == name:
+                return subclass(*args, **kwargs)
+        raise ZemaxParsingError(f'Unknown Zemax surface type: {name}')
+
+    @classmethod
+    @ty.overload
+    def create(cls, stype, *args, **kwargs):
+        subclasses = utils.subclasses(cls)
+        for subclass in subclasses:
+            if subclass.type == stype:
+                return subclass(*args, **kwargs)
+        raise ZemaxParsingError(f'Unknown surface type: {stype.__name__}')
+
+    @classmethod
+    @ty.final
+    def create(cls, name_or_type, *args, **kwargs):
+        ols = ty.get_overloads(cls.create)
+        if isinstance(name_or_type, str):
+            return ols[0](cls, name_or_type, *args, **kwargs)
+        else:
+            return ols[1](cls, name_or_type, *args, **kwargs)
+
+
+class DGratingParser(ZemaxSurfaceParser):
+    name = 'DGRATING'
+    type = rt.Grating
+
+    def dump(self, surface: rt.Grating) -> list[str]:
+        fields = super().dump(surface)
+
+        period_inv = 1.0 / base.Length.default_to(surface.period.item(), 'um')
+        fields.append(f'PARM 1 {period_inv:.15E}')
+
+        order = surface.orders[0]
+        fields.append(f'PARM 2 {order}')
+
+        return fields
+
+    def handle_field(self, key: str, values: list[str], kwargs: dict):
+        super().handle_field(key, values, kwargs)
+        if key == 'PARM':
+            param_n, param_v = values[0], values[1]
+            if param_n == '1':
+                kwargs['period'] = base.Length.as_default(1 / float(param_v), 'um')
+            elif param_n == '2':
+                order = int(param_v)
+                kwargs['orders'] = (order, order)
+
+
+class ParaxialParser(ZemaxSurfaceParser):
+    name = 'PARAXIAL'
+    type = rt.ThinLens
+
+    def dump(self, surface: rt.ThinLens) -> list[str]:
+        fields = super().dump(surface)
+
+        fields.append(f'PARM 1 {self.icl(surface.fl1):.15E}')
+
+        return fields
+
+    def handle_field(self, key: str, values: list[str], kwargs: dict):
+        super().handle_field(key, values, kwargs)
+        kwargs['fl_equal'] = True
+        if key == 'PARM':
+            param_n, param_v = values[:2]
+            if param_n == '1':
+                kwargs['fl1'] = self.cl(param_v)
+
+
+class StandardParser(ZemaxSurfaceParser):
+    name = 'STANDARD'
+    type = rt.Conic
+
+    def dump(self, surface: rt.Conic) -> list[str]:
+        fields = super().dump(surface)
+
+        # Add curvature (radius of curvature)
+        if surface.roc == float('inf'):
+            curv = 0.0  # Infinite radius of curvature
+        else:
+            curv = 1.0 / self.icl(surface.roc)
+        fields.append(f'CURV {curv:.15E} 0 0 0 0 ""')
+
+        # Add conic constant
+        fields.append(f'CONI {surface.conic.item():.15E}')
+
+        return fields
+
+    def handle_field(self, key: str, values: list[str], kwargs: dict):
+        super().handle_field(key, values, kwargs)
+        if key == 'CURV':
+            try:
+                roc = 1. / float(values[0])
+            except ZeroDivisionError:
+                roc = float('inf')
+            kwargs['roc'] = self.cl(roc)
+        elif key == 'CONI':
+            kwargs['conic'] = float(values[0])
+
+
+class EvenAsphParser(StandardParser):
+    name = 'EVENASPH'
+    type = rt.EvenAspherical
+    aspheric_attr_name = 'coefficients'
+
+    def dump(self, surface: rt.EvenAspherical) -> list[str]:
+        fields = super().dump(ty.cast(rt.Conic, surface))
+
+        # Add aspheric coefficients
+        coefficients = getattr(surface, self.aspheric_attr_name)
+        ratio = base.Length.default() / base.Length.from_str(self.unit)
+
+        for idx, coef in enumerate(coefficients):
+            # note that PARM 1 is the first coefficient
+            zmx_value = coef.item() / (ratio ** (2 * idx + 1))
+            fields.append(f'PARM {idx + 1} {zmx_value:.15E}')
+
+        return fields
+
+    def handle_field(self, key: str, values: list[str], kwargs: dict):
+        super().handle_field(key, values, kwargs)
+        if key == 'PARM':
+            idx, value = int(values[0]), float(values[1])
+            if idx == 0:
+                return  # unused parameter
+            if value == 0.:
+                return
+
+            kwargs.setdefault(self.aspheric_attr_name, [])
+            c = kwargs[self.aspheric_attr_name]
+            while len(c) < idx:  # note that PARM 1 is the first coefficient
+                c.append(0.)
+            ratio = base.Length.default() / base.Length.from_str(self.unit)
+            c[idx - 1] = value * ratio ** (2 * idx - 1)
+
+
+class Binary2Parser(EvenAsphParser):
+    name = 'BINARY_2'
+    type = rt.AsphericalRadialPhase
+
+    def dump(self, surface: rt.AsphericalRadialPhase) -> list[str]:
+        fields = super().dump(surface)
+
+        # Add diffraction order (always 1 for supported surfaces)
+        fields.append('PARM 0 1')
+
+        # Add phase coefficients
+        # Add number of terms
+        fields.append(f'XDAT 1 {surface.phase_items} 0 0 1 0 0 ""')
+
+        # Add normalization radius
+        fields.append(f'XDAT 2 {self.icl(surface.norm_radius):.15E} 0 0 1 0 0 ""')
+
+        # Add phase coefficients
+        for idx, coef in enumerate(surface.phase_coefficients):
+            fields.append(f'XDAT {idx + 3} {coef.item():.15E} 0 0 1 0 0 ""')
+
+        return fields
+
+    def handle_field(self, key: str, values: list[str], kwargs: dict):
+        super().handle_field(key, values, kwargs)
+        if key == 'PARM':
+            idx, value = values[:2]
+            if idx == '0':  # diffraction order
+                if value != '1':
+                    raise ZemaxParsingError(f'Binary2 surface with diffraction order {value} is not supported')
+        elif key == 'XDAT':
+            idx, value = values[:2]
+            if idx == '1':
+                return  # number of terms
+            elif idx == '2':
+                kwargs['norm_radius'] = self.cl(value)
+            else:
+                # phase coefficients
+                kwargs.setdefault('phase_coef', [])
+                c = kwargs['phase_coef']
+                idx = int(idx) - 3  # XDAT 3 is the first coefficient
+                while len(c) <= idx:
+                    c.append(0.)
+                c[idx] = float(value)
+
+
+class SzernsagParser(EvenAsphParser):
+    name = 'SZERNSAG'
+    type = rt.Zernike
+    aspheric_attr_name = 'a'
+
+    def dump(self, surface: rt.Zernike) -> list[str]:
+        fields = super().dump(ty.cast(rt.EvenAspherical, surface))
+
+        # Add Zernike coefficients
+        # Add number of terms
+        fields.append(f'XDAT 1 {surface.zernike_items} 0 0 1 0 0 ""')
+
+        # Add normalization radius
+        fields.append(f'XDAT 2 {self.icl(surface.norm_radius):.15E} 0 0 1 0 0 ""')
+
+        # Add Zernike coefficients
+        for idx, coef in enumerate(surface.z):
+            fields.append(f'XDAT {idx + 3} {coef.item():.15E} 1 0 1 0 0 ""')
+
+        return fields
+
+    def handle_field(self, key: str, values: list[str], kwargs: dict):
+        super().handle_field(key, values, kwargs)
+        if key == 'XDAT':
+            idx, value = values[:2]
+            if idx == '1':
+                return  # number of terms
+            elif idx == '2':
+                kwargs['norm_radius'] = self.cl(value)
+            else:
+                # phase coefficients
+                kwargs.setdefault('z', [])
+                c = kwargs['z']
+                idx = int(idx) - 3  # XDAT 3 is the first coefficient
+                while len(c) <= idx:
+                    c.append(0.)
+                c[idx] = float(value)
+
+
+def zmx2sq(file: str | Path | ty.TextIO) -> rt.CoaxialSurfaceSequence:
     """
     Parse a ZMX file and return a :class:`~dnois.optics.rt.CoaxialSurfaceSequence` object.
 
@@ -32,132 +432,62 @@ def slist_from_zmx(file: str | Path | ty.TextIO) -> rt.CoaxialSurfaceSequence:
     :return: A :class:`~dnois.optics.rt.CoaxialSurfaceSequence` object.
     :rtype: ~dnois.optics.rt.CoaxialSurfaceSequence
     """
-    if isinstance(file, str):
-        file = Path(file)
-    if isinstance(file, Path):
-        with file.open('r', encoding='utf-16le') as f:
-            zmx_lines = f.readlines()
-    else:
-        zmx_lines = file.readlines()
+    zmx = ZemaxFile.load(file)
 
-    zmx_surf_list: list[list[list[str]]] = []  # innermost list[str] is actually tuple[str, str]
-    current_surf_idx: int | None = None
-    stop_idx: int | None = None
-    zmx_lens_unit: str = 'mm'
-    for line_num, line in enumerate(zmx_lines):
-        if len(line.strip()) == 0:
-            continue
-
-        if line.startswith('  '):  # with indentation
-            if current_surf_idx is None:  # not in the context of a surface
-                continue
-
-            line = line.strip()
-            if line.startswith('STOP'):
-                stop_idx = current_surf_idx
-                continue
-
-            if len(line) > 4 and line[4] != ' ':
-                raise ZemaxParsingError(f'Undefined format({line_num}): {line}')
-            # one line in a surface context, example: TYPE STANDARD
-            zmx_surf_list[current_surf_idx].append(line.split(' ', 1))
-        else:  # without indentation
-            if line.startswith('SURF'):  # start of a surface
-                current_surf_idx = int(line[5:])
-                while len(zmx_surf_list) <= current_surf_idx:  # use loop to handle out-of-order
-                    zmx_surf_list.append([])
-            else:  # not a surface
-                current_surf_idx = None
-                if line.startswith('UNIT'):
-                    zmx_lens_unit = line.split(' ', 2)[1].lower()
-
-    zmx_surf_list = zmx_surf_list[1:-1]  # discard object and image plane
-    slist = [_surface_from_zmx_segment(segment, i, zmx_lens_unit) for i, segment in enumerate(zmx_surf_list)]
-    slist = rt.CoaxialSurfaceSequence(slist, stop_idx=stop_idx)
-    return slist
+    zmx_sq = zmx.surfaces[1:-1]  # discard object and image plane
+    sq = [_surface_from_zmx_fields(surf_fields, i, zmx.unit['length'].lower()) for i, surf_fields in enumerate(zmx_sq)]
+    sq = rt.CoaxialSurfaceSequence(sq, stop_idx=zmx.stop_idx)
+    return sq
 
 
-def _surface_from_zmx_segment(segments: list[list[str]], idx: int, unit: str) -> rt.Surface:
-    for segment in segments:
-        if segment[0] == 'TYPE':
-            stype = segment[1]
+def _surface_from_zmx_fields(fields: list[str], idx: int, unit: str) -> rt.Surface:
+    for field_line in fields:
+        if field_line[:4] == 'TYPE':
+            stype = field_line.split()[1]
             break
     else:
         raise ZemaxParsingError(f'Type not found for surface {idx}')
 
-    if stype == 'DGRATING':
-        surf = rt.Grating(**_parse_surface_args(segments, _parse_grating_segment, unit))
-    elif stype == 'PARAXIAL':
-        surf = rt.ThinLens(**_parse_surface_args(segments, _parse_thin_lens_segment, unit), fl_equal=True)
-    elif stype == 'STANDARD':
-        surf = rt.Conic(**_parse_surface_args(segments, _parse_conic_segment, unit))
-    else:
-        raise ZemaxParsingError(f'Undefined surface type: {stype}')
+    parser = ZemaxSurfaceParser.create(stype, unit)
+    surf = parser.parse(fields)
     return surf
 
 
-def _parse_surface_args(segments: list[list[str]], segment_parser, unit: str) -> dict[str, ty.Any]:
-    args = {}
-    for segment in segments:
-        if len(segment) != 2:
-            continue
-        key, value = segment_parser(segment, unit)
-        if key is not None:
-            args[key] = value
-    return args
+def sq2zmx(
+    file: ty.TextFile,
+    sq: rt.CoaxialSurfaceSequence,
+    version: str = None,
+    unit: dict[str, str] = None,
+):
+    if unit is None:
+        unit = {'length': 'MM'}
 
+    zmx = ZemaxFile(
+        version=version,
+        unit=unit,
+        surfaces=[],
+        stop_idx=sq.stop_idx,
+    )
 
-def _parse_conic_segment(segment: list[str], unit: str) -> tuple[str | None, ty.Any]:
-    key, value = segment
-    if key == 'CURV':
-        try:
-            roc = 1. / float(value.split(' ', 1)[0])
-        except ZeroDivisionError:
-            roc = float('inf')
-        return 'roc', base.Length.as_default(roc, unit)
-    else:
-        return _parse_segment_common(segment, unit)
+    zmx.surfaces.append([
+        'TYPE STANDARD',
+        'FIMP',
+        'CURV 0.0 0 0 0 0 ""',
+        'DISZ INFINITY',
+        'DIAM 0 0 0 0 1 ""',
+    ])  # object plane
+    for surface in sq:
+        parser = ZemaxSurfaceParser.create(surface.__class__, unit['length'].lower())
+        zmx.surfaces.append(parser.dump(surface))
+    zmx.surfaces.append([
+        'TYPE STANDARD',
+        'FIMP',
+        'CURV 0.0 0 0 0 0 ""',
+        'DISZ 0',
+        'DIAM 0 0 0 0 1 ""',
+    ])  # image plane
 
-
-def _parse_grating_segment(segment: list[str], unit: str) -> tuple[str | None, ty.Any]:
-    key, value = segment
-    if key == 'PARM':
-        param_n, param_v = value.split(' ', 1)
-        if param_n == '1':
-            return 'period', base.Length.as_default(1 / float(param_v), 'um')
-        elif param_n == '2':
-            order = int(param_v)
-            return 'orders', (order, order)
-        else:
-            return None, None
-    else:
-        return _parse_segment_common(segment, unit)
-
-
-def _parse_thin_lens_segment(segment: list[str], unit: str) -> tuple[str | None, ty.Any]:
-    key, value = segment
-    if key == 'PARM':
-        param_n, param_v = value.split(' ', 1)
-        if param_n == '1':
-            return 'fl1', base.Length.as_default(float(param_v), unit)
-        else:
-            return None, None
-    else:
-        return _parse_segment_common(segment, unit)
-
-
-def _parse_segment_common(segment: list[str], unit: str) -> tuple[str | None, ty.Any]:
-    key, value = segment
-    if key == 'GLAS':
-        return 'material', value.split(' ', 1)[0]
-    elif key == 'DIAM':
-        r = float(value.split(' ', 1)[0])
-        aperture = rt.CircularAperture(base.Length.as_default(r, unit))
-        return 'aperture', aperture
-    elif key == 'DISZ':
-        return 'd', base.Length.as_default(float(value), unit)
-    else:
-        return None, None
+    zmx.dump(file)
 
 
 def load_agf(

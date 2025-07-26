@@ -170,6 +170,20 @@ class Material(base.AsJsonMixIn):
             'ltk': self.ltk,
         }
 
+    @property
+    def qualifier(self) -> str:
+        if ':' in self.name:
+            return self.name.split(':')[0]
+        else:
+            return ''
+
+    @property
+    def primitive_name(self) -> str:
+        if ':' in self.name:
+            return self.name.split(':')[1]
+        else:
+            return self.name
+
     @classmethod
     def from_dict(cls, d: dict) -> Self:
         if cls is not Material:
