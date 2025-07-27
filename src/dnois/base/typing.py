@@ -25,6 +25,7 @@ __all__ = [
     'scalar',
     'size2d',
     'sizend',
+    'tensor',
     'vector',
 
     'ConvOut',
@@ -145,3 +146,9 @@ def scalar(arg: Scalar, dtype: _dty = None, device: Device = None, **kwargs) -> 
 
 def is_scalar(arg: Any) -> bool:
     return isinstance(arg, Real) or (is_tensor(arg) and arg.ndim == 0)
+
+
+def tensor(x) -> Ts:
+    if is_tensor(x):
+        return x
+    return torch.tensor(x)
