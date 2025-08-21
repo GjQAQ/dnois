@@ -21,6 +21,7 @@ TODO: description of this page
     ref/isp
     ref/mt
     ref/optics
+    ref/scene
     ref/sensor
     ref/torch
     ref/utils

@@ -191,6 +191,13 @@ class Transform(nn.Module, AsJsonMixIn):
             return None
 
 
+def _extra_repr(t: Ts, name: str) -> str:
+    if t.ndim > 0:
+        return f'{name}.shape={tuple(t.shape)}'
+    else:
+        return f'{name}={utils.fmt(t.item())}'
+
+
 class Scale(Transform):
     invertible = True
 
@@ -204,6 +211,9 @@ class Scale(Transform):
 
     def inverse(self, y: Ts) -> Ts:
         return y / self.s
+
+    def extra_repr(self) -> str:
+        return _extra_repr(self.s, 's')
 
     def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
         return {
@@ -228,6 +238,12 @@ class Range(Transform):
     def inverse(self, y: Ts) -> Ts:
         return torch.logit((y - self.min) / self.range_)
 
+    def extra_repr(self) -> str:
+        return ', '.join([
+            _extra_repr(self.min, 'min'),
+            _extra_repr(self.min + self.range_, 'max')
+        ])
+
     def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
         _min = self._attr2dictitem('min', keep_tensor)
         return {
@@ -251,6 +267,9 @@ class Gt(Transform):
     def inverse(self, y: Ts) -> Ts:
         return y.log() if self.limit is None else torch.log(y - self.limit)
 
+    def extra_repr(self) -> str:
+        return _extra_repr(self.limit, 'limit')
+
     def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
         return {
             'type': self.__class__.__name__,
@@ -271,6 +290,9 @@ class Lt(Transform):
 
     def inverse(self, y: Ts) -> Ts:
         return y.neg().log() if self.limit is None else torch.log(self.limit - y)
+
+    def extra_repr(self) -> str:
+        return _extra_repr(self.limit, 'limit')
 
     def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
         return {
@@ -293,6 +315,9 @@ class Composite(Transform):
         for t in reversed(self.transforms):
             y = t.inverse(y)
         return y
+
+    def extra_repr(self) -> str:
+        return ',\n'.join(map(repr, self.transforms))
 
     def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
         return {

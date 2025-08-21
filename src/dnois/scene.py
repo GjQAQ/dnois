@@ -2,11 +2,13 @@ import torch
 
 from dnois.base import ShapeError
 from dnois.base.typing import Ts, Any
+from dnois.isp import srgb2linear
 
 __all__ = [
     'ImageScene',
     'PointCloudScene',
     'Scene',
+    'ViewArrayScene',
 ]
 
 
@@ -105,6 +107,9 @@ class ImageScene(Scene):
                 self._intrinsic, self._polarized, True
             )
 
+    def srgb2linear(self) -> 'ImageScene':
+        return ImageScene(srgb2linear(self._image), self._depth, self._intrinsic, self._polarized, self._batched)
+
     @property
     def image(self) -> Ts:
         return self._image
@@ -184,3 +189,78 @@ class PointCloudScene(Scene):
     @property
     def n_points(self):
         return self.luminance.size(-1)
+
+
+class ViewArrayScene(Scene):
+
+    def __init__(
+        self,
+        image: Ts | list[list[Ts]],  # (B x )N1 x N2 x C x H x W
+        batched: bool = True,
+    ):
+        if not torch.is_tensor(image):
+            image = torch.stack([torch.stack(img_row, -4) for img_row in image], -5)
+        if batched and image.ndim != 6:
+            raise ShapeError(f'image should be 6 dimensional, got {image.shape}')
+        if not batched and image.ndim != 5:
+            raise ShapeError(f'image should be 5 dimensional, got {image.shape}')
+
+        self.nh = image.size(-5)
+        self.nw = image.size(-4)
+        self._views = [
+            [ImageScene(img, batched=batched) for img in img_row.unbind(-4)]
+            for img_row in image.unbind(-5)
+        ]
+        self._batched = batched
+
+    def as_tensor(self) -> Ts:
+        return torch.stack([
+            torch.stack([s.image for s in scene_row], -4)
+            for scene_row in self._views
+        ], -5)
+
+    def as_scenes(self) -> list[list[ImageScene]]:
+        return [[s for s in scene_row] for scene_row in self._views]
+
+    def batch(self) -> 'ViewArrayScene':
+        if self._batched:
+            return self
+        # Create a new ViewArrayScene with batched ImageScene objects
+        return ViewArrayScene(self.as_tensor().unsqueeze(0), batched=True)
+
+    def srgb2linear(self) -> 'ViewArrayScene':
+        return ViewArrayScene([
+            [srgb2linear(s.image) for s in img_row]
+            for img_row in self._views
+        ], batched=self._batched)
+
+    @property
+    def images(self):
+        return [
+            [img_scene.image for img_scene in img_row]
+            for img_row in self._views
+        ]
+
+    @property
+    def batch_size(self):
+        return self._views[0][0].batch_size
+
+    @property
+    def n_wl(self):
+        return self._views[0][0].n_wl
+
+    @property
+    def n_vertical(self):
+        return len(self._views)
+
+    @property
+    def n_horizontal(self):
+        return len(self._views[0])
+
+    @property
+    def height(self):
+        return self._views[0][0].height
+
+    @property
+    def width(self):
+        return self._views[0][0].width

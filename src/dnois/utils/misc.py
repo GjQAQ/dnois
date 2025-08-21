@@ -1,4 +1,5 @@
 import collections.abc
+import contextlib
 import functools
 import inspect
 import math
@@ -8,11 +9,14 @@ import torch
 from ..base import typing, unit
 
 __all__ = [
+    'context_cache',
+    'enable_group_cache',
     'fmt',
     'invalid_option_msg',
     'type_normalizer',
     'with_external',
 
+    'ContextCache',
     'Conditional',
     'Exparam',
     'ExternalParamMixIn',
@@ -339,3 +343,82 @@ GenericCompute.exp = GenericCompute(math.exp, torch.exp)
 GenericCompute.log = GenericCompute(math.log, torch.log)
 GenericCompute.sqrt = GenericCompute(math.sqrt, torch.sqrt)
 GenericCompute.abs = GenericCompute(math.fabs, torch.abs)
+
+
+class ContextCache:
+    """
+    A class to enable cacheing return values of its methods.
+    First, decorate the methods that may be cached with :func:`context_cache`.
+    Then, start a "with" block with :meth:`enable_cache` and the specified methods
+    are cached in the block. At the end of the block, the cache is cleared.
+
+    .. warning::
+        Specified methods are cached **unconditionally**, i.e. the second call
+        returns what the first call returns exactly.
+    """
+    _ctx_cache: dict
+
+    @contextlib.contextmanager
+    def enable_cache(self, items: str | typing.Collection[str]):
+        """
+        Return a context manager that caches the specified methods.
+
+        :param items: A collection of keys of cached methods.
+        """
+        if isinstance(items, str):
+            items = [items]
+
+        original = self._get_ctx_cache()
+        cache = {}
+        for item in items:
+            if item in original:
+                cache[item] = original[item]
+            else:
+                cache[item] = None
+        self._ctx_cache = cache
+
+        yield cache
+
+        self._ctx_cache = original
+
+    def _get_ctx_cache(self):
+        d = self.__dict__
+        d.setdefault('_ctx_cache', {})
+        return d['_ctx_cache']
+
+
+def context_cache(func: typing.Callable | str = None):
+    """
+    A decorator to mark a method as cacheable by :class:`ContextCache`.
+    If called with one argument of type ``str``, it serves as the key of the method.
+    If called with no argument, the key is the name of the method.
+    """
+    if callable(func):
+        f_name = func.__name__
+        return context_cache(f_name)(func)
+
+    def decorator(f):
+        cache_key = func
+        if cache_key is None:
+            cache_key = f.__name__
+
+        @functools.wraps(f)
+        def wrapper(self, *args, **kwargs):
+            cache = getattr(self, '_ctx_cache', {})
+            if cache_key not in cache:
+                return f(self, *args, **kwargs)
+
+            if cache[cache_key] is None:
+                cache[cache_key] = f(self, *args, **kwargs)
+            return cache[cache_key]
+
+        return wrapper
+
+    return decorator
+
+
+@contextlib.contextmanager
+def enable_group_cache(items: str | typing.Collection[str], objs: list):
+    with contextlib.ExitStack() as stack:
+        entries = [stack.enter_context(obj.enable_cache(items)) for obj in objs]
+        yield entries

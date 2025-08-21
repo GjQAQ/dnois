@@ -308,7 +308,7 @@ class PSFAugSimple(Simple):
             b = obj.size(0)
             single_size, r = divmod(b, 4)
             psf = psf.unsqueeze(0)
-            psf = torch.stack([
+            psf = torch.cat([
                 psf.expand(single_size + int(r >= 1), -1, -1, -1),
                 psf.fliplr().expand(single_size + int(r >= 2), -1, -1, -1),
                 psf.flipud().expand(single_size + int(r >= 3), -1, -1, -1),

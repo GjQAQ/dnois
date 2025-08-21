@@ -35,7 +35,6 @@ class ImagingOptics(
     base.AsJsonMixIn,
     utils.ExternalParamMixIn,
     torch.nn.Module,
-    metaclass=abc.ABCMeta,
 ):
     """
     Base class for all imaging optics.
@@ -58,13 +57,14 @@ class ImagingOptics(
             value = normalizer(value)
         return super().__setattr__(key, value)
 
-    @abc.abstractmethod
     def render_image_scene(self, scene: _sc.ImageScene, **kwargs) -> Ts:
-        pass
+        raise NotImplementedError(f'{self.render_image_scene.__qualname__} not implemented')
 
-    @abc.abstractmethod
     def render_point_cloud_scene(self, scene: _sc.PointCloudScene, **kwargs) -> Ts:
-        pass
+        raise NotImplementedError(f'{self.render_point_cloud_scene.__qualname__} not implemented')
+
+    def render_view_array_scene(self, scene: _sc.ViewArrayScene, **kwargs) -> Ts:
+        raise NotImplementedError(f'{self.render_view_array_scene.__qualname__} not implemented')
 
     def forward(self, scene: _sc.Scene, **kwargs) -> Ts:
         """
@@ -79,6 +79,8 @@ class ImagingOptics(
             return self.render_image_scene(scene, **kwargs)
         elif isinstance(scene, _sc.PointCloudScene):
             return self.render_point_cloud_scene(scene, **kwargs)
+        elif isinstance(scene, _sc.ViewArrayScene):
+            return self.render_view_array_scene(scene, **kwargs)
         else:
             raise TypeError(f'Unknown scene type for {self._cn()}: {type(scene).__name__}')
 

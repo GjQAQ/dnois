@@ -41,12 +41,14 @@ ImagingModel = ty.Literal['psf', 'forward_rt', 'backward_rt']
 
 if ty.TYPE_CHECKING:
     if ext.vis.mpl_available():
+        from matplotlib.axes import Axes
         from matplotlib.pyplot import Figure
     else:
+        Axes = ...
         Figure = ...
 
 
-def _plot_set_ax(ax, x_range: tuple[float, float]):
+def _plot_set_ax(ax: 'Axes', x_range: tuple[float, float]):
     x_length = x_range[1] - x_range[0]
     ax.set_xlim(x_range[0] - 0.05 * x_length, x_range[1] + 0.05 * x_length)
     ax.set_xlabel('$z/m$')
@@ -124,6 +126,7 @@ class CoaxialRayTracing(
     system.PsfImagingOptics,
     rto.ForwardRayTracingOptics,
     _t.FreezeParamMixIn,
+    utils.ContextCache,
 ):
     """
     A class of sequential and ray-tracing-based optical system model.
@@ -437,6 +440,7 @@ class CoaxialRayTracing(
 
         return self
 
+    @utils.context_cache
     @utils.with_external
     def psf(
         self,
@@ -935,14 +939,6 @@ class CoaxialRayTracing(
     def psf_size(self, value):
         self.psf_model.psf_size = value
 
-    @property
-    def norm_psf(self):
-        return self.psf_model.norm_psf
-
-    @norm_psf.setter
-    def norm_psf(self, value):
-        self.psf_model.norm_psf = value
-
     # Optical parameters
     # =============================
 
@@ -1039,7 +1035,7 @@ class CoaxialRayTracing(
     # Serialization
     # ===========================
     @staticmethod
-    def _todict_sampler(*arg, **kwargs):
+    def _todict_sampler(*_, **__):
         return None  # TODO: do not store sampler at present
 
     @classmethod

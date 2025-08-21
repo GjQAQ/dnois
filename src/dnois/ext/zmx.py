@@ -136,7 +136,7 @@ class ZemaxFile:
         return obj
 
 
-class ZemaxSurfaceParser:
+class ZemaxSurfaceConverter:
     name: str
     type: type[rt.Surface]
 
@@ -145,7 +145,7 @@ class ZemaxSurfaceParser:
 
     def dump(self, surface: rt.Surface) -> list[str]:
         fields = [
-            f'TYPE {self.name}',
+            f'TYPE {self.zmx_name()}',
             f'FIMP',
             f'DISZ {self.icl(surface.distance):.15E}',
         ]
@@ -194,6 +194,10 @@ class ZemaxSurfaceParser:
         return base.Length.default_to(value, self.unit)
 
     @classmethod
+    def zmx_name(cls) -> str:
+        return cls.name
+
+    @classmethod
     @ty.overload
     def create(cls, name: str, *args, **kwargs):
         subclasses = utils.subclasses(cls)
@@ -221,7 +225,15 @@ class ZemaxSurfaceParser:
             return ols[1](cls, name_or_type, *args, **kwargs)
 
 
-class DGratingParser(ZemaxSurfaceParser):
+class DumpOnlyConverter(ZemaxSurfaceConverter):
+    name = ''
+    type = ...
+
+    def handle_field(self, *args, **kwargs):
+        raise RuntimeError(f'Unexpected calling')
+
+
+class DGratingConverter(ZemaxSurfaceConverter):
     name = 'DGRATING'
     type = rt.Grating
 
@@ -247,7 +259,7 @@ class DGratingParser(ZemaxSurfaceParser):
                 kwargs['orders'] = (order, order)
 
 
-class ParaxialParser(ZemaxSurfaceParser):
+class ParaxialConverter(ZemaxSurfaceConverter):
     name = 'PARAXIAL'
     type = rt.ThinLens
 
@@ -267,7 +279,7 @@ class ParaxialParser(ZemaxSurfaceParser):
                 kwargs['fl1'] = self.cl(param_v)
 
 
-class StandardParser(ZemaxSurfaceParser):
+class StandardConverter(ZemaxSurfaceConverter):
     name = 'STANDARD'
     type = rt.Conic
 
@@ -298,7 +310,22 @@ class StandardParser(ZemaxSurfaceParser):
             kwargs['conic'] = float(values[0])
 
 
-class EvenAsphParser(StandardParser):
+class StandardAsCircularStopConverter(DumpOnlyConverter):
+    name = ''
+    type = rt.CircularStop
+
+    def dump(self, surface: rt.CircularStop) -> list[str]:
+        fields = super().dump(surface)
+        fields.append('CURV 0 0 0 0 0 ""')
+        fields.append('CONI 0')
+        return fields
+
+    @classmethod
+    def zmx_name(cls) -> str:
+        return 'STANDARD'
+
+
+class EvenAsphConverter(StandardConverter):
     name = 'EVENASPH'
     type = rt.EvenAspherical
     aspheric_attr_name = 'coefficients'
@@ -334,7 +361,7 @@ class EvenAsphParser(StandardParser):
             c[idx - 1] = value * ratio ** (2 * idx - 1)
 
 
-class Binary2Parser(EvenAsphParser):
+class Binary2Converter(EvenAsphConverter):
     name = 'BINARY_2'
     type = rt.AsphericalRadialPhase
 
@@ -380,7 +407,7 @@ class Binary2Parser(EvenAsphParser):
                 c[idx] = float(value)
 
 
-class SzernsagParser(EvenAsphParser):
+class SzernsagConverter(EvenAsphConverter):
     name = 'SZERNSAG'
     type = rt.Zernike
     aspheric_attr_name = 'a'
@@ -448,7 +475,7 @@ def _surface_from_zmx_fields(fields: list[str], idx: int, unit: str) -> rt.Surfa
     else:
         raise ZemaxParsingError(f'Type not found for surface {idx}')
 
-    parser = ZemaxSurfaceParser.create(stype, unit)
+    parser = ZemaxSurfaceConverter.create(stype, unit)
     surf = parser.parse(fields)
     return surf
 
@@ -477,7 +504,7 @@ def sq2zmx(
         'DIAM 0 0 0 0 1 ""',
     ])  # object plane
     for surface in sq:
-        parser = ZemaxSurfaceParser.create(surface.__class__, unit['length'].lower())
+        parser = ZemaxSurfaceConverter.create(surface.__class__, unit['length'].lower())
         zmx.surfaces.append(parser.dump(surface))
     zmx.surfaces.append([
         'TYPE STANDARD',
