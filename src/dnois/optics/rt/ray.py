@@ -303,6 +303,22 @@ class BatchedRay(_t.TensorContainerMixIn):
         t = (z - self.z) / self.d_z
         return self.march_(t, n)
 
+    def intersect_with_plane(self, normal: Ts, constant: Ts | float) -> Ts:
+        r"""
+        Computers the intersection of the rays with a plane whose equation is:
+
+        .. math::
+            \mathbf{n}\cdot\mathbf{x}=c
+
+        :param Tensor normal: The normal vector :math:`\mathbf{n}` of the plane.
+        :param constant: The constant :math:`c` of the plane.
+        :type constant: Tensor or float
+        :return: The intersection point :math:`\mathbf{x}`.
+        :rtype: Tensor
+        """
+        t = (constant - torch.sum(normal * self.o, dim=-1)) / torch.sum(normal * self.d, dim=-1)
+        return self.o + t.unsqueeze(-1) * self.d
+
     def to_(self, *args, **kwargs) -> Self:
         """
         Call :py:meth:`torch.Tensor.to` for all the tensors bound to ``self``

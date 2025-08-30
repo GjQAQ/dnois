@@ -15,6 +15,7 @@ from ..base.typing import (
 from ..sensor import Sensor
 
 __all__ = [
+    'DuplicatePsfOptics',
     'GeneralPsfRecenterType',
     'IdealOptics',
     'ImagingOptics',
@@ -94,7 +95,7 @@ class ImagingOptics(
         return s
 
 
-class ObjectSpaceMixIn(_t.TensorContainerMixIn):
+class ObjectSpaceMixIn(_t.TensorContainerMixIn):  # TODO: check definition about angle unit
     def tanfovd2obj(self, tanfov: typing.Sequence[Double[float]] | Ts, depth: float | Ts) -> Ts:
         r"""
         Computes 3D coordinates of points in
@@ -951,8 +952,7 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         if fov is None:
             fov = (0., 0.)
         if isinstance(fov, str) and fov == 'random':
-            rm = self.reference
-            fov = (_random_fov(rm.fov_half_x), _random_fov(rm.fov_half_y))
+            fov = (_random_fov(self.fov_x_lower, self.fov_x_upper), _random_fov(self.fov_y_lower, self.fov_y_upper))
             fov = self.variable_hook('conv_render.fov', fov)
         elif callable(fov):
             fov = cast(Callable, fov)()
@@ -1058,6 +1058,64 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         if d['sensor'] is not None:
             d['sensor'] = Sensor(**d['sensor'])
         return d
+
+
+class DuplicatePsfOptics(PsfImagingOptics):
+    """
+    A simple model that duplicates the PSF of another :class:`PsfImagingOptics`.
+
+    :param PsfImagingOptics source: The source :class:`PsfImagingOptics`.
+    :param symmetry: Symmetry relationship between this optical system and the source.
+        Either ``'x'`` (symmetric w.r.t. y-axis, the same below), ``'y'``,
+        ``'central'`` (symmetric w.r.t. the origin), ``'diag'`` (symmetric w.r.t. the diagonal
+        between x and y-axis), ``'adiag'`` (anti-diagonal) or ``None`` (identical).
+        Default: ``None``.
+    :type symmetry: str or None
+    """
+    source: PsfImagingOptics
+
+    def __init__(
+        self,
+        source: PsfImagingOptics,
+        symmetry: typing.Literal['x', 'y', 'central', 'diag', 'adiag'] = None,
+        source_as_submodule: bool = False,
+        **kwargs
+    ):
+        super().__init__(**kwargs)
+
+        if source_as_submodule:
+            self.source = source
+        else:
+            self.__dict__['source'] = source  # avoid submodule registration
+        self.symmetry = symmetry
+
+    def psf(self, origins: Ts, *args, **kwargs) -> Ts:
+        if self.symmetry:
+            origins = origins.clone()
+        if self.symmetry == 'x':
+            origins[..., 0] = -origins[..., 0]
+        elif self.symmetry == 'y':
+            origins[..., 1] = -origins[..., 1]
+        elif self.symmetry == 'central':
+            origins[..., :2] = -origins[..., :2]
+        elif self.symmetry == 'diag':
+            origins[..., [0, 1]] = origins[..., [1, 0]]
+        elif self.symmetry == 'adiag':
+            origins[..., [0, 1]] = -origins[..., [1, 0]]
+
+        psf = self.source.psf(origins, *args, **kwargs)
+
+        if self.symmetry == 'x':
+            psf = torch.flip(psf, dims=(-1,))
+        elif self.symmetry == 'y':
+            psf = torch.flip(psf, dims=(-2,))
+        elif self.symmetry == 'central':
+            psf = torch.flip(psf, dims=(-1, -2))
+        elif self.symmetry == 'diag':
+            psf = psf.transpose(-2, -1)
+        elif self.symmetry == 'adiag':
+            psf = torch.flip(psf, dims=(-1, -2)).transpose(-2, -1)
+        return psf
 
 
 class IdealOptics(PsfImagingOptics):

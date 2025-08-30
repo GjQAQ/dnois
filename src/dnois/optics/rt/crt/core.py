@@ -14,9 +14,10 @@ from ....sensor import Sensor
 __all__ = [
     'ChiefSide',
     'CoaxialRayTracing',
+    'CrtFovModel',
     'CrtPsfModel',
     'FlType',
-    'FovType',
+    'FovItem',
     'ImagingModel',
     'PupilSpec',
     'PsfCenter',
@@ -29,7 +30,6 @@ DEFAULT_FIND_CHIEF_SAMPLES: int = 101
 DEFAULT_SAMPLES: int = 512
 
 Ts = ty.Ts
-FovType = ty.Literal['perspective', 'chief', 'average']
 PupilType = ty.Literal['probe', 'trace', 'paraxial']
 FlType = ty.Literal['paraxial', 'trace']
 ChiefSide = ty.Literal['obj', 'img', 'object', 'image']
@@ -38,6 +38,7 @@ PsfCenter = ty.Literal['linear', 'mean', 'mean-robust', 'chief'] | ty.Double[flo
 PsfType = ty.Literal['inc_rect', 'inc_gaussian', 'coh_kirchoff', 'coh_huygens', 'coh_fraunhofer']
 PupilSpec = ty.Double[Ts]  # radius, z-coordinate
 ImagingModel = ty.Literal['psf', 'forward_rt', 'backward_rt']
+FovItem = ty.Literal['x_lower', 'x_upper', 'y_lower', 'y_upper']
 
 if ty.TYPE_CHECKING:
     if ext.vis.mpl_available():
@@ -122,6 +123,24 @@ class CrtPsfModel(utils.ExternalParamMixIn, metaclass=abc.ABCMeta):
     _normalize_psf_size = staticmethod(ty.size2d)
 
 
+class CrtFovModel(metaclass=abc.ABCMeta):
+    type: str
+
+    @abc.abstractmethod
+    def get(self, optics: 'CoaxialRayTracing', which: FovItem) -> float:
+        pass
+
+    @classmethod
+    def create(cls, model_type: str, *args, **kwargs) -> ty.Self:
+        if cls is not CrtFovModel:
+            return cls(*args, **kwargs)  # noqa
+
+        for sub in utils.subclasses(cls):
+            if sub.type == model_type:
+                return sub.create(model_type, *args, **kwargs)
+        raise ValueError(f'Unknown CRT FoV model type: {model_type}')
+
+
 class CoaxialRayTracing(
     system.PsfImagingOptics,
     rto.ForwardRayTracingOptics,
@@ -162,7 +181,7 @@ class CoaxialRayTracing(
         ``'coh_fraunhofer'``
             The complex amplitude on image plane is computed as Fraunhofer diffraction,
             i.e. Fourier transform of pupil function.
-    :param str fov_type: The way to determine range of FoV.
+    :param str fov_model: The way to determine range of FoV.
 
         ``'perspective'``
             Determined by perspective relation i.e. size of sensor and :attr:`.perspective_focal_length`.
@@ -220,7 +239,7 @@ class CoaxialRayTracing(
     """
     imaging_model: utils.Exparam
     psf_model: utils.Exparam
-    fov_type: utils.Exparam
+    fov_model: utils.Exparam
     sampler: utils.Exparam
     coherent_tracing_samples: utils.Exparam
     coherent_tracing_sampling_pattern: utils.Exparam
@@ -235,7 +254,7 @@ class CoaxialRayTracing(
         imaging_model: ImagingModel = 'psf',
         perspective_focal_length: float = None,
         psf_model: PsfType | CrtPsfModel = 'inc_rect',
-        fov_type: FovType = 'perspective',
+        fov_model: str | CrtFovModel = 'perspective',
         sampler: surf.Sampler = None,
         coherent_tracing_samples: int = 512,
         coherent_tracing_sampling_pattern: str = 'quadrapolar',
@@ -251,14 +270,16 @@ class CoaxialRayTracing(
         if vis_config is None:
             vis_config = CRTVisConfig()
 
-        # must prior to super() call
         if not isinstance(psf_model, CrtPsfModel):
             psf_model = CrtPsfModel.create(psf_model)
+        if not isinstance(fov_model, CrtFovModel):
+            fov_model = CrtFovModel.create(fov_model)
+        # must prior to super() call
         self.psf_model: CrtPsfModel = psf_model  #: See :class:`CoaxialRayTracing`.
 
         super().__init__(sensor, perspective_focal_length, **kwargs)
         self.surfaces: surf.CoaxialSurfaceSequence = surfaces  #: Surface list.
-        self.fov_type: FovType = fov_type  #: See :class:`CoaxialRayTracing`.
+        self.fov_model: CrtFovModel = fov_model  #: See :class:`CoaxialRayTracing`.
         self.sampler: surf.Sampler = sampler  #: See :class:`CoaxialRayTracing`.
         #: See :class:`CoaxialRayTracing`.
         self.coherent_tracing_samples: int = coherent_tracing_samples
@@ -944,50 +965,19 @@ class CoaxialRayTracing(
 
     @property
     def fov_x_lower(self) -> float:
-        if self.fov_type == 'perspective':
-            return super().fov_x_lower
-        elif self.fov_type == 'chief':
-            sensor = self._sensor()
-            src = self.new_tensor([sensor.w / 2, 0, self.surfaces.total_length.item()])  # (3,)
-            ray = self.chief_ray(src, side='img')
-            out_ray = self.trace_ray(ray, False)
-        elif self.fov_type == 'average':
-            raise NotImplementedError()
-        else:
-            raise ValueError(f'Unknown FoV type: {self.fov_type}')
+        return self.fov_model.get(self, 'x_lower')
 
     @property
     def fov_x_upper(self) -> float:
-        if self.fov_type == 'perspective':
-            return super().fov_x_upper
-        elif self.fov_type == 'chief':
-            raise NotImplementedError()
-        elif self.fov_type == 'average':
-            raise NotImplementedError()
-        else:
-            raise ValueError(f'Unknown FoV type: {self.fov_type}')
+        return self.fov_model.get(self, 'x_upper')
 
     @property
     def fov_y_lower(self) -> float:
-        if self.fov_type == 'perspective':
-            return super().fov_y_lower
-        elif self.fov_type == 'chief':
-            raise NotImplementedError()
-        elif self.fov_type == 'average':
-            raise NotImplementedError()
-        else:
-            raise ValueError(f'Unknown FoV type: {self.fov_type}')
+        return self.fov_model.get(self, 'y_lower')
 
     @property
     def fov_y_upper(self) -> float:
-        if self.fov_type == 'perspective':
-            return super().fov_y_upper
-        elif self.fov_type == 'chief':
-            raise NotImplementedError()
-        elif self.fov_type == 'average':
-            raise NotImplementedError()
-        else:
-            raise ValueError(f'Unknown FoV type: {self.fov_type}')
+        return self.fov_model.get(self, 'y_upper')
 
     @property
     def principal1(self) -> Ts:

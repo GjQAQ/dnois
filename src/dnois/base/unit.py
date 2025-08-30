@@ -6,8 +6,10 @@ from . import typing
 from .. import conf
 
 __all__ = [
+    'angle',
     'convert',
     'get_default',
+    'length',
     'set_default',
 
     'Unit',
@@ -283,3 +285,7 @@ def _recognize_unit_cls(*units):
             unit_cls = t
             return unit_cls
     raise ValueError(f'Cannot recognize unit type from {units}')
+
+
+angle = Angle.as_default
+length = Length.as_default

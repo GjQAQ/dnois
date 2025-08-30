@@ -760,6 +760,7 @@ class PlanarPhase(Planar, metaclass=abc.ABCMeta):
         ndx = (n1 * ray_local.d_x + inv_k * phase_x) / n2
         ndy = (n1 * ray_local.d_y + inv_k * phase_y) / n2
         ndz, valid = _t.ssqrt(1 - ndx.square() - ndy.square())
+        ndz = ndz.copysign(ray_local.d_z)
         new_d = torch.stack([ndx, ndy, ndz], dim=-1)
         new_d = self.ctx.l2g(new_d, True)
 
@@ -887,7 +888,10 @@ class PolynomialPhase(PlanarPhase, CircularSurface):
 
     def _radial_phase_grad_r2(self, r2: Ts) -> Ts:
         c = [(i + 1) * _c / self.norm_radius ** (2 * (i + 1)) for i, _c in enumerate(self.a)]
-        return _t.polynomial(r2, c)
+        if c:
+            return _t.polynomial(r2, c)
+        else:
+            return torch.zeros_like(r2)
 
     def _rect_phase_grad(self, x: Ts, y: Ts) -> tuple[Ts, Ts]:
         if self.m == 0:

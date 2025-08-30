@@ -52,3 +52,13 @@ Computation
     GenericCompute
     Conditional
     InfinityCond
+
+*********************************************
+Context cache
+*********************************************
+.. autosummary::
+    :toctree: ../generated/utils/context_cache
+
+    ContextCache
+    context_cache
+    enable_group_cache
