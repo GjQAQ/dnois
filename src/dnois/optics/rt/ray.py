@@ -90,7 +90,7 @@ class BatchedRay(_t.TensorContainerMixIn):
     :type init_phase: float or Tensor
     """
 
-    __slots__ = ('_o_modified', '_ts',)
+    __slots__ = ('_ts',)
 
     _3d = ('o', 'd')
 
@@ -129,7 +129,7 @@ class BatchedRay(_t.TensorContainerMixIn):
             'ph': init_phase,
             'i': init_intensity,
         }
-        self._o_modified = False
+        self._oid = (-1, -1)  # id and _version of self.o at the time of last computation of self.r2
 
     def __repr__(self):
         shape = self.shape
@@ -484,7 +484,6 @@ class BatchedRay(_t.TensorContainerMixIn):
             raise base.ShapeError(f'Non-scalar tensor expected, got shape ({value.shape})')
         self._check_shape(value.shape[:-1], 'origin')
         self._ts['o'] = self._cast(value)
-        self._o_modified = True
 
     @property
     def d(self) -> Ts:
@@ -676,10 +675,14 @@ class BatchedRay(_t.TensorContainerMixIn):
 
         :type: Tensor
         """
-        if not self._o_modified and 'r2' in self._ts:
+        oid = self._get_oid()
+        if oid[0] == self._oid[0] and oid[1] == self._oid[1]:
             return self._ts['r2']
+
         r2 = self.x.square() + self.y.square()
         self._ts['r2'] = r2
+
+        self._oid = oid
         return r2
 
     @property
@@ -719,3 +722,7 @@ class BatchedRay(_t.TensorContainerMixIn):
 
     def _delegate(self):
         return self._ts['o']
+
+    def _get_oid(self):
+        o = self.o
+        return id(o), o._version

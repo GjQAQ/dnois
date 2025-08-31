@@ -417,7 +417,7 @@ class SzernsagConverter(EvenAsphConverter):
 
         # Add Zernike coefficients
         # Add number of terms
-        fields.append(f'XDAT 1 {surface.zernike_items} 0 0 1 0 0 ""')
+        fields.append(f'XDAT 1 {surface.z_n} 0 0 1 0 0 ""')
 
         # Add normalization radius
         fields.append(f'XDAT 2 {self.icl(surface.norm_radius):.15E} 0 0 1 0 0 ""')

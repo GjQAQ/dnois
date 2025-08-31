@@ -30,11 +30,12 @@ def _zernike_radial_coefficient(n: int, m: int, s: int):
     return -c if s % 2 else c
 
 
-def _zernike_radial(r: ty.Numeric, n: int, m: int) -> ty.Numeric:
+def _zernike_radial(r: ty.Numeric, n: int, m: int, r2: ty.Numeric = None) -> ty.Numeric:
     # lower order to higher order
     cs = [_zernike_radial_coefficient(n, m, s) for s in range((n - m) // 2, -1, -1)]
 
-    r2 = r ** 2
+    if r2 is None:
+        r2 = r ** 2
     if m == 0:
         if n == 0:
             # when n==0, 1. is returned no matter r is float or tensor without this branch
@@ -51,13 +52,14 @@ def _zernike_radial(r: ty.Numeric, n: int, m: int) -> ty.Numeric:
     return value
 
 
-def _zernike_radial_over_r(r: ty.Numeric, n: int, m: int) -> ty.Numeric:
+def _zernike_radial_over_r(r: ty.Numeric, n: int, m: int, r2: ty.Numeric = None) -> ty.Numeric:
     # this function is used to compute Cartesian derivatives of zernike
     if m == 0:
         raise RuntimeError(f'Unexpected call to {_zernike_radial_over_r.__name__}')
 
+    if r2 is None:
+        r2 = r ** 2
     cs = [_zernike_radial_coefficient(n, m, s) for s in range((n - m) // 2, -1, -1)]
-    r2 = r ** 2
     if m == 1:
         if n == 1:
             # see comment in _zernike_radial
@@ -73,11 +75,12 @@ def _zernike_radial_over_r(r: ty.Numeric, n: int, m: int) -> ty.Numeric:
     return value
 
 
-def _zernike_radial_derivative(r: ty.Numeric, n: int, m: int) -> ty.Numeric:
+def _zernike_radial_derivative(r: ty.Numeric, n: int, m: int, r2: ty.Numeric = None) -> ty.Numeric:
     # lower order to higher order
     cs = [_zernike_radial_coefficient(n, m, s) * (n - 2 * s) for s in range((n - m) // 2, -1, -1)]
 
-    r2 = r ** 2
+    if r2 is None:
+        r2 = r ** 2
     if m == 0:
         if n == 0:
             # see comment in _zernike_radial
@@ -104,7 +107,7 @@ def _zernike_normalization(n: int, m: int) -> ty.Numeric:
     return (2 * (n + 1)) ** 0.5
 
 
-def zernike(r: ty.Numeric, theta: ty.Numeric, k: int) -> ty.Numeric:
+def zernike(r: ty.Numeric, theta: ty.Numeric, k: int, **kwargs) -> ty.Numeric:
     r"""
     Computes the :math:`k`-th term of Zernike polynomials:
 
@@ -145,7 +148,7 @@ def zernike(r: ty.Numeric, theta: ty.Numeric, k: int) -> ty.Numeric:
         Journal of the Optical Society of America, 66(3), 207-211.
     """
     n, m = _nm_from_k(k)
-    radial = _zernike_radial(r, n, m)
+    radial = _zernike_radial(r, n, m, **kwargs)
     norm = _zernike_normalization(n, m)
     if m == 0:
         return radial * norm
@@ -157,7 +160,7 @@ def zernike(r: ty.Numeric, theta: ty.Numeric, k: int) -> ty.Numeric:
     return radial * azimuthal * norm
 
 
-def zernike_cpd(r: ty.Numeric, theta: ty.Numeric, k: int) -> tuple[ty.Numeric, ty.Numeric]:
+def zernike_cpd(r: ty.Numeric, theta: ty.Numeric, k: int, **kwargs) -> tuple[ty.Numeric, ty.Numeric]:
     r"""
     Computes the Cartesian partial derivatives of :math:`k`-th term of Zernike polynomials.
     See :func:`zernike` for more details.
@@ -169,7 +172,7 @@ def zernike_cpd(r: ty.Numeric, theta: ty.Numeric, k: int) -> tuple[ty.Numeric, t
         :math:`\pfrac{Z_k(r,\theta)}{y}`.
     """
     n, m = _nm_from_k(k)
-    d_radial = _zernike_radial_derivative(r, n, m)
+    d_radial = _zernike_radial_derivative(r, n, m, **kwargs)
     norm = _zernike_normalization(n, m)
     if m == 0:
         _1 = d_radial * norm
@@ -182,7 +185,7 @@ def zernike_cpd(r: ty.Numeric, theta: ty.Numeric, k: int) -> tuple[ty.Numeric, t
         azimuthal = utils.GenericCompute.cos(m * theta)
         d_azimuthal = -m * utils.GenericCompute.sin(m * theta)
     _1 = d_radial * azimuthal
-    _2 = _zernike_radial_over_r(r, n, m) * d_azimuthal
+    _2 = _zernike_radial_over_r(r, n, m, **kwargs) * d_azimuthal
     dx = _1 * utils.GenericCompute.cos(theta) - _2 * utils.GenericCompute.sin(theta)
     dy = _1 * utils.GenericCompute.sin(theta) + _2 * utils.GenericCompute.cos(theta)
     return dx * norm, dy * norm

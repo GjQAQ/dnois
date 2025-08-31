@@ -62,32 +62,7 @@ def even_aspherical_derivative_r2(r2: Ts, c: Ts, k: Ts = None, a: Sequence[Ts] =
     return aspherical + conic_base
 
 
-class QuasiSphereMixIn(Surface, metaclass=abc.ABCMeta):
-    @property
-    @abc.abstractmethod
-    def px_curvature(self) -> Ts:
-        """
-        Paraxial curvature.
-
-        :type: Tensor
-        """
-        pass
-
-    def paraxialize(self, wl: ty.Numeric) -> paraxial.ParaxialSystem:
-        z = self.context.baseline if isinstance(self.context, CoaxialContext) else None
-        roc = 1 / self.px_curvature
-        if self.reflective:
-            ps = paraxial.ParaxialSystem.from_reflective_interface(roc, z)
-        else:
-            n1, n2 = self.context.material_before.n(wl), self.material.n(wl)
-            ps = paraxial.ParaxialSystem.from_refractive_interface(roc, n1, n2, z)
-
-        if not self.context.upward_in:
-            ps = ps.flip()
-        return ps
-
-
-class ThinLens(Planar, CircularSurface):
+class ThinLens(Planar):
     """
     A model for thin lens. Focal length in object space and image space
     can be specified separately. Note that "object space" here means
@@ -107,6 +82,7 @@ class ThinLens(Planar, CircularSurface):
         and their directions are smaller than ``eps`` is considered as invalid.
         Default: ``1e-3``.
     """
+    circularly_symmetric = True
 
     def __init__(
         self,
@@ -156,12 +132,6 @@ class ThinLens(Planar, CircularSurface):
             self.fl2 = nn.Parameter(self.fl1.clone())
             self._fl_equal = False
         return self
-
-    def h_r2(self, r2: Ts) -> Ts:
-        return torch.zeros_like(r2)
-
-    def h_derivative_r2(self, r2: Ts) -> Ts:
-        return torch.zeros_like(r2)
 
     def extra_repr(self) -> str:
         if self._fl_equal:
@@ -214,23 +184,6 @@ class ThinLens(Planar, CircularSurface):
             self.fl2, self.fl1 = self.fl1, self.fl2
         return self
 
-    def px_image_point(self, wl: ty.Numeric, point: Ts, forward: bool = True) -> Ts:
-        z0 = self.ctx.baseline  # 0d
-        z = point[..., 2]  # ...
-        if forward:
-            obj_d = z0 - z  # ...
-            fl_obj, fl_img = self.fl1, self.fl2
-        else:
-            obj_d = z - z0  # ...
-            fl_obj, fl_img = self.fl2, self.fl1
-
-        img_d = _func.imgd(obj_d, fl_obj, fl_img)  # ...
-        z = z0 + img_d if forward else z0 - img_d  # ...
-
-        lateral_amplification = -fl_obj * img_d / (fl_img * obj_d)  # ...
-        xy = point[..., :2] * lateral_amplification.unsqueeze(-1)  # ... x 2
-        return torch.cat([xy, z.unsqueeze(-1)], -1)  # ... x 3
-
     def paraxialize(self, wl: ty.Numeric) -> paraxial.ParaxialSystem:
         z = self.context.baseline if isinstance(self.context, CoaxialContext) else None
         ps = paraxial.FiniteParaxialSystem(z, z, fl1=self.fl1, fl2=self.fl2)
@@ -239,7 +192,7 @@ class ThinLens(Planar, CircularSurface):
         return ps
 
 
-class _SphericalBase(CircularSurface, QuasiSphereMixIn, metaclass=abc.ABCMeta):  # docstring for Spherical
+class _SphericalBase(Surface, metaclass=abc.ABCMeta):  # docstring for Spherical
     r"""
     Spherical surfaces.
 
@@ -251,11 +204,13 @@ class _SphericalBase(CircularSurface, QuasiSphereMixIn, metaclass=abc.ABCMeta): 
 
     where :math:`c` is curvature.
 
-    See :py:class:`CircularSurface` for more description of arguments.
+    See :py:class:`Surface` for more description of arguments.
 
     :param roc: Radius of curvature. Default: ``inf``.
     :type roc: float or Tensor
     """
+    circularly_symmetric = True
+    utilize_r2 = True
 
     def __init__(
         self, roc: Scalar = float('inf'),
@@ -280,6 +235,19 @@ class _SphericalBase(CircularSurface, QuasiSphereMixIn, metaclass=abc.ABCMeta): 
         self.curvature = -self.curvature
         return self
 
+    def paraxialize(self, wl: ty.Numeric) -> paraxial.ParaxialSystem:
+        z = self.context.baseline if isinstance(self.context, CoaxialContext) else None
+        roc = 1 / self.px_curvature
+        if self.reflective:
+            ps = paraxial.ParaxialSystem.from_reflective_interface(roc, z)
+        else:
+            n1, n2 = self.context.material_before.n(wl), self.material.n(wl)
+            ps = paraxial.ParaxialSystem.from_refractive_interface(roc, n1, n2, z)
+
+        if not self.context.upward_in:
+            ps = ps.flip()
+        return ps
+
     def to_dict(self, keep_tensor=True) -> dict[str, Any]:
         d = super().to_dict(keep_tensor)
         d['roc'] = self._attr2dictitem('roc', keep_tensor)
@@ -303,17 +271,27 @@ class _SphericalBase(CircularSurface, QuasiSphereMixIn, metaclass=abc.ABCMeta): 
 
     @property
     def px_curvature(self) -> Ts:
+        """
+        Paraxial curvature.
+
+        :type: Tensor
+        """
         return self.curvature
 
 
 class Spherical(_SphericalBase):
     __doc__ = _SphericalBase.__doc__
 
-    def h_r2(self, r2: Ts) -> Ts:
+    def h(self, x: Ts, y: Ts, r2: Ts = None) -> Ts:
+        if r2 is None:
+            r2 = x.square() + y.square()
         return conical(r2, self.c)
 
-    def h_derivative_r2(self, r2: Ts) -> Ts:
-        return conical_derivative_r2(r2, self.c)
+    def h_grad(self, x: Ts, y: Ts, r2: Ts = None) -> tuple[Ts, Ts]:
+        if r2 is None:
+            r2 = x.square() + y.square()
+        m = conical_derivative_r2(r2, self.c) * 2
+        return m * x, m * y
 
     def _solve_t(self, ray: BatchedRay) -> Ts:
         if not self._cfg.use_analytical:
@@ -376,8 +354,11 @@ class _ConicBase(_SphericalBase, metaclass=abc.ABCMeta):  # docstring for Conic
         r += f',\nconic={utils.fmt(self.conic.item())}'
         return r
 
-    def h_derivative_r2(self, r2: Ts) -> Ts:
-        return conical_derivative_r2(r2, self.c, self.conic)
+    def h_grad(self, x: Ts, y: Ts, r2: Ts = None) -> tuple[Ts, Ts]:
+        if r2 is None:
+            r2 = x.square() + y.square()
+        m = conical_derivative_r2(r2, self.c, self.conic) * 2
+        return m * x, m * y
 
     def to_dict(self, keep_tensor=True) -> dict[str, Any]:
         d = super().to_dict(keep_tensor)
@@ -388,7 +369,9 @@ class _ConicBase(_SphericalBase, metaclass=abc.ABCMeta):  # docstring for Conic
 class Conic(_ConicBase):
     __doc__ = _ConicBase.__doc__
 
-    def h_r2(self, r2: Ts) -> Ts:
+    def h(self, x: Ts, y: Ts, r2: Ts = None) -> Ts:
+        if r2 is None:
+            r2 = x.square() + y.square()
         return conical(r2, self.c, self.conic)
 
     def _solve_t(self, ray: BatchedRay) -> Ts:
@@ -418,7 +401,7 @@ class Conic(_ConicBase):
         return t
 
 
-class EvenAspherical(_ConicBase):
+class _EvenAsphericBase(_ConicBase):
     r"""
     Even aspherical surfaces.
 
@@ -455,32 +438,21 @@ class EvenAspherical(_ConicBase):
         super().__init__(roc, conic, material, aperture, reflective, intersection_config, d=d)
         for i, a in enumerate(coefficients):
             self.register_parameter(f'a{i + 1}', nn.Parameter(ty.scalar(a, dtype=torch.get_default_dtype())))
-        self._n = len(coefficients)
+        self._n_a = len(coefficients)
 
     def extra_repr(self) -> str:
         r = super().extra_repr()
-        r += f',\n' + ','.join(f'a{i + 1}={utils.fmt(a.item())}' for i, a in enumerate(self.coefficients))
+        r += f',\n' + ','.join(f'a{i + 1}={utils.fmt(a.item())}' for i, a in enumerate(self.a))
         return r
-
-    def h_r2(self, r2: Ts) -> Ts:
-        return even_aspherical(r2, self.c, self.conic, self.coefficients)
-
-    def h_derivative_r2(self, r2: Ts) -> Ts:
-        return even_aspherical_derivative_r2(r2, self.c, self.conic, self.coefficients)
 
     def flip_(self) -> ty.Self:
         super().flip_()
-        for i in range(self._n):
+        for i in range(self._n_a):
             setattr(self, f'a{i + 1}', -getattr(self, f'a{i + 1}'))
         return self
 
-    def to_dict(self, keep_tensor=True) -> dict[str, Any]:
-        d = super().to_dict(keep_tensor)
-        d['coefficients'] = self.coefficients if keep_tensor else [c.item() for c in self.coefficients]
-        return d
-
     @property
-    def coefficients(self) -> list[Ts]:
+    def a(self) -> list[Ts]:
         r"""
         Aspherical coefficients. Note that the element with index ``i``
         represents coefficient :math:`a_{i+1}`.
@@ -488,35 +460,57 @@ class EvenAspherical(_ConicBase):
         :return: A list containing the coefficients.
         :rtype: list[torch.nn.Parameter]
         """
-        return [getattr(self, f'a{i + 1}') for i in range(self._n)]
+        return [getattr(self, f'a{i + 1}') for i in range(self._n_a)]
 
     @property
-    def even_aspherical_items(self) -> int:
+    def n_a(self) -> int:
         """
         Number of even aspherical coefficients.
 
         :type: int
         """
-        return self._n
+        return self._n_a
 
-    @even_aspherical_items.setter
-    def even_aspherical_items(self, n: int):
+    @n_a.setter
+    def n_a(self, n: int):
         if n < 0:
             raise ValueError(f'Number of even aspherical coefficients must be non-negative, but got {n}')
-        if n <= self._n:
-            for i in range(n, self._n):
+        if n <= self._n_a:
+            for i in range(n, self._n_a):
                 delattr(self, f'a{i + 1}')
         else:
-            for i in range(self._n, n):
+            for i in range(self._n_a, n):
                 self.register_parameter(f'a{i + 1}', nn.Parameter(ty.scalar(0.)))
-        self._n = n
+        self._n_a = n
+
+
+class EvenAspherical(_EvenAsphericBase):
+    __doc__ = _EvenAsphericBase.__doc__
+
+    def h(self, x: Ts, y: Ts, r2: Ts = None) -> Ts:
+        if r2 is None:
+            r2 = x.square() + y.square()
+        return even_aspherical(r2, self.c, self.conic, self.a)
+
+    def h_grad(self, x: Ts, y: Ts, r2: Ts = None) -> tuple[Ts, Ts]:
+        if r2 is None:
+            r2 = x.square() + y.square()
+        m = even_aspherical_derivative_r2(r2, self.c, self.conic, self.a) * 2
+        return m * x, m * y
+
+    def to_dict(self, keep_tensor=True) -> dict[str, Any]:
+        d = super().to_dict(keep_tensor)
+        d['coefficients'] = self.a if keep_tensor else [c.item() for c in self.a]
+        return d
 
     @property
     def px_curvature(self) -> Ts:
         return super().px_curvature + 2 * self.a1
 
 
-class Zernike(Surface):
+class Zernike(_EvenAsphericBase):
+    circularly_symmetric = False
+
     def __init__(
         self, roc: Scalar = float('inf'),
         conic: Scalar = 0,
@@ -530,17 +524,7 @@ class Zernike(Surface):
         *,
         d: Scalar = None
     ):
-        super().__init__(material, aperture, reflective, intersection_config, d=d)
-
-        roc = ty.scalar(roc, dtype=torch.get_default_dtype())
-        self.curvature: nn.Parameter = nn.Parameter(1 / roc)  #: Curvature. One of optimizable parameters.
-
-        k = ty.scalar(conic, dtype=torch.get_default_dtype())
-        self.conic: nn.Parameter = nn.Parameter(k)  #: Conic coefficient. One of optimizable parameters.
-
-        for i, a_item in enumerate(a):
-            self.register_parameter(f'a{i + 1}', nn.Parameter(ty.scalar(a_item, dtype=torch.get_default_dtype())))
-        self._a_n = len(a)
+        super().__init__(roc, conic, a, material, aperture, reflective, intersection_config, d=d)
 
         for i, z_item in enumerate(z):
             self.register_parameter(f'z{i + 1}', nn.Parameter(ty.scalar(z_item, dtype=torch.get_default_dtype())))
@@ -550,27 +534,24 @@ class Zernike(Surface):
 
     def extra_repr(self) -> str:
         r = super().extra_repr()
-        r += f',\nroc={base.Length.fmt(self.roc.item())}'
-        r += f',\nconic={utils.fmt(self.conic.item())}'
-        r += f',\n' + ','.join(f'a{i + 1}={utils.fmt(a.item())}' for i, a in enumerate(self.a))
         r += f',\n' + ','.join(f'z{i + 1}={utils.fmt(z.item())}' for i, z in enumerate(self.z))
         return r
 
-    def h(self, x: Ts, y: Ts) -> Ts:
-        r2 = x.square() + y.square()
-        h_base = even_aspherical(r2, self.c, self.conic, self.a)
-        if self.zernike_items <= 0:
+    def h(self, x: Ts, y: Ts, r2: Ts = None) -> Ts:
+        if r2 is None:
+            r2 = x.square() + y.square()
+        h_base = super().h(x, y, r2)
+        if self.z_n <= 0:
             return h_base
 
-        h = h_base + self.zernike(x, y)
+        h = h_base + self.zernike(x, y, r2)
         return h
 
     def h_grad(self, x: Ts, y: Ts, r2: Ts = None) -> tuple[Ts, Ts]:
         if r2 is None:
             r2 = x.square() + y.square()
-        dr2 = even_aspherical_derivative_r2(r2, self.c, self.conic, self.a) * 2
-        dx, dy = dr2 * x, dr2 * y
-        if self.zernike_items <= 0:
+        dx, dy = super().h_grad(x, y, r2)
+        if self.z_n <= 0:
             return dx, dy
 
         zdx, zdy = self.zernike_grad(x, y)
@@ -578,60 +559,47 @@ class Zernike(Surface):
         return dx, dy
 
     def flip_(self) -> ty.Self:
-        EvenAspherical.flip_(self)
+        super().flip_()
         for i in range(self._z_n):
             setattr(self, f'z{i + 1}', -getattr(self, f'z{i + 1}'))
         return self
 
     def to_dict(self, keep_tensor=True) -> dict[str, Any]:
-        d = EvenAspherical.to_dict(self, keep_tensor)  # noqa
-        d['a'] = d.pop('coefficients')
+        d = super().to_dict(keep_tensor)
         d['z'] = self.z if keep_tensor else [c.item() for c in self.z]
         return d
 
-    def zernike(self, x: Ts, y: Ts) -> Ts:
-        if self.zernike_items <= 0:
+    def zernike(self, x: Ts, y: Ts, r2: Ts = None) -> Ts:
+        if self.z_n <= 0:
             return torch.zeros_like(x)
 
-        r = torch.sqrt(x.square() + y.square())
-        r = r / self.norm_radius
+        if r2 is None:
+            r2 = x.square() + y.square()
+        r2 = r2 / self.norm_radius ** 2
+        r = torch.sqrt(r2)
         theta = torch.atan2(y, x)
-        f = zernike(r, theta, 1) * self.z1
-        for i in range(2, self.zernike_items + 1):
-            f += zernike(r, theta, i) * getattr(self, f'z{i}')
+        f = zernike(r, theta, 1, r2=r2) * self.z1
+        for i in range(2, self.z_n + 1):
+            f += zernike(r, theta, i, r2=r2) * getattr(self, f'z{i}')
         return f
 
-    def zernike_grad(self, x: Ts, y: Ts) -> tuple[Ts, Ts]:
-        if self.zernike_items <= 0:
+    def zernike_grad(self, x: Ts, y: Ts, r2: Ts = None) -> tuple[Ts, Ts]:
+        if self.z_n <= 0:
             return torch.zeros_like(x), torch.zeros_like(y)
 
-        r = torch.sqrt(x.square() + y.square())
-        r = r / self.norm_radius
+        if r2 is None:
+            r2 = x.square() + y.square()
+        r2 = r2 / self.norm_radius ** 2
+        r = torch.sqrt(r2)
         theta = torch.atan2(y, x)
-        dx, dy = zernike_cpd(r, theta, 1)
+        dx, dy = zernike_cpd(r, theta, 1, r2=r2)
         dx, dy = dx * self.z1, dy * self.z1
-        for i in range(2, self.zernike_items + 1):
-            ddx, ddy = zernike_cpd(r, theta, i)
+        for i in range(2, self.z_n + 1):
+            ddx, ddy = zernike_cpd(r, theta, i, r2=r2)
             z_item = getattr(self, f'z{i}')
             ddx, ddy = ddx * z_item, ddy * z_item
             dx, dy = dx + ddx, dy + ddy
         return dx / self.norm_radius, dy / self.norm_radius
-
-    @property
-    def c(self) -> nn.Parameter:
-        return self.curvature
-
-    @c.setter
-    def c(self, value: Scalar):
-        self.curvature = value
-
-    @property
-    def roc(self) -> Ts:
-        return 1 / self.curvature
-
-    @roc.setter
-    def roc(self, value: Scalar):
-        self.curvature = 1 / value
 
     @property
     def z(self) -> list[Ts]:
@@ -645,7 +613,7 @@ class Zernike(Surface):
         return [getattr(self, f'z{i + 1}') for i in range(self._z_n)]
 
     @property
-    def zernike_items(self) -> int:
+    def z_n(self) -> int:
         """
         Number of even aspherical coefficients.
 
@@ -653,8 +621,8 @@ class Zernike(Surface):
         """
         return self._z_n
 
-    @zernike_items.setter
-    def zernike_items(self, n: int):
+    @z_n.setter
+    def z_n(self, n: int):
         if n < 0:
             raise ValueError(f'Number of Zernike coefficients must be non-negative, but got {n}')
         if n <= self._z_n:
@@ -664,38 +632,6 @@ class Zernike(Surface):
             for i in range(self._z_n, n):
                 self.register_parameter(f'z{i + 1}', nn.Parameter(ty.scalar(0.)))
         self._z_n = n
-
-    @property
-    def a(self) -> list[Ts]:
-        r"""
-        Aspherical coefficients. Note that the element with index ``i``
-        represents coefficient :math:`a_{i+1}`.
-
-        :return: A list containing the coefficients.
-        :rtype: list[torch.nn.Parameter]
-        """
-        return [getattr(self, f'a{i + 1}') for i in range(self._a_n)]
-
-    @property
-    def aspheric_items(self) -> int:
-        """
-        Number of aspherical coefficients.
-
-        :type: int
-        """
-        return self._a_n
-
-    @aspheric_items.setter
-    def aspheric_items(self, n: int):
-        if n < 0:
-            raise ValueError(f'Number of aspherical coefficients must be non-negative, but got {n}')
-        if n <= self._a_n:
-            for i in range(n, self._a_n):
-                delattr(self, f'a{i + 1}')
-        else:
-            for i in range(self._a_n, n):
-                self.register_parameter(f'a{i + 1}', nn.Parameter(ty.scalar(0.)))
-        self._a_n = n
 
     @property
     def norm_radius(self) -> float:
@@ -797,7 +733,7 @@ def _rect_grad(i: int, x: Ts, y: Ts) -> tuple[Ts, Ts]:
     return _term_grad(x_exp, y_exp, x, y), _term_grad(y_exp, x_exp, y, x)
 
 
-class PolynomialPhase(PlanarPhase, CircularSurface):
+class PolynomialPhase(PlanarPhase):
     r"""
     A planar surface imparting a phase shift to incident rays, parameterized as follows:
 
@@ -830,7 +766,7 @@ class PolynomialPhase(PlanarPhase, CircularSurface):
     ):
         if norm_radius is None:
             raise NotImplementedError()
-        CircularSurface.__init__(self, material, aperture, reflective, d=d)
+        super().__init__(material, aperture, reflective, d=d)
 
         for i, _a in enumerate(a):
             self.register_parameter(f'a{i + 1}', nn.Parameter(ty.scalar(_a, dtype=torch.get_default_dtype())))
@@ -845,12 +781,6 @@ class PolynomialPhase(PlanarPhase, CircularSurface):
         r += f',\n' + ','.join(f'a{i + 1}={utils.fmt(a.item())}' for i, a in enumerate(self.a))
         r += f',\n' + ','.join(f'b{i + 1}={utils.fmt(b.item())}' for i, b in enumerate(self.b))
         return r
-
-    def h_r2(self, r2: Ts) -> Ts:
-        return torch.zeros_like(r2)
-
-    def h_derivative_r2(self, r2: Ts) -> Ts:
-        return torch.zeros_like(r2)
 
     def phase_grad(self, x: Ts, y: Ts) -> tuple[Ts, Ts]:
         double_phase_grad_r2 = self._radial_phase_grad_r2(x.square() + y.square()) * 2
@@ -1043,6 +973,8 @@ class Fresnel(Planar, EvenAspherical):
         (e.g. in :meth:`.profile`). Zero of a negative number represents
         no wrapping. Default: ``0.``.
     """
+    circularly_symmetric = True
+    utilize_r2 = False
 
     def __init__(
         self, roc: Scalar = float('inf'),
@@ -1060,12 +992,6 @@ class Fresnel(Planar, EvenAspherical):
 
     def extra_repr(self) -> str:
         return EvenAspherical.extra_repr(self)
-
-    def h_r2(self, r2: Ts) -> Ts:
-        return torch.zeros_like(r2)
-
-    def h_derivative_r2(self, r2: Ts) -> Ts:
-        return torch.zeros_like(r2)
 
     def refract(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
         if ray.coherent:

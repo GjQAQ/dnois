@@ -20,7 +20,6 @@ __all__ = [
 
     'BatchedRay',
     'CircularStop',
-    'CircularSurface',
     'CoaxialContext',
     'CoaxialSurfaceSequence',
     'Context',
@@ -485,6 +484,8 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
     :param d: Distance to the next surface in :class:`CoaxialSurfaceSequence`.
         This parameter should not be set in a non-coaxial case. Default: ``None``.
     """
+    circularly_symmetric: bool = False  #: Whether the surface type is circularly symmetric.
+    utilize_r2: bool = False  #: Whether the surface can utilize computed r2 to improve efficiency.
 
     def __init__(
         self,
@@ -518,25 +519,29 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
         self._cfg = intersection_config
 
     @abc.abstractmethod
-    def h(self, x: Ts, y: Ts) -> Ts:
+    def h(self, x: Ts, y: Ts, r2: Ts = None) -> Ts:
         r"""
         Computes surface function :math:`h(x,y)`.
 
         :param Tensor x: x coordinate.
         :param Tensor y: y coordinate.
+        :param Tensor r2: Squared r (i.e. :math:`x^2+y^2`). It may be used in some surface types
+            to avoid redundant computation. Default: ``None``.
         :return: Corresponding value of the surface function.
         :rtype: Tensor
         """
         pass
 
     @abc.abstractmethod
-    def h_grad(self, x: Ts, y: Ts) -> tuple[Ts, Ts]:
+    def h_grad(self, x: Ts, y: Ts, r2: Ts = None) -> tuple[Ts, Ts]:
         r"""
         Computes the partial derivatives of surface function
         :math:`\pfrac{h(x,y)}{x}` and :math:`\pfrac{h(x,y)}{y}`.
 
         :param Tensor x: x coordinate.
         :param Tensor y: y coordinate.
+        :param Tensor r2: Squared r (i.e. :math:`x^2+y^2`). It may be used in some surface types
+            to avoid redundant computation. Default: ``None``.
         :return: Corresponding value of two partial derivatives.
         :rtype: tuple[Tensor, Tensor]
         """
@@ -624,17 +629,19 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
         ray.update_valid_(mask)
         return ray
 
-    def normal(self, x: Ts, y: Ts) -> Ts:
+    def normal(self, x: Ts, y: Ts, r2: Ts = None) -> Ts:
         """
         Returns unit normal vector of the surface pointing to positive-z direction.
 
         :param Tensor x: x coordinate.
         :param Tensor y: y coordinate.
+        :param Tensor r2: Squared r (i.e. :math:`x^2+y^2`). It may be used in some surface types
+            to avoid redundant computation. Default: ``None``.
         :return: A tensor whose shape depends on ``x`` and ``y``, with an additional
             dimension of size 3 following.
         :rtype: Tensor
         """
-        phpx, phpy = self.h_grad(x, y)
+        phpx, phpy = self.h_grad(x, y, r2)
         f_grad = torch.stack((-phpx, -phpy, torch.ones_like(phpx)), dim=-1)
         return f_grad / f_grad.norm(2, -1, True)
 
@@ -792,10 +799,16 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
         return valid
 
     def _f(self, ray: BatchedRay) -> Ts:
-        return self.h(ray.x, ray.y) - ray.z
+        r2 = None
+        if self.utilize_r2:
+            r2 = ray.r2
+        return self.h(ray.x, ray.y, r2) - ray.z
 
     def _f_grad(self, ray: BatchedRay) -> Ts:
-        phpx, phpy = self.h_grad(ray.x, ray.y)
+        r2 = None
+        if self.utilize_r2:
+            r2 = ray.r2
+        phpx, phpy = self.h_grad(ray.x, ray.y, r2)
         return torch.stack((phpx, phpy, -torch.ones_like(phpx)), dim=-1)
 
     def _newton_descent(self, ray: BatchedRay, f_value: Ts) -> Ts:
@@ -869,16 +882,16 @@ class Planar(Surface):
     ):
         super().__init__(material, aperture, reflective, d=d)
 
-    def h(self, x: Ts, y: Ts) -> Ts:
+    def h(self, x: Ts, y: Ts, r2: Ts = None) -> Ts:
         return self.new_zeros(torch.broadcast_shapes(x.shape, y.shape))
 
-    def h_grad(self, x: Ts, y: Ts) -> tuple[Ts, Ts]:
+    def h_grad(self, x: Ts, y: Ts, r2: Ts = None) -> tuple[Ts, Ts]:
         return torch.zeros_like(x), torch.zeros_like(y)
 
     def flip_(self) -> Self:
         return self
 
-    def normal(self, x: Ts, y: Ts) -> Ts:
+    def normal(self, x: Ts, y: Ts, r2: Ts = None) -> Ts:
         return torch.stack([torch.zeros_like(x), torch.zeros_like(y), torch.ones_like(x)], -1)
 
     def _solve_t(self, ray: BatchedRay) -> Ts:
@@ -920,117 +933,14 @@ class Stop(Planar):
         del d['material']
         return d
 
-    @property
-    def material(self) -> mt.Material:  # override
-        return self.context.material_before
 
-    @material.setter
-    def material(self, value):
-        pass
-
-
-class CircularSurface(Surface, metaclass=abc.ABCMeta):
-    r"""
-    Derived class of :py:class:`~Surface` for optical surfaces
-    with circular symmetry, i.e. its property
-    depends only on the radial distance :math:`r=\sqrt{x^2+y^2}`.
-    Therefore, their surface function can be written as
-    :math:`h(x,y)=\hat{h}(x^2+y^2)=\hat{h}(r^2)`.
-    Note that :math:`\hat{h}`
-    takes as input squared radial distance for computational efficiency purpose.
-
-    Despite the circular symmetry of the surface, its aperture is not necessarily
-    circularly symmetric. In other words, ``aperture`` need not be an instance of
-    :class:`CircularAperture`.
-
-    See :class:`Surface` for description of parameters.
-    """
-
-    def __init__(
-        self,
-        material: mt.Material | str = 'air',
-        aperture: Aperture | Scalar = float('inf'),
-        reflective: bool = False,
-        intersection_config: IntersectionConfig = IntersectionConfig.default,
-        *,
-        d: Scalar = None
-    ):
-        super().__init__(material, aperture, reflective, intersection_config, d=d)
-
-    @abc.abstractmethod
-    def h_r2(self, r2: Ts) -> Ts:
-        r"""
-        Computes surface function :math:`\hat{h}(r^2)`.
-
-        :param Tensor r2: Squared radial distance.
-        :return: Corresponding value of the surface function.
-        :rtype: Tensor
-        """
-        pass
-
-    @abc.abstractmethod
-    def h_derivative_r2(self, r2: Ts) -> Ts:
-        r"""
-        Computes derivative :math:`\frac{\d\hat{h}(r^2)}{\d r^2}`.
-
-        :param Tensor r2: Squared radial distance.
-        :return: Corresponding value of the derivative.
-        :rtype: Tensor
-        """
-        pass
-
-    def h(self, x: Ts, y: Ts, r2: Ts = None) -> Ts:
-        r"""
-        Computes surface function :math:`h(x,y)`.
-
-        :param Tensor x: x coordinate.
-        :param Tensor y: y coordinate.
-        :param Tensor r2: Squared radial distance. It can be passed in to avoid
-            repeated computation if already computed outside this method.
-        :return: Corresponding value of the surface function.
-        :rtype: Tensor
-        """
-        if r2 is None:
-            r2 = x.square() + y.square()
-        return self.h_r2(r2)
-
-    def h_grad(self, x: Ts, y: Ts, r2: Ts = None) -> tuple[Ts, Ts]:
-        r"""
-        Computes the partial derivatives of surface function
-        :math:`\pfrac{h(x,y)}{x}` and :math:`\pfrac{h(x,y)}{y}`.
-
-        :param Tensor x: x coordinate.
-        :param Tensor y: y coordinate.
-        :param Tensor r2: Squared radial distance. It can be passed in to avoid
-            repeated computation if already computed outside this method.
-        :return: Corresponding value of two partial derivatives.
-        :rtype: tuple[Tensor, Tensor]
-        """
-        if r2 is None:
-            r2 = x.square() + y.square()
-        derivative_double = self.h_derivative_r2(r2) * 2
-        return derivative_double * x, derivative_double * y
-
-    def _f(self, ray: BatchedRay) -> Ts:
-        return self.h_r2(ray.r2) - ray.z
-
-    def _f_grad(self, ray: BatchedRay) -> Ts:
-        phpx, phpy = self.h_grad(ray.x, ray.y, ray.r2)
-        return torch.stack((phpx, phpy, -torch.ones_like(phpx)), dim=-1)
-
-
-class CircularStop(Stop, CircularSurface):
+class CircularStop(Stop):
     """
     Stops whose aperture is circularly symmetric.
 
     See :class:`Stop` for description of more parameters.
     """
-
-    def h_derivative_r2(self, r2: Ts) -> Ts:
-        return torch.zeros_like(r2)
-
-    def h_r2(self, r2: Ts) -> Ts:
-        return torch.zeros_like(r2)
+    circularly_symmetric = True
 
 
 class RayCollector(list[BatchedRay]):
