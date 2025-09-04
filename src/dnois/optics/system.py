@@ -1064,6 +1064,10 @@ class DuplicatePsfOptics(PsfImagingOptics):
     """
     A simple model that duplicates the PSF of another :class:`PsfImagingOptics`.
 
+    .. note::
+        The coordinate system in following description is
+        :ref:`camera's coordinate system <guide_imodel_cameras_coordinate_system>`.
+
     :param PsfImagingOptics source: The source :class:`PsfImagingOptics`.
     :param symmetry: Symmetry relationship between this optical system and the source.
         Either ``'x'`` (symmetric w.r.t. y-axis, the same below), ``'y'``,

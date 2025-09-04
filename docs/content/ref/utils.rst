@@ -62,3 +62,13 @@ Context cache
     ContextCache
     context_cache
     enable_group_cache
+
+**************************************************
+Visualization
+**************************************************
+.. autosummary::
+    :toctree: ../generated/utils/visualization
+
+    wl2rgb
+    fdc2rgb
+

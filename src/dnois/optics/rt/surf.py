@@ -9,7 +9,7 @@ from torch import nn
 from . import _surf, aperture as _apt
 from .aperture import *
 from ._surf import *
-from .. import _func, paraxial
+from .. import paraxial
 from ... import base, mt, torch as _t, utils
 from ...base.typing import Any, Ts, Scalar, Sequence
 from ...base import typing as ty
@@ -22,6 +22,7 @@ __all__ = [
     'Fresnel',
     'Grating',
     'PolynomialPhase',
+    'RealisticFresnel',
     'Spherical',
     'ThinLens',
     'Zernike',
@@ -327,7 +328,7 @@ class _ConicBase(_SphericalBase, metaclass=abc.ABCMeta):  # docstring for Conic
 
     where :math:`c` is curvature and :math:`k` is conic coefficient.
 
-    See :py:class:`CircularSurface` for more description of arguments.
+    See :py:class:`Surface` for more description of arguments.
 
     :param roc: Radius of curvature. Default: ``inf``.
     :type roc: float or Tensor
@@ -401,7 +402,7 @@ class Conic(_ConicBase):
         return t
 
 
-class _EvenAsphericBase(_ConicBase):
+class _EvenAsphericBase(_ConicBase, metaclass=abc.ABCMeta):
     r"""
     Even aspherical surfaces.
 
@@ -414,7 +415,7 @@ class _EvenAsphericBase(_ConicBase):
     where :math:`c` is radius of curvature, :math:`k` is conic coefficient
     and :math:`\{a_i\}_{i=1}^N` are even aspherical coefficients.
 
-    See :py:class:`CircularSurface` for more description of arguments.
+    See :py:class:`Surface` for more description of arguments.
 
     :param roc: Radius of curvature.
     :type roc: float or Tensor
@@ -506,6 +507,47 @@ class EvenAspherical(_EvenAsphericBase):
     @property
     def px_curvature(self) -> Ts:
         return super().px_curvature + 2 * self.a1
+
+
+class RealisticFresnel(EvenAspherical):
+    """
+    Realistic Fresnel surface in which the profile of the surface is "wrapped"
+    in the manner of Fresnel lens. The profile before wrapping is even-aspherical.
+
+    See :class:`EvenAspherical` for more description of arguments.
+
+    :param float wrapping: Wrapping thickness. A negative value, 0 or ``None``
+        means no wrapping. Default: ``None``.
+    """
+
+    def __init__(
+        self,
+        roc: Scalar = float('inf'),
+        conic: Scalar = 0,
+        coefficients: Sequence[Scalar] = (),
+        material: mt.Material | str = 'air',
+        aperture: Aperture | Scalar = float('inf'),
+        wrapping: float = None,
+        reflective: bool = False,
+        intersection_config: IntersectionConfig = IntersectionConfig.default,
+        *,
+        d: Scalar = None,
+    ):
+        super().__init__(roc, conic, coefficients, material, aperture, reflective, intersection_config, d=d)
+        self.wrapping = wrapping
+
+    def h(self, x: Ts, y: Ts, r2: Ts = None) -> Ts:
+        h = super().h(x, y, r2)
+        if self.wrapping <= 0:
+            return h
+
+        h = h.fmod(self.wrapping)
+        return h
+
+    def to_dict(self, keep_tensor=True) -> dict[str, Any]:
+        d = super().to_dict(keep_tensor)
+        d['wrapping'] = self.wrapping
+        return d
 
 
 class Zernike(_EvenAsphericBase):
@@ -745,7 +787,7 @@ class PolynomialPhase(PlanarPhase):
     of :math:`(x,y)`, i.e. :math:`x`, :math:`y`, :math:`x^2`, :math:`xy`,
     :math:`y^2`, :math:`x^3` and so on.
 
-    See :py:class:`CircularSurface` for descriptions of more parameters.
+    See :py:class:`Surface` for descriptions of more parameters.
 
     :param a: Radial coefficients :math:`a_1,\ldots,a_n`.
     :type a: Sequence[float | Tensor]

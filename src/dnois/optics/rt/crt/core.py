@@ -1003,7 +1003,6 @@ class CoaxialRayTracing(
     def _check_circ_aperture(self):
         for s in self.surfaces:
             if not isinstance(s.aperture, surf.CircularAperture):
-                s: surf.Surface
                 raise NotImplementedError(
                     f'A function called requires all the surfaces have circular apertures, '
                     f'which is not satisfied for surface {s.ctx.index}'
@@ -1011,8 +1010,7 @@ class CoaxialRayTracing(
 
     def _check_circ_surf(self):
         for s in self.surfaces:
-            if not isinstance(s, surf.CircularSurface):
-                s: surf.Surface
+            if s.circularly_symmetric:
                 raise NotImplementedError(
                     f'A function called requires all the surfaces to be circularly symmetric, '
                     f'which is not satisfied for surface {s.ctx.index}'

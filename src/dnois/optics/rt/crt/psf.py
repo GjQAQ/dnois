@@ -16,6 +16,7 @@ __all__ = [
     'ChiefRayPsfCenter',
     'MeanPsfCenter',
     'RobustMeanPsfCenter',
+    'WaveDependentPsfCenter',
 
     'CoherentFraunhoferPsf',
     'CoherentHuygensPsf',
@@ -149,8 +150,7 @@ class RobustMeanPsfCenter(MeanPsfCenter):
     type = 'mean-robust'
 
     def __init__(self, wl_reduction: WlReduction = 'center', outlier_ratio: float = 0.7):
-        super().__init__()
-        self.wl_reduction = wl_reduction
+        super().__init__(wl_reduction)
         self.outlier_ratio = outlier_ratio
 
     def center_mult_wl(self, optics: CoaxialRayTracing, origins: ty.Ts, out_ray: BatchedRay, wl: ty.Ts):

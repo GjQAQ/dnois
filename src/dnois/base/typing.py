@@ -33,7 +33,6 @@ __all__ = [
     'Numeric',
     'NumInv',
     'Pair',
-    'RGBFormat',
     'Scalar',
     'Size2d',
     'Sizend',
@@ -70,7 +69,6 @@ Triple = tuple[_T, _T, _T]
 
 # options
 ConvOut = Literal['full', 'same', 'valid']
-RGBFormat = Literal['floats', 'ints', 'hex']
 
 TextFile = str | Path | TextIO
 

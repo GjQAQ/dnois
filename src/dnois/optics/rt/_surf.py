@@ -620,7 +620,7 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
 
         ray = ray.march(t, self.context.material_before.n_abs(ray.wl))
 
-        ray_in_local = self.context.g2l_ray(ray)
+        ray_in_local = self.context.g2l_ray(ray)  # TODO: optimize (direction is not needed)
         mask = self._f(ray_in_local).abs() < tol
         if aperture:
             mask = mask & self.aperture.pass_ray(ray_in_local)

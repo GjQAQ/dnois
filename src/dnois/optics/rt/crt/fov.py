@@ -33,7 +33,13 @@ class PerspectiveFov(CrtFovModel):
     type = 'perspective'
 
     def get(self, optics: 'CoaxialRayTracing', which: FovItem) -> float:
-        return getattr(optics.reference, f'fov_{which}')
+        fov_half = getattr(optics.reference, f'fov_half_{which[0]}')
+        if which.endswith('lower'):
+            return -fov_half
+        elif which.endswith('upper'):
+            return fov_half
+        else:
+            raise ValueError(f'Invalid FovItem: {which}')
 
 
 class ChiefRayFov(CrtFovModel):
