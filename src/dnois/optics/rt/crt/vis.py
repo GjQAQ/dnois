@@ -144,14 +144,12 @@ def draw_surface_thin_lens(ax: 'Axes', sf: surf.ThinLens, config: CRTVisConfig):
 def draw_surface_fresnel(ax: 'Axes', sf: surf.Fresnel, config: CRTVisConfig):
     radius = sf.apt.radius.item()
     y = torch.linspace(-radius, radius, config.surface_points, device=sf.device)
-    z_flat = torch.full_like(y, sf.ctx.baseline.item())
-    z_latent = sf.profile(y.square()) + sf.ctx.baseline
+    z_latent = sf.h(..., ..., y.square(), sf.virtual_wrapping) + sf.ctx.baseline
 
-    ax.plot(utils.t4plot(z_flat), utils.t4plot(y), **config.linestyle_surface)
     latent_ls = config.linestyle_surface.copy()
     latent_ls['color'] = config.color_fresnel
     ax.plot(utils.t4plot(z_latent), utils.t4plot(y), **latent_ls)
-    return z_flat[-1].item()
+    return z_latent[-1].item()
 
 
 def draw_surf_common(ax: 'Axes', sf: surf.Surface, config: CRTVisConfig):

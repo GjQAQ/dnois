@@ -22,7 +22,6 @@ __all__ = [
     'Fresnel',
     'Grating',
     'PolynomialPhase',
-    'RealisticFresnel',
     'Spherical',
     'ThinLens',
     'Zernike',
@@ -441,6 +440,17 @@ class _EvenAsphericBase(_ConicBase, metaclass=abc.ABCMeta):
             self.register_parameter(f'a{i + 1}', nn.Parameter(ty.scalar(a, dtype=torch.get_default_dtype())))
         self._n_a = len(coefficients)
 
+    def h(self, x: Ts, y: Ts, r2: Ts = None) -> Ts:
+        if r2 is None:
+            r2 = x.square() + y.square()
+        return even_aspherical(r2, self.c, self.conic, self.a)
+
+    def h_grad(self, x: Ts, y: Ts, r2: Ts = None) -> tuple[Ts, Ts]:
+        if r2 is None:
+            r2 = x.square() + y.square()
+        m = even_aspherical_derivative_r2(r2, self.c, self.conic, self.a) * 2
+        return m * x, m * y
+
     def extra_repr(self) -> str:
         r = super().extra_repr()
         r += f',\n' + ','.join(f'a{i + 1}={utils.fmt(a.item())}' for i, a in enumerate(self.a))
@@ -488,17 +498,6 @@ class _EvenAsphericBase(_ConicBase, metaclass=abc.ABCMeta):
 class EvenAspherical(_EvenAsphericBase):
     __doc__ = _EvenAsphericBase.__doc__
 
-    def h(self, x: Ts, y: Ts, r2: Ts = None) -> Ts:
-        if r2 is None:
-            r2 = x.square() + y.square()
-        return even_aspherical(r2, self.c, self.conic, self.a)
-
-    def h_grad(self, x: Ts, y: Ts, r2: Ts = None) -> tuple[Ts, Ts]:
-        if r2 is None:
-            r2 = x.square() + y.square()
-        m = even_aspherical_derivative_r2(r2, self.c, self.conic, self.a) * 2
-        return m * x, m * y
-
     def to_dict(self, keep_tensor=True) -> dict[str, Any]:
         d = super().to_dict(keep_tensor)
         d['coefficients'] = self.a if keep_tensor else [c.item() for c in self.a]
@@ -509,16 +508,29 @@ class EvenAspherical(_EvenAsphericBase):
         return super().px_curvature + 2 * self.a1
 
 
-class RealisticFresnel(EvenAspherical):
+class Fresnel(EvenAspherical, utils.ExternalParamMixIn):
     """
-    Realistic Fresnel surface in which the profile of the surface is "wrapped"
-    in the manner of Fresnel lens. The profile before wrapping is even-aspherical.
+    Fresnel surface in which the profile of the surface is "wrapped"
+    in the manner of Fresnel lens. The latent profile (i.e. profile before wrapping)
+    is even-aspherical.
 
     See :class:`EvenAspherical` for more description of arguments.
 
-    :param float wrapping: Wrapping thickness. A negative value, 0 or ``None``
-        means no wrapping. Default: ``None``.
+    :param float wrapping: One of the following:
+
+        A positive value
+            Wrapping thickness.
+
+        Zero or a negative value
+            Flattened Fresnel surface, whose surface normal is that of its latent
+            profile in refraction while having a planar surface.
+
+        ``None``
+            No wrapping.
+    :param float virtual_wrapping: Similar to ``wrapping`` but only used for
+        visualization and other analysis. Must be positive if provided.
     """
+    wrapping: utils.Exparam
 
     def __init__(
         self,
@@ -528,26 +540,60 @@ class RealisticFresnel(EvenAspherical):
         material: mt.Material | str = 'air',
         aperture: Aperture | Scalar = float('inf'),
         wrapping: float = None,
+        virtual_wrapping: float = None,
         reflective: bool = False,
         intersection_config: IntersectionConfig = IntersectionConfig.default,
         *,
         d: Scalar = None,
     ):
+        if virtual_wrapping is None:
+            virtual_wrapping = wrapping
+
         super().__init__(roc, conic, coefficients, material, aperture, reflective, intersection_config, d=d)
         self.wrapping = wrapping
+        self.virtual_wrapping = virtual_wrapping
 
-    def h(self, x: Ts, y: Ts, r2: Ts = None) -> Ts:
+    @utils.with_external
+    def h(self, x: Ts, y: Ts, r2: Ts = None, wrapping: float = None) -> Ts:
+        if wrapping is not None and wrapping <= 0:
+            if r2 is None:
+                r2 = x if x is not None else y
+            return torch.zeros_like(r2)
+
         h = super().h(x, y, r2)
-        if self.wrapping <= 0:
+        if wrapping is None:
             return h
 
-        h = h.fmod(self.wrapping)
+        h = h.fmod(wrapping)
         return h
+
+    def cut_radii(self, points: int = 1_000_000, wrapping: float = None) -> list[float]:
+        if not isinstance(self.aperture, CircularAperture):
+            raise RuntimeError(f'{self.cut_radii.__qualname__} is only supported for circular aperture.')
+        if wrapping is None:
+            return []
+        if wrapping <= 0:
+            raise RuntimeError(f'{self.cut_radii.__qualname__} is only supported for positive wrapping.')
+
+        r = self.aperture.radius.item()
+        r = torch.linspace(0, r, points, device=self.device, dtype=self.dtype)
+        profile = self.profile(r.square())
+        diff = profile.diff()
+        cutting_points = diff.abs() > 0.9 * wrapping
+        idx = torch.argwhere(cutting_points)
+        cutting_points = [((r[i] + r[i + 1]) / 2).item() for i in idx.flatten().tolist()]
+        return cutting_points
 
     def to_dict(self, keep_tensor=True) -> dict[str, Any]:
         d = super().to_dict(keep_tensor)
         d['wrapping'] = self.wrapping
         return d
+
+    def _solve_t(self, ray: BatchedRay) -> Ts:
+        if self.wrapping is not None and self.wrapping <= 0:
+            return - ray.z / ray.d_z
+        else:
+            return super()._solve_t(ray)
 
 
 class Zernike(_EvenAsphericBase):
@@ -998,92 +1044,6 @@ class AsphericalRadialPhase(EvenAspherical):
         if not isinstance(self.aperture, CircularAperture):
             raise RuntimeError(f'norm_radius is not specified and the aperture is not a circular aperture.')
         return self.aperture.radius.item()
-
-
-class Fresnel(Planar, EvenAspherical):
-    """
-    Fresnel lens surface. It is regarded as a planar surface generally,
-    but refracts rays like a :class:`EvenAspherical` surface. Specifically,
-    when calculating the direction of refractive rays, its normal vector at
-    :math:`(x,y)` is that of a :class:`EvenAspherical` at the same point.
-
-    See :class:`EvenAspherical` for description of parameters.
-
-    :param float wrapping: Wrapping height of Fresnel surface.
-        This parameter does not affect the behavior of this surface
-        in ray tracing and only matters in calculating the virtual profile
-        (e.g. in :meth:`.profile`). Zero of a negative number represents
-        no wrapping. Default: ``0.``.
-    """
-    circularly_symmetric = True
-    utilize_r2 = False
-
-    def __init__(
-        self, roc: Scalar = float('inf'),
-        conic: Scalar = 0,
-        coefficients: Sequence[Scalar] = (),
-        material: mt.Material | str = 'air',
-        aperture: Aperture | Scalar = float('inf'),
-        reflective: bool = False,
-        wrapping: float = 0.,
-        *,
-        d: Scalar = None
-    ):
-        EvenAspherical.__init__(self, roc, conic, coefficients, material, aperture, reflective, d=d)
-        self.wrapping = wrapping  #: Wrapping height.
-
-    def extra_repr(self) -> str:
-        return EvenAspherical.extra_repr(self)
-
-    def refract(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:
-        if ray.coherent:
-            warnings.warn(f'{self.__class__.__name__} does not support coherent ray tracing currently')
-        return super().refract(ray, forward)
-
-    def expand(self) -> EvenAspherical:
-        return EvenAspherical(
-            self.roc, self.conic, self.coefficients, self.material, self.aperture, self.reflective,
-            d=self.ctx.distance if self.ctx is not None and isinstance(self.ctx, CoaxialContext) else None
-        )
-
-    def profile(self, r2: Ts) -> Ts:
-        """
-        Virtual profile of this surface.
-
-        :param Tensor r2: Squared radial distance.
-        :return: Virtual profile.
-        :rtype: Tensor
-        """
-        unwrapped = even_aspherical(r2, self.curvature, self.conic, self.coefficients)
-        if self.wrapping <= 0.:
-            return unwrapped
-
-        wrapped = unwrapped.fmod(self.wrapping)
-        return wrapped
-
-    def cut_radii(self, points: int = 1_000_000) -> list[float]:
-        if not isinstance(self.aperture, CircularAperture):
-            raise RuntimeError(f'cut_radii is only supported for circular aperture.')
-        r = self.aperture.radius.item()
-        r = torch.linspace(0, r, points, device=self.device, dtype=self.dtype)
-        profile = self.profile(r.square())
-        diff = profile.diff()
-        cutting_points = diff.abs() > 0.9 * self.wrapping
-        idx = torch.argwhere(cutting_points)
-        cutting_points = [((r[i] + r[i + 1]) / 2).item() for i in idx.flatten().tolist()]
-        return cutting_points
-
-    def to_dict(self, keep_tensor=True) -> dict[str, Any]:
-        d = super().to_dict(keep_tensor)
-        d['wrapping'] = self.wrapping
-        return d
-
-    def _optical_normal(self, x: Ts, y: Ts) -> Ts:
-        r2 = x.square() + y.square()
-        _der = EvenAspherical.h_derivative_r2(self, r2) * 2
-        phpx, phpy = _der * x, _der * y
-        f_grad = torch.stack((-phpx, -phpy, torch.ones_like(phpx)), dim=-1)
-        return f_grad / f_grad.norm(2, -1, True)
 
 
 def _check_coefficients(c: ty.Vector, name: str, length: int) -> Ts | None:

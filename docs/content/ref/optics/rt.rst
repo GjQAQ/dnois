@@ -51,7 +51,6 @@ Specific surface types
     Grating
     Planar
     PolynomialPhase
-    RealisticFresnel
     Spherical
     Stop
     ThinLens

@@ -188,7 +188,7 @@ class CenterRequiredPsfModel(CrtPsfModel, metaclass=abc.ABCMeta):
         return PsfCenterDeterm.create(value)
 
 
-class IncoherentRectKernelPsf(CenterRequiredPsfModel):
+class IncoherentRectKernelPsf(CenterRequiredPsfModel, utils.VarHookMixIn):
     type = 'inc_rect'
 
     @utils.with_external
@@ -200,6 +200,7 @@ class IncoherentRectKernelPsf(CenterRequiredPsfModel):
         psf_size: ty.Size2d = None,
         psf_center: PsfCenter | PsfCenterDeterm = None,
         sampler: surf.Sampler = None,
+        compute_rms: bool = True,
         **kwargs,
     ) -> ty.Ts:
         origins = optics.cam2lens(origins)
@@ -221,6 +222,9 @@ class IncoherentRectKernelPsf(CenterRequiredPsfModel):
         mask = out_ray.valid & in_region  # ... x N_wl x N_spp
         for t in (x, y, c_a, r_a):  # mask out invalid rays in these four tensors
             t[~mask] = 0
+
+        if compute_rms and self.hook_registered('psf.rms'):  # compute only if the hook is registered
+            self.variable_hook('psf.rms', self._rms(xy, mask))
 
         c_as, r_as = c_a - 1, r_a - 1
         w_c, w_r = c_a - x + 0.5, r_a - y + 0.5
@@ -244,6 +248,14 @@ class IncoherentRectKernelPsf(CenterRequiredPsfModel):
         psf = psf.flip(-1)
         psf = psf / n_spp  # total energy of each ray is 1
         return psf
+
+    @staticmethod
+    def _rms(xy: ty.Ts, mask: ty.Ts) -> ty.Ts:
+        x, y = xy.unbind(-1)
+        ms = x[mask].square() + y[mask].square()
+        ms = ms.sum() / x.numel()
+        rms = ms.sqrt()
+        return rms
 
 
 class IncoherentGaussianKernelPsf(CenterRequiredPsfModel):

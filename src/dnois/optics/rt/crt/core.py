@@ -465,7 +465,7 @@ class CoaxialRayTracing(
     @utils.with_external
     def psf(
         self,
-        origins: Ts,
+        origins: Ts = None,
         psf_size: ty.Size2d = None,
         wl: ty.Vector = None,
         norm_psf: bool = None,
@@ -473,6 +473,9 @@ class CoaxialRayTracing(
         psf_model: PsfType | CrtPsfModel = None,
         **kwargs
     ) -> Ts:
+        if origins is None:
+            origins = self.tanfovd2obj([(0, 0)], self.depth)
+
         psf = psf_model(self, origins, wl, psf_size, **kwargs)
 
         if norm_psf:

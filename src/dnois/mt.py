@@ -101,6 +101,8 @@ class Material(base.AsJsonMixIn):
         self.thermal_e = (e0, e1)
         self.ltk = ltk
 
+        self.modifier = None
+
     def __repr__(self):
         return f'{self.__class__.__name__}({self._repr()})'
 
@@ -124,9 +126,10 @@ class Material(base.AsJsonMixIn):
         :return: Refractive index.
         """
         if relative:
-            return self.n_rel(wl, t, p)
+            n = self.n_rel(wl, t, p)
         else:
-            return self.n_abs(wl, t, p)
+            n = self.n_abs(wl, t, p)
+        return n
 
     def n_rel(self, wl: Numeric, t: float = None, p: float = None) -> Numeric:
         """
@@ -140,6 +143,9 @@ class Material(base.AsJsonMixIn):
 
         n_abs, n_air = self._n_impl(wl, p, t)
         n_rel = n_abs / n_air  # relative n measured in given condition
+
+        if self.modifier is not None:
+            n_rel = self.modifier(n_rel)
         return n_rel
 
     def n_abs(self, wl: Numeric, t: float = None, p: float = None) -> Numeric:
@@ -153,6 +159,9 @@ class Material(base.AsJsonMixIn):
             return self._dispersion_formula(wl) * _air_n(wl * wl)
 
         n_abs, _ = self._n_impl(wl, p, t)
+
+        if self.modifier is not None:
+            n_abs = self.modifier(n_abs)
         return n_abs
 
     def _dispersion_formula(self, wl: Numeric) -> Numeric:
@@ -232,7 +241,8 @@ class Material(base.AsJsonMixIn):
         wl = base.Length.default_to(wl, 'um')
         m1, m2 = (wl.min().item(), wl.max().item()) if torch.is_tensor(wl) else (wl, wl)
         if m1 < self.min_wl * (1 - conf.detection_wl_eps) or m2 > self.max_wl * (1 + conf.detection_wl_eps):
-            raise ValueError(f'Unsupported wavelength for material "{self.name}": {wl}um')
+            raise ValueError(f'Unsupported wavelength for material "{self.name}": {wl}um, '
+                             f'the available range is {self.min_wl}um to {self.max_wl}um')
         else:
             return wl
 

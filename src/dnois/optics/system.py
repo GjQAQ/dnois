@@ -717,7 +717,7 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
     @abc.abstractmethod
     def psf(
         self,
-        origins: Ts,
+        origins: Ts = None,
         psf_size: Size2d = None,
         wl: Vector = None,
         norm_psf: bool = None,
@@ -739,6 +739,7 @@ class PsfImagingOptics(ImagingOptics, RenderImageSceneMixIn, utils.VarHookMixIn)
         :param Tensor origins: Source points of which to evaluate PSF. A tensor with shape
             ``(..., 3)`` where the last dimension indicates coordinates of points in camera's
             coordinate system. The coordinates comply with :ref:`guide_imodel_ccs_inf`.
+            Default: the points corresponding to :attr:`.depth` and center FoV.
         :param psf_size: Numbers of pixels of PSF in vertical and horizontal directions.
             Default: :attr:`.psf_size`.
         :type psf_size: int or tuple[int, int]
@@ -1093,7 +1094,7 @@ class DuplicatePsfOptics(PsfImagingOptics):
             self.__dict__['source'] = source  # avoid submodule registration
         self.symmetry = symmetry
 
-    def psf(self, origins: Ts, *args, **kwargs) -> Ts:
+    def psf(self, origins: Ts = None, *args, **kwargs) -> Ts:
         if self.symmetry:
             origins = origins.clone()
         if self.symmetry == 'x':
@@ -1160,10 +1161,12 @@ class IdealOptics(PsfImagingOptics):
         self.fl2: float = fl2  #: Focal length in image space.
 
     @utils.with_external
-    def psf(self, origins: Ts, psf_size: Size2d = None, **kwargs) -> Ts:
+    def psf(self, origins: Ts = None, psf_size: Size2d = None, **kwargs) -> Ts:
         if len(kwargs) != 0:
             raise RuntimeError(f'Unknown keyword arguments for {self.__class__.__name__}: '
                                f'{", ".join(kwargs.keys())}')
+        if origins is None:
+            origins = self.tanfovd2obj([(0, 0)], self.depth)
 
         obj_d = origins[..., 2]  # ...
         img_d = _func.imgd(obj_d, self.fl1, self.fl2)  # ...

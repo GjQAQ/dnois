@@ -10,6 +10,7 @@ from ..base import typing as ty
 from ..optics import rt
 
 __all__ = [
+    'agf_readlines',
     'load_agf',
     'sq2zmx',
     'zmx2sq',
@@ -139,6 +140,7 @@ class ZemaxFile:
 class ZemaxSurfaceConverter:
     name: str
     type: type[rt.Surface]
+    default_kwargs = {}
 
     def __init__(self, unit: str):
         self.unit = unit
@@ -162,7 +164,7 @@ class ZemaxSurfaceConverter:
         return fields
 
     def parse(self, fields: list[str]) -> rt.Surface:
-        kwargs = {}
+        kwargs = self.default_kwargs.copy()
         for field_line in fields:
             field_line = field_line.split()
             field_name, field_value = field_line[0], field_line[1:]
@@ -446,6 +448,12 @@ class SzernsagConverter(EvenAsphConverter):
                 c[idx] = float(value)
 
 
+class FresnelsConverter(EvenAsphConverter):
+    name = 'FRESNELS'
+    type = rt.Fresnel
+    default_kwargs = {'wrapping': 0}
+
+
 def zmx2sq(file: str | Path | ty.TextIO) -> rt.CoaxialSurfaceSequence:
     """
     Parse a ZMX file and return a :class:`~dnois.optics.rt.CoaxialSurfaceSequence` object.
@@ -526,8 +534,7 @@ def load_agf(
     if isinstance(file, str):
         file = Path(file)
     if isinstance(file, Path):
-        with file.open('r', encoding='utf-8', errors='replace') as f:
-            agf_lines = f.readlines()
+        agf_lines = agf_readlines(file)
         if qualifier is None:
             qualifier = file.stem.upper()
     else:
@@ -546,6 +553,20 @@ def load_agf(
                 if existed_behavior != 'error':
                     continue
         mt.register(material, existed_behavior != 'error')
+
+
+def agf_readlines(path: str | Path):
+    path = Path(path)
+
+    with path.open('rb') as f:
+        bom = f.read(4)
+    if bom.startswith(b'\xFF\xFE'):
+        encoding='utf-16le'
+    else:
+        encoding='utf-8'
+
+    with path.open('r', encoding=encoding, errors='replace') as f:
+        return f.readlines()
 
 
 def _split_agf(agf_lines: list[str]):

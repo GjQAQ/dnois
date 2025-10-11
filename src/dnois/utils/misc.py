@@ -203,6 +203,12 @@ class VarHookMixIn:  # to be documented
                     obj = ret
         return obj
 
+    def hook_registered(self, name: str) -> bool:
+        hooks = self._get_capture_hooks()
+        if hooks is None:
+            return False
+        return name in hooks
+
     def _get_capture_hooks(self, create: bool = False) -> dict[str, list[VarHook]]:
         hooks = getattr(self, '_capture_hooks', None)
         if hooks is None and create:
@@ -371,10 +377,7 @@ class ContextCache:
         original = self._get_ctx_cache()
         cache = {}
         for item in items:
-            if item in original:
-                cache[item] = original[item]
-            else:
-                cache[item] = None
+            cache[item] = original.get(item, None)
         self._ctx_cache = cache
 
         yield cache
