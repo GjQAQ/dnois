@@ -16,26 +16,34 @@ from ...base import typing as ty
 from ..._func import zernike, zernike_cpd
 
 __all__ = [
-    'AsphericalRadialPhase',
+    'AsphereRadialPhase',
     'Conic',
-    'EvenAspherical',
+    'EvenAsphere',
     'Fresnel',
     'Grating',
     'PolynomialPhase',
-    'Spherical',
+    'Sphere',
     'ThinLens',
     'Zernike',
+
+    'conic',
+    'conic_derivative_r2',
+    'even_asphere',
+    'even_asphere_derivative_r2',
+    'is_conic',
+    'is_even_aspherical',
+    'is_spherical',
 ]
 __all__ += _surf.__all__
 __all__ += _apt.__all__
 
 
-def conical(r2: Ts, c: Ts, k: Ts = None) -> Ts:
+def conic(r2: Ts, c: Ts, k: Ts = None) -> Ts:
     _1 = c.square() if k is None else c.square() * (1 + k)
     return c * r2 / (1 + torch.sqrt(torch.relu(1 - r2 * _1)))
 
 
-def conical_derivative_r2(r2: Ts, c: Ts, k: Ts = None) -> Ts:
+def conic_derivative_r2(r2: Ts, c: Ts, k: Ts = None) -> Ts:
     _1 = c.square() if k is None else c.square() * (1 + k)
     _2 = r2 * _1
     _3, mask = _t.ssqrt(1 - _2)
@@ -43,8 +51,8 @@ def conical_derivative_r2(r2: Ts, c: Ts, k: Ts = None) -> Ts:
     return torch.where(mask, c / _4 * (1 + _2 / (2 * _3 * _4 + 1e-20)), 0)
 
 
-def even_aspherical(r2: Ts, c: Ts, k: Ts = None, a: Sequence[Ts] = ()) -> Ts:
-    conic_base = conical(r2, c, k)
+def even_asphere(r2: Ts, c: Ts, k: Ts = None, a: Sequence[Ts] = ()) -> Ts:
+    conic_base = conic(r2, c, k)
     if len(a) == 0:
         return conic_base
 
@@ -52,14 +60,34 @@ def even_aspherical(r2: Ts, c: Ts, k: Ts = None, a: Sequence[Ts] = ()) -> Ts:
     return aspherical + conic_base
 
 
-def even_aspherical_derivative_r2(r2: Ts, c: Ts, k: Ts = None, a: Sequence[Ts] = ()) -> Ts:
-    conic_base = conical_derivative_r2(r2, c, k)
+def even_asphere_derivative_r2(r2: Ts, c: Ts, k: Ts = None, a: Sequence[Ts] = ()) -> Ts:
+    conic_base = conic_derivative_r2(r2, c, k)
     if len(a) == 0:
         return conic_base
 
     coefficients = [a_item * (i + 1) for i, a_item in enumerate(a)]
     aspherical = _t.polynomial(r2, coefficients)
     return aspherical + conic_base
+
+
+def _is_instance_or_subclass(cls, *types):
+    if isinstance(cls, types):
+        return True
+    if not isinstance(cls, type):
+        return False
+    return issubclass(cls, types)
+
+
+def is_spherical(cls) -> bool:
+    return _is_instance_or_subclass(cls, _SphereBase)
+
+
+def is_conic(cls) -> bool:
+    return _is_instance_or_subclass(cls, _ConicBase)
+
+
+def is_even_aspherical(cls) -> bool:
+    return _is_instance_or_subclass(cls, _EvenAsphereBase)
 
 
 class ThinLens(Planar):
@@ -192,7 +220,7 @@ class ThinLens(Planar):
         return ps
 
 
-class _SphericalBase(Surface, metaclass=abc.ABCMeta):  # docstring for Spherical
+class _SphereBase(Surface, metaclass=abc.ABCMeta):  # docstring for Spherical
     r"""
     Spherical surfaces.
 
@@ -279,18 +307,18 @@ class _SphericalBase(Surface, metaclass=abc.ABCMeta):  # docstring for Spherical
         return self.curvature
 
 
-class Spherical(_SphericalBase):
-    __doc__ = _SphericalBase.__doc__
+class Sphere(_SphereBase):
+    __doc__ = _SphereBase.__doc__
 
     def h(self, x: Ts, y: Ts, r2: Ts = None) -> Ts:
         if r2 is None:
             r2 = x.square() + y.square()
-        return conical(r2, self.c)
+        return conic(r2, self.c)
 
     def h_grad(self, x: Ts, y: Ts, r2: Ts = None) -> tuple[Ts, Ts]:
         if r2 is None:
             r2 = x.square() + y.square()
-        m = conical_derivative_r2(r2, self.c) * 2
+        m = conic_derivative_r2(r2, self.c) * 2
         return m * x, m * y
 
     def _solve_t(self, ray: BatchedRay) -> Ts:
@@ -315,7 +343,7 @@ class Spherical(_SphericalBase):
         return t
 
 
-class _ConicBase(_SphericalBase, metaclass=abc.ABCMeta):  # docstring for Conic
+class _ConicBase(_SphereBase, metaclass=abc.ABCMeta):  # docstring for Conic
     r"""
     Conic surfaces.
 
@@ -335,6 +363,7 @@ class _ConicBase(_SphericalBase, metaclass=abc.ABCMeta):  # docstring for Conic
     :type conic: float or Tensor
     """
 
+    # noinspection PyShadowingNames
     def __init__(
         self, roc: Scalar = float('inf'),
         conic: Scalar = 0,
@@ -357,7 +386,7 @@ class _ConicBase(_SphericalBase, metaclass=abc.ABCMeta):  # docstring for Conic
     def h_grad(self, x: Ts, y: Ts, r2: Ts = None) -> tuple[Ts, Ts]:
         if r2 is None:
             r2 = x.square() + y.square()
-        m = conical_derivative_r2(r2, self.c, self.conic) * 2
+        m = conic_derivative_r2(r2, self.c, self.conic) * 2
         return m * x, m * y
 
     def to_dict(self, keep_tensor=True) -> dict[str, Any]:
@@ -372,7 +401,7 @@ class Conic(_ConicBase):
     def h(self, x: Ts, y: Ts, r2: Ts = None) -> Ts:
         if r2 is None:
             r2 = x.square() + y.square()
-        return conical(r2, self.c, self.conic)
+        return conic(r2, self.c, self.conic)
 
     def _solve_t(self, ray: BatchedRay) -> Ts:
         if not self._cfg.use_analytical:
@@ -401,7 +430,7 @@ class Conic(_ConicBase):
         return t
 
 
-class _EvenAsphericBase(_ConicBase, metaclass=abc.ABCMeta):
+class _EvenAsphereBase(_ConicBase, metaclass=abc.ABCMeta):
     r"""
     Even aspherical surfaces.
 
@@ -420,14 +449,15 @@ class _EvenAsphericBase(_ConicBase, metaclass=abc.ABCMeta):
     :type roc: float or Tensor
     :param conic: Conic coefficient.
     :type conic: float or Tensor
-    :param coefficients: Even aspherical coefficients.
-    :type coefficients: Sequence[float | Tensor]
+    :param a: Even aspherical coefficients.
+    :type a: Sequence[float | Tensor]
     """
 
+    # noinspection PyShadowingNames
     def __init__(
         self, roc: Scalar = float('inf'),
         conic: Scalar = 0,
-        coefficients: Sequence[Scalar] = (),
+        a: Sequence[Scalar] = (),
         material: mt.Material | str = 'air',
         aperture: Aperture | Scalar = float('inf'),
         reflective: bool = False,
@@ -436,19 +466,19 @@ class _EvenAsphericBase(_ConicBase, metaclass=abc.ABCMeta):
         d: Scalar = None
     ):
         super().__init__(roc, conic, material, aperture, reflective, intersection_config, d=d)
-        for i, a in enumerate(coefficients):
-            self.register_parameter(f'a{i + 1}', nn.Parameter(ty.scalar(a, dtype=torch.get_default_dtype())))
-        self._n_a = len(coefficients)
+        for i, a_item in enumerate(a):
+            self.register_parameter(f'a{i + 1}', nn.Parameter(ty.scalar(a_item, dtype=torch.get_default_dtype())))
+        self._n_a = len(a)
 
     def h(self, x: Ts, y: Ts, r2: Ts = None) -> Ts:
         if r2 is None:
             r2 = x.square() + y.square()
-        return even_aspherical(r2, self.c, self.conic, self.a)
+        return even_asphere(r2, self.c, self.conic, self.a)
 
     def h_grad(self, x: Ts, y: Ts, r2: Ts = None) -> tuple[Ts, Ts]:
         if r2 is None:
             r2 = x.square() + y.square()
-        m = even_aspherical_derivative_r2(r2, self.c, self.conic, self.a) * 2
+        m = even_asphere_derivative_r2(r2, self.c, self.conic, self.a) * 2
         return m * x, m * y
 
     def extra_repr(self) -> str:
@@ -494,21 +524,21 @@ class _EvenAsphericBase(_ConicBase, metaclass=abc.ABCMeta):
                 self.register_parameter(f'a{i + 1}', nn.Parameter(ty.scalar(0.)))
         self._n_a = n
 
+    @property
+    def px_curvature(self) -> Ts:
+        return super().px_curvature + 2 * self.a1
 
-class EvenAspherical(_EvenAsphericBase):
-    __doc__ = _EvenAsphericBase.__doc__
+
+class EvenAsphere(_EvenAsphereBase):
+    __doc__ = _EvenAsphereBase.__doc__
 
     def to_dict(self, keep_tensor=True) -> dict[str, Any]:
         d = super().to_dict(keep_tensor)
         d['coefficients'] = self.a if keep_tensor else [c.item() for c in self.a]
         return d
 
-    @property
-    def px_curvature(self) -> Ts:
-        return super().px_curvature + 2 * self.a1
 
-
-class Fresnel(EvenAspherical, utils.ExternalParamMixIn):
+class Fresnel(EvenAsphere, utils.ExternalParamMixIn):
     """
     Fresnel surface in which the profile of the surface is "wrapped"
     in the manner of Fresnel lens. The latent profile (i.e. profile before wrapping)
@@ -532,11 +562,12 @@ class Fresnel(EvenAspherical, utils.ExternalParamMixIn):
     """
     wrapping: utils.Exparam
 
+    # noinspection PyShadowingNames
     def __init__(
         self,
         roc: Scalar = float('inf'),
         conic: Scalar = 0,
-        coefficients: Sequence[Scalar] = (),
+        a: Sequence[Scalar] = (),
         material: mt.Material | str = 'air',
         aperture: Aperture | Scalar = float('inf'),
         wrapping: float = None,
@@ -549,7 +580,7 @@ class Fresnel(EvenAspherical, utils.ExternalParamMixIn):
         if virtual_wrapping is None:
             virtual_wrapping = wrapping
 
-        super().__init__(roc, conic, coefficients, material, aperture, reflective, intersection_config, d=d)
+        super().__init__(roc, conic, a, material, aperture, reflective, intersection_config, d=d)
         self.wrapping = wrapping
         self.virtual_wrapping = virtual_wrapping
 
@@ -596,9 +627,10 @@ class Fresnel(EvenAspherical, utils.ExternalParamMixIn):
             return super()._solve_t(ray)
 
 
-class Zernike(_EvenAsphericBase):
+class Zernike(_EvenAsphereBase):
     circularly_symmetric = False
 
+    # noinspection PyShadowingNames
     def __init__(
         self, roc: Scalar = float('inf'),
         conic: Scalar = 0,
@@ -654,6 +686,7 @@ class Zernike(_EvenAsphericBase):
 
     def to_dict(self, keep_tensor=True) -> dict[str, Any]:
         d = super().to_dict(keep_tensor)
+        d['a'] = self.a if keep_tensor else [c.item() for c in self.a]
         d['z'] = self.z if keep_tensor else [c.item() for c in self.z]
         return d
 
@@ -729,6 +762,8 @@ class Zernike(_EvenAsphericBase):
         if not isinstance(self.aperture, CircularAperture):
             raise RuntimeError(f'norm_radius is not specified and the aperture is not a circular aperture.')
         return self.aperture.radius.item()
+
+    # TODO: paraxial curvature
 
 
 class PlanarPhase(Planar, metaclass=abc.ABCMeta):
@@ -922,11 +957,11 @@ class PolynomialPhase(PlanarPhase):
         return ty.cast(Ts, x_grad), ty.cast(Ts, y_grad)
 
 
-class AsphericalRadialPhase(EvenAspherical):
+class AsphereRadialPhase(EvenAsphere):
     def __init__(
         self, roc: Scalar = float('inf'),
         conic: Scalar = 0,
-        coefficients: Sequence[Scalar] = (),
+        a: Sequence[Scalar] = (),
         phase_coef: Sequence[Scalar] = (),
         norm_radius: float = None,
         material: mt.Material | str = 'air',
@@ -936,7 +971,7 @@ class AsphericalRadialPhase(EvenAspherical):
         *,
         d: Scalar = None
     ):
-        super().__init__(roc, conic, coefficients, material, aperture, reflective, intersection_config, d=d)
+        super().__init__(roc, conic, a, material, aperture, reflective, intersection_config, d=d)
         for i, b in enumerate(phase_coef):
             self.register_parameter(f'b{i + 1}', nn.Parameter(ty.scalar(b, dtype=torch.get_default_dtype())))
         self._phase_n = len(phase_coef)

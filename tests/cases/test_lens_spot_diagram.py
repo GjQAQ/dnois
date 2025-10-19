@@ -40,7 +40,7 @@ class LensSpotTest(unittest.TestCase):
                     intersection_config=rt.IntersectionConfig(use_analytical=self.use_analytical),
                     d=1.200003174024448E-002
                 ),
-                rt.Spherical(
+                rt.Sphere(
                     -3.594420479495210E-001,
                     material='air',
                     aperture=1.245562055844115E-002,
@@ -75,7 +75,7 @@ class LensSpotTest(unittest.TestCase):
     def test_planar_diffractive(self):
         self._test_case(
             rt.CoaxialSurfaceSequence([
-                rt.AsphericalRadialPhase(
+                rt.AsphereRadialPhase(
                     phase_coef=[-8.456322343801885E+003, 3.757876911565806E+001, -1.295576930032466E+000],
                     material='BK7',
                     aperture=1.250000000000000E-002,
@@ -99,7 +99,7 @@ class LensSpotTest(unittest.TestCase):
     def test_curved_diffractive(self):
         self._test_case(
             rt.CoaxialSurfaceSequence([
-                rt.AsphericalRadialPhase(
+                rt.AsphereRadialPhase(
                     -4.025189283182056E+001,
                     -4.108200251412145E+007,
                     [0, -7.636392109883529E+003, -2.585298019550675E+007, -2.170151388941415E+009],

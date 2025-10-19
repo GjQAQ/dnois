@@ -874,7 +874,7 @@ def load(file, exist_ok: bool = False):
         register(Material.from_dict(m), exist_ok=exist_ok)
 
 
-air: ConstantRelative = ConstantRelative('air')
+air: ConstantRelative = ConstantRelative('air', 1.)
 vacuum: Constant = Constant('vacuum', 1.)
 _lib: dict[str, dict[str, Material]] = {
     'air': {'': air},

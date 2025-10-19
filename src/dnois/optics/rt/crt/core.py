@@ -832,8 +832,8 @@ class CoaxialRayTracing(
             ray_out = self.surfaces.trace_out(ray_in).broadcast()  # N_wl x N_spp
 
             chief_direction, _ = _make_direction(entr_center, points[i])  # 3
-            chief_ray_in = BatchedRay(entr_center, chief_direction, wl)  # N_wl
-            chief_ray_out = self.surfaces.trace_out(chief_ray_in, aperture=False).broadcast()  # N_wl
+            chief_ray_in = BatchedRay(entr_center, chief_direction, wl.unsqueeze(-1))  # N_wl x 1
+            chief_ray_out = self.surfaces.trace_out(chief_ray_in, aperture=False).broadcast()  # N_wl x 1
 
             x, y = ray_out.x - chief_ray_out.x, ray_out.y - chief_ray_out.y
             r2 = x.square() + y.square()
@@ -1013,7 +1013,7 @@ class CoaxialRayTracing(
 
     def _check_circ_surf(self):
         for s in self.surfaces:
-            if s.circularly_symmetric:
+            if not s.circularly_symmetric:
                 raise NotImplementedError(
                     f'A function called requires all the surfaces to be circularly symmetric, '
                     f'which is not satisfied for surface {s.ctx.index}'
@@ -1198,7 +1198,7 @@ class CoaxialRayTracing(
             raise ValueError(utils.invalid_option_msg('wavelength reduction', wl_reduction, WlReduction))
 
     def _pupil_prepare(self, entr: bool, flip_half_before: bool = True) -> tuple[Ts, list[surf.Surface]]:
-        self._check_circ_surf()
+        # self._check_circ_surf()
 
         stop = self.surfaces.stop
         if stop is None:

@@ -1,7 +1,6 @@
 import inspect
+import typing
 import warnings
-
-from ..base import typing
 
 __all__ = [
     'get_bound_args',
@@ -11,19 +10,36 @@ __all__ = [
 _T = typing.TypeVar('_T')
 
 
-def _subclasses(cls: type) -> set[type]:
-    subs = set(cls.__subclasses__())  # use set to avoid duplicates
-    for sub in subs.copy():
-        subs = subs | _subclasses(sub)
-    return subs
+def _subclasses(cls: type[_T], no_abstract: bool, no_protected: bool) -> set[type[_T]]:
+    def ff(clz):
+        if not inspect.isclass(clz):
+            return False
+        if no_abstract and inspect.isabstract(clz):
+            return False
+        if no_protected and clz.__name__.startswith('_'):
+            return False
+        return True
+
+    subs = cls.__subclasses__()
+    required = set(filter(ff, subs))  # use set to avoid duplicates
+    for sub in subs:
+        required = required | _subclasses(sub, no_abstract, no_protected)
+    return required
 
 
-def subclasses(cls: type[_T], _filter: bool = True) -> list[type[_T]]:
-    # Returns subclasses of cls recursively
-    # If _filter is True, only non-abstract and non-private (name starting with _) classes are returned
-    sub_list = _subclasses(cls)
-    if _filter:
-        sub_list = list(filter(lambda c: not inspect.isabstract(c) and not c.__name__.startswith('_'), sub_list))
+def subclasses(cls: type[_T], no_abstract: bool = True, no_protected: bool = True) -> list[type[_T]]:
+    """
+    Returns a list of subclasses of the given class, sorted by their names.
+
+    :param type cls: The class to find subclasses of.
+    :param bool no_abstract: If ``True``, abstract classes are not
+        included in the result. Default: ``True``.
+    :param bool no_protected: If ``True``, classes with names starting
+        with '_' are not included in the result. Default: ``True``.
+    :return: A list of subclasses of the given class, sorted by their names.
+    :rtype: list[type]
+    """
+    sub_list = _subclasses(cls, no_abstract, no_protected)
     sub_list = sorted(sub_list, key=lambda c: c.__name__)
     return sub_list
 

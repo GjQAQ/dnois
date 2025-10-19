@@ -329,14 +329,13 @@ class StandardAsCircularStopConverter(DumpOnlyConverter):
 
 class EvenAsphConverter(StandardConverter):
     name = 'EVENASPH'
-    type = rt.EvenAspherical
-    aspheric_attr_name = 'coefficients'
+    type = rt.EvenAsphere
 
-    def dump(self, surface: rt.EvenAspherical) -> list[str]:
+    def dump(self, surface: rt.EvenAsphere) -> list[str]:
         fields = super().dump(ty.cast(rt.Conic, surface))
 
         # Add aspheric coefficients
-        coefficients = getattr(surface, self.aspheric_attr_name)
+        coefficients = surface.a
         ratio = base.Length.default() / base.Length.from_str(self.unit)
 
         for idx, coef in enumerate(coefficients):
@@ -355,8 +354,8 @@ class EvenAsphConverter(StandardConverter):
             if value == 0.:
                 return
 
-            kwargs.setdefault(self.aspheric_attr_name, [])
-            c = kwargs[self.aspheric_attr_name]
+            kwargs.setdefault('a', [])
+            c = kwargs['a']
             while len(c) < idx:  # note that PARM 1 is the first coefficient
                 c.append(0.)
             ratio = base.Length.default() / base.Length.from_str(self.unit)
@@ -365,9 +364,9 @@ class EvenAsphConverter(StandardConverter):
 
 class Binary2Converter(EvenAsphConverter):
     name = 'BINARY_2'
-    type = rt.AsphericalRadialPhase
+    type = rt.AsphereRadialPhase
 
-    def dump(self, surface: rt.AsphericalRadialPhase) -> list[str]:
+    def dump(self, surface: rt.AsphereRadialPhase) -> list[str]:
         fields = super().dump(surface)
 
         # Add diffraction order (always 1 for supported surfaces)
@@ -412,10 +411,9 @@ class Binary2Converter(EvenAsphConverter):
 class SzernsagConverter(EvenAsphConverter):
     name = 'SZERNSAG'
     type = rt.Zernike
-    aspheric_attr_name = 'a'
 
     def dump(self, surface: rt.Zernike) -> list[str]:
-        fields = super().dump(ty.cast(rt.EvenAspherical, surface))
+        fields = super().dump(ty.cast(rt.EvenAsphere, surface))
 
         # Add Zernike coefficients
         # Add number of terms
