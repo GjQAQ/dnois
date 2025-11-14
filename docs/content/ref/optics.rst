@@ -66,6 +66,9 @@ Image formation
     space_variant
     superpose
 
+.. autosummary::
+    :toctree: ../generated/optics/formation_cls
+
     Simple
     PSFAugSimple
     DepthAware

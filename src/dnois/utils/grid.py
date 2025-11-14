@@ -1,10 +1,15 @@
+import functools
+import operator
+
 import torch
 
-from ..base.typing import Ts, Sequence, is_scalar
+from ..base.typing import Ts, Sequence, Numeric, is_scalar, cast
 
 __all__ = [
     'grid',
     'interval',
+
+    'Grid',
 ]
 
 
@@ -15,7 +20,7 @@ def _reshape(x: Ts, n: int, idx: int) -> Ts:
 
 
 def interval(
-    n: int, spacing: float | Ts = None, center: float | Ts = None, symmetric: bool = False, **kwargs
+    n: int, spacing: Numeric = None, center: Numeric = None, symmetric: bool = False, **kwargs
 ) -> Ts:
     """
     Create a 1D evenly spaced grid.
@@ -45,10 +50,10 @@ def interval(
     :param int n: Number of grid points.
     :param spacing: Spacing between grid points. If a tensor with shape ``(...)``,
         the returned tensor will have shape ``(..., n)``. Default: 1.
-    :type spacing: float or Tensor.
+    :type spacing: Real or Tensor.
     :param center: Center of resulted grid points. If a tensor with shape ``(...)``,
         the returned tensor will have shape ``(..., n)``. Default: 0.
-    :type center: float or Tensor.
+    :type center: Real or Tensor.
     :param bool symmetric: If ``True``, grid points are symmetric w.r.t. ``center``.
         Otherwise, ``n // 2`` points are smaller, ``n // 2 - 1`` points are larger
         and one point is ``center`` value. Only matters when ``n`` is even. Default: ``False``.
@@ -76,8 +81,8 @@ def interval(
 
 def grid(
     n: Sequence[int],
-    spacing: float | Ts | Sequence[float | Ts] = None,
-    center: float | Ts | Sequence[float | Ts] = None,
+    spacing: Numeric | Sequence[Numeric] = None,
+    center: Numeric | Sequence[Numeric] = None,
     symmetric: bool = False,
     broadcast: bool = True,
     **kwargs
@@ -132,11 +137,11 @@ def grid(
 
     :param Sequence[int] n: Number of grid points in each dimension.
     :param spacing: Spacing between grid points in each dimension.
-        A single ``float`` or 0D tensor indicates the spacing for all dimensions. Default: 1.
-    :type spacing: float or Tensor or Sequence[float | Tensor]
+        A single ``Real`` or tensor indicates the spacing for all dimensions. Default: 1.
+    :type spacing: Real or Tensor or Sequence[Real | Tensor]
     :param center: Center of resulted grid points in each dimension.
-        A single ``float`` or 0D tensor indicates the center for all dimensions. Default: 0.
-    :type center: float or Tensor or Sequence[float | Tensor]
+        A single ``Real`` or tensor indicates the center for all dimensions. Default: 0.
+    :type center: Real or Tensor or Sequence[Real | Tensor]
     :param bool symmetric: See :py:func:`interval`. Default: ``False``.
     :param bool broadcast: Whether to broadcast resulted tensors. Default: ``True``.
     :param kwargs: Tensor creation arguments passes to :py:func:`torch.linspace`.
@@ -162,3 +167,106 @@ def grid(
     if broadcast:
         g = list(torch.broadcast_tensors(*g))
     return g
+
+
+class Grid:
+    """
+    A class to represent a grid.
+
+    See :func:`grid` for more details.
+    """
+
+    def __init__(
+        self,
+        n: Sequence[int],
+        spacing: Numeric | Sequence[Numeric] = None,
+        center: Numeric | Sequence[Numeric] = None,
+        symmetric: bool = False,
+    ):
+        if not isinstance(n, Sequence) or not all(isinstance(n_item, int) for n_item in n):
+            raise TypeError(f'A sequence of int expected for n')
+        if len(n) == 0:
+            raise ValueError('n can not be empty')
+        if isinstance(spacing, Sequence) and len(spacing) != len(n):
+            raise ValueError(f'Given dims={len(n)} but number of grid spacings is {len(spacing)}')
+        if isinstance(center, Sequence) and len(center) != len(n):
+            raise ValueError(f'Given dims={len(n)} but number of offsets is {len(center)}')
+
+        self.n: Sequence[int] = n  #: Number of grid points in each dimension.
+        self.spacing: Numeric | Sequence[Numeric] = spacing  #: Spacing between grid points in each dimension.
+        self.center: Numeric | Sequence[Numeric] = center  #: Center of resulted grid points in each dimension.
+        self.symmetric: bool = symmetric  #: See :func:`interval`.
+
+    def size(self, dim: int = None) -> int:
+        """
+        Returns number of grid points in given dimension, or
+        total number of grid points if ``dim`` is ``None``.
+
+        :param int dim: Dimension index. Default: ``None``.
+        :return: Number of grid points.
+        :rtype: int
+        """
+        if dim is None:
+            return functools.reduce(operator.mul, self.n)
+        return self.n[dim]
+
+    def span(self, dim: int = None) -> Numeric:
+        """
+        Returns span of given dimension, or product of spans
+        in all dimensions if ``dim`` is ``None``.
+        By "span" we mean the distance between the first and last grid points
+        in a dimension, which is ``(n[dim] - 1) * spacing[dim]``.
+        Thus :attr:`.spacing` must be not ``None``.
+
+        :param int dim: Dimension index. Default: ``None``.
+        :return: Span of given dimension.
+        :rtype: Real or Tensor
+        :raises RuntimeError: If :attr:`spacing` is ``None``.
+        """
+        if self.spacing is None:
+            raise RuntimeError('span not defined for a grid without spacing')
+        if dim is None:
+            return functools.reduce(operator.mul, map(self.span, range(self.ndim)))
+        if isinstance(self.spacing, Sequence):
+            return (self.n[dim] - 1) * self.spacing[dim]
+        else:
+            return (self.n[dim] - 1) * cast(Ts, self.spacing)
+
+    def vol(self, dim: int = None) -> Numeric:
+        """
+        Returns volume of given dimension, or product of volumes
+        in all dimensions if ``dim`` is ``None``.
+        By "volume" we mean the width of the grids in one dimension
+        when each points represent a volume element,
+        which is ``n[dim] * spacing[dim]``.
+        Thus :attr:`.spacing` must be not ``None``.
+
+        :param int dim: Dimension index. Default: ``None``.
+        :return: Volume of given dimension.
+        :rtype: Real or Tensor
+        :raises RuntimeError: If :attr:`spacing` is ``None``.
+        """
+        if self.spacing is None:
+            raise RuntimeError('volume not defined for a grid without spacing')
+        if dim is None:
+            return functools.reduce(operator.mul, map(self.vol, range(self.ndim)))
+        if isinstance(self.spacing, Sequence):
+            return self.n[dim] * self.spacing[dim]
+        else:
+            return self.n[dim] * cast(Ts, self.spacing)
+
+    def make_points(self, broadcast: bool = True, **kwargs) -> list[Ts]:
+        """
+        Create a list of tensors representing coordinates of grid points.
+        See :func:`grid` for more details.
+        """
+        return grid(self.n, self.spacing, self.center, self.symmetric, broadcast, **kwargs)
+
+    @property
+    def ndim(self):
+        """
+        Number of dimensions.
+
+        :type: int
+        """
+        return len(self.n)

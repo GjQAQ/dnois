@@ -12,6 +12,11 @@ Creating grid
     grid
     interval
 
+.. autosummary::
+    :toctree: ../generated/utils/grid_cls
+
+    Grid
+
 *****************************
 Image manipulation
 *****************************

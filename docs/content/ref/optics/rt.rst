@@ -43,15 +43,15 @@ Specific surface types
 .. autosummary::
     :toctree: ../../generated/optics/rt/surf/types
 
-    AsphericalRadialPhase
+    AsphereRadialPhase
     CircularStop
     Conic
-    EvenAspherical
+    EvenAsphere
     Fresnel
     Grating
     Planar
     PolynomialPhase
-    Spherical
+    Sphere
     Stop
     ThinLens
     Zernike
