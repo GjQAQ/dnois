@@ -4,7 +4,6 @@ This package provides some useful functions for diverse purposes, including
 type hint, image manipulation and computation, etc.
 """
 
-from .grid import *
 from .image import *
 from .io import *
 from .misc import *

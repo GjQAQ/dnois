@@ -1,7 +1,7 @@
 {
   "surfaces": [
     {
-      "type": "Spherical",
+      "type": "Sphere",
       "material": "SK2",
       "aperture": {
         "type": "CircularAperture",
@@ -11,7 +11,7 @@
       "distance": 0.008746657520532608
     },
     {
-      "type": "Spherical",
+      "type": "Sphere",
       "material": "air",
       "aperture": {
         "type": "CircularAperture",
@@ -21,7 +21,7 @@
       "distance": 0.0005000000237487257
     },
     {
-      "type": "Spherical",
+      "type": "Sphere",
       "material": "SK16",
       "aperture": {
         "type": "CircularAperture",
@@ -31,7 +31,7 @@
       "distance": 0.014000000432133675
     },
     {
-      "type": "Spherical",
+      "type": "Sphere",
       "material": "F5",
       "aperture": {
         "type": "CircularAperture",
@@ -41,7 +41,7 @@
       "distance": 0.003776965895667672
     },
     {
-      "type": "Spherical",
+      "type": "Sphere",
       "material": "air",
       "aperture": {
         "type": "CircularAperture",
@@ -59,7 +59,7 @@
       "distance": 0.012428129091858864
     },
     {
-      "type": "Spherical",
+      "type": "Sphere",
       "material": "F5",
       "aperture": {
         "type": "CircularAperture",
@@ -69,7 +69,7 @@
       "distance": 0.003776965895667672
     },
     {
-      "type": "Spherical",
+      "type": "Sphere",
       "material": "SK16",
       "aperture": {
         "type": "CircularAperture",
@@ -79,7 +79,7 @@
       "distance": 0.010833928361535072
     },
     {
-      "type": "Spherical",
+      "type": "Sphere",
       "material": "air",
       "aperture": {
         "type": "CircularAperture",
@@ -89,7 +89,7 @@
       "distance": 0.0005000000237487257
     },
     {
-      "type": "Spherical",
+      "type": "Sphere",
       "material": "SK16",
       "aperture": {
         "type": "CircularAperture",
@@ -99,7 +99,7 @@
       "distance": 0.006858174689114094
     },
     {
-      "type": "Spherical",
+      "type": "Sphere",
       "material": "air",
       "aperture": {
         "type": "CircularAperture",

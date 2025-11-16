@@ -23,6 +23,17 @@ TODO
     PinholeOptics
     PsfImagingOptics
 
+Blending models
+====================================
+TODO
+
+.. autosummary::
+    :toctree: ../generated/optics/blending
+
+    BlendingModel
+    ConvBlending
+    PatchwiseConvBlending
+
 Implemented models
 =====================================
 

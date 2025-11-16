@@ -3,31 +3,33 @@ import operator
 
 import torch
 
-from ..base.typing import Ts, Sequence, Numeric, is_scalar, cast
+from .. import AsJsonMixIn, typing as ty
 
 __all__ = [
     'grid',
     'interval',
 
     'Grid',
+    'Grid2d',
+    'PixelGrid',
 ]
 
 
-def _reshape(x: Ts, n: int, idx: int) -> Ts:
+def _reshape(x: ty.Ts, n: int, idx: int) -> ty.Ts:
     x = x.reshape(*x.shape, *[1 for _ in range(n - 1)])
     x = x.transpose(idx - n, -n)
     return x
 
 
 def interval(
-    n: int, spacing: Numeric = None, center: Numeric = None, symmetric: bool = False, **kwargs
-) -> Ts:
+    n: int, spacing: ty.Numeric = None, center: ty.Numeric = None, symmetric: bool = False, **kwargs
+) -> ty.Ts:
     """
     Create a 1D evenly spaced grid.
 
     .. testsetup::
 
-        from dnois.utils import *
+        from dnois import interval
         import torch
         torch.set_printoptions(precision=2)
 
@@ -67,12 +69,12 @@ def interval(
     else:
         x = torch.linspace(-n / 2, n / 2 - 1, n, **kwargs)
     if spacing is not None:
-        if is_scalar(spacing):
+        if ty.is_scalar(spacing):
             x = x * spacing
         else:  # >1D tensor
             x = x * spacing.unsqueeze(-1)
     if center is not None:
-        if is_scalar(center):
+        if ty.is_scalar(center):
             x = x + center
         else:
             x = x + center.unsqueeze(-1)
@@ -80,19 +82,19 @@ def interval(
 
 
 def grid(
-    n: Sequence[int],
-    spacing: Numeric | Sequence[Numeric] = None,
-    center: Numeric | Sequence[Numeric] = None,
+    n: ty.Sequence[int],
+    spacing: ty.Numeric | ty.Sequence[ty.Numeric] = None,
+    center: ty.Numeric | ty.Sequence[ty.Numeric] = None,
     symmetric: bool = False,
     broadcast: bool = True,
     **kwargs
-) -> list[Ts]:
+) -> list[ty.Ts]:
     """
     Create a ``len(n)``-D evenly spaced grid.
 
     .. testsetup::
 
-        from dnois.utils import *
+        from dnois import grid
         import torch
         torch.set_printoptions(precision=2)
 
@@ -151,11 +153,11 @@ def grid(
     :rtype: list[Tensor]
     """
     dims = len(n)
-    if not isinstance(spacing, Sequence):
+    if not isinstance(spacing, ty.Sequence):
         spacing = [spacing for _ in range(dims)]
     elif len(spacing) != dims:
         raise ValueError(f'Given dims={dims} but number of grid spacings is {len(spacing)}')
-    if not isinstance(center, Sequence):
+    if not isinstance(center, ty.Sequence):
         center = [center for _ in range(dims)]
     elif len(center) != dims:
         raise ValueError(f'Given dims={dims} but number of offsets is {len(center)}')
@@ -169,33 +171,47 @@ def grid(
     return g
 
 
-class Grid:
+class Grid(AsJsonMixIn):
     """
     A class to represent a grid.
 
     See :func:`grid` for more details.
     """
+    __slots__ = ('n', 'spacing', 'center', 'symmetric', '_lock')
 
     def __init__(
         self,
-        n: Sequence[int],
-        spacing: Numeric | Sequence[Numeric] = None,
-        center: Numeric | Sequence[Numeric] = None,
+        n: ty.Sequence[int],
+        spacing: ty.Numeric | ty.Sequence[ty.Numeric] = None,
+        center: ty.Numeric | ty.Sequence[ty.Numeric] = None,
         symmetric: bool = False,
     ):
-        if not isinstance(n, Sequence) or not all(isinstance(n_item, int) for n_item in n):
+        if not isinstance(n, ty.Sequence) or not all(isinstance(n_item, int) for n_item in n):
             raise TypeError(f'A sequence of int expected for n')
         if len(n) == 0:
             raise ValueError('n can not be empty')
-        if isinstance(spacing, Sequence) and len(spacing) != len(n):
+        if isinstance(spacing, ty.Sequence) and len(spacing) != len(n):
             raise ValueError(f'Given dims={len(n)} but number of grid spacings is {len(spacing)}')
-        if isinstance(center, Sequence) and len(center) != len(n):
+        if isinstance(center, ty.Sequence) and len(center) != len(n):
             raise ValueError(f'Given dims={len(n)} but number of offsets is {len(center)}')
 
-        self.n: Sequence[int] = n  #: Number of grid points in each dimension.
-        self.spacing: Numeric | Sequence[Numeric] = spacing  #: Spacing between grid points in each dimension.
-        self.center: Numeric | Sequence[Numeric] = center  #: Center of resulted grid points in each dimension.
+        self.n: tuple[int, ...] = tuple(n)  #: Number of grid points in each dimension.
+        self.spacing: ty.Numeric | ty.Sequence[ty.Numeric] = spacing  #: Spacing between grid points in each dimension.
+        self.center: ty.Numeric | ty.Sequence[ty.Numeric] = center  #: Center of resulted grid points in each dimension.
         self.symmetric: bool = symmetric  #: See :func:`interval`.
+        self._lock = self
+
+    def __setattr__(self, key, value):
+        if hasattr(self, '_lock'):
+            raise AttributeError(f'{type(self).__name__} object is immutable')
+        else:
+            return super().__setattr__(key, value)
+
+    def __delattr__(self, item):
+        if item == '_lock':
+            raise RuntimeError(f'Cannot delete attribute {item}')
+        else:
+            return super().__delattr__(item)
 
     def size(self, dim: int = None) -> int:
         """
@@ -210,7 +226,7 @@ class Grid:
             return functools.reduce(operator.mul, self.n)
         return self.n[dim]
 
-    def span(self, dim: int = None) -> Numeric:
+    def span(self, dim: int = None) -> ty.Numeric:
         """
         Returns span of given dimension, or product of spans
         in all dimensions if ``dim`` is ``None``.
@@ -227,12 +243,12 @@ class Grid:
             raise RuntimeError('span not defined for a grid without spacing')
         if dim is None:
             return functools.reduce(operator.mul, map(self.span, range(self.ndim)))
-        if isinstance(self.spacing, Sequence):
+        if isinstance(self.spacing, ty.Sequence):
             return (self.n[dim] - 1) * self.spacing[dim]
         else:
-            return (self.n[dim] - 1) * cast(Ts, self.spacing)
+            return (self.n[dim] - 1) * ty.cast(ty.Ts, self.spacing)
 
-    def vol(self, dim: int = None) -> Numeric:
+    def vol(self, dim: int = None) -> ty.Numeric:
         """
         Returns volume of given dimension, or product of volumes
         in all dimensions if ``dim`` is ``None``.
@@ -250,17 +266,25 @@ class Grid:
             raise RuntimeError('volume not defined for a grid without spacing')
         if dim is None:
             return functools.reduce(operator.mul, map(self.vol, range(self.ndim)))
-        if isinstance(self.spacing, Sequence):
+        if isinstance(self.spacing, ty.Sequence):
             return self.n[dim] * self.spacing[dim]
         else:
-            return self.n[dim] * cast(Ts, self.spacing)
+            return self.n[dim] * ty.cast(ty.Ts, self.spacing)
 
-    def make_points(self, broadcast: bool = True, **kwargs) -> list[Ts]:
+    def make_points(self, broadcast: bool = True, **kwargs) -> list[ty.Ts]:
         """
         Create a list of tensors representing coordinates of grid points.
         See :func:`grid` for more details.
         """
         return grid(self.n, self.spacing, self.center, self.symmetric, broadcast, **kwargs)
+
+    def to_dict(self, keep_tensor: bool = True) -> dict[str, ty.Any]:
+        return {
+            'n': self.n,
+            'spacing': self._attr2dictitem('spacing', keep_tensor),
+            'center': self._attr2dictitem('center', keep_tensor),
+            'symmetric': self.symmetric,
+        }
 
     @property
     def ndim(self):
@@ -270,3 +294,62 @@ class Grid:
         :type: int
         """
         return len(self.n)
+
+
+class Grid2d(Grid):
+    """
+    A subclass of :class:`Grid` whose ``ndim`` is always 2.
+    """
+
+    def __init__(
+        self,
+        n: ty.Sequence[int],
+        spacing: ty.Numeric | ty.Sequence[ty.Numeric] = None,
+        center: ty.Numeric | ty.Sequence[ty.Numeric] = None,
+        symmetric: bool = False
+    ):
+        super().__init__(n, spacing, center, symmetric)
+        if self.ndim != 2:
+            raise ValueError(f'A 2D grid expected, got {self.ndim}D')
+
+
+class PixelGrid(Grid):
+    """
+    A subclass of :class:`dnois.utils.Grid` but restricts
+    the dimensionality to 2 and ``spacing`` to ``float`` s.
+    This grid represents the pixel array of an imaging sensor.
+
+    Both ``n`` and ``spacing`` can be either a 2-tuple
+    (in horizontal and vertical directions, respectively)
+    or a single value, in which case they are assumed to be the same.
+    """
+
+    def __init__(self, n: ty.Size2d, spacing: ty.Pair[float] = None):
+        super().__init__(ty.size2d(n), ty.pair(spacing), symmetric=True)
+        if self.ndim != 2:
+            raise ValueError(f'A 2D grid expected, got {self.ndim}D')
+        if not all(isinstance(s, float) for s in self.spacing):
+            raise ValueError(f'All spacing values must be floats, got {self.spacing}')
+
+    def to_dict(self, keep_tensor: bool = True) -> dict[str, ty.Any]:
+        return {'n': self.n, 'spacing': self.spacing}
+
+    @property
+    def h(self) -> float:
+        """Physical height of the sensor.\n\n:type: float"""
+        return ty.cast(float, self.vol(0))
+
+    @property
+    def w(self) -> float:
+        """Physical width of the sensor.\n\n:type: float"""
+        return ty.cast(float, self.vol(1))
+
+    @property
+    def pixel_num(self) -> tuple[int, int]:
+        """Alias for :attr:`.n`."""
+        return ty.cast(tuple[int, int], self.n)
+
+    @property
+    def pixel_size(self) -> tuple[float, float]:
+        """Alias for :attr:`.spacing`."""
+        return ty.cast(tuple[float, float], self.spacing)

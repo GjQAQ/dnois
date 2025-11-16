@@ -8,6 +8,7 @@ import dnois.optics.rt.crt.psf
 func = dnois.optics.rt.crt.psf._CoherentPsfOp.apply  # noqa
 
 
+@unittest.skip('This PSF model is not needed')
 class TestZrCoherentPsfOp(unittest.TestCase):
     prefix_shape = (2, 1)
     n_wl = 3

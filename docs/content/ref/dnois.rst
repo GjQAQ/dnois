@@ -46,6 +46,22 @@ Debugging
     debug
     debugging
 
+*********************************
+Creating grid
+*********************************
+.. autosummary::
+    :toctree: ../generated/dnois/grid
+
+    grid
+    interval
+
+.. autosummary::
+    :toctree: ../generated/dnois/grid_cls
+
+    Grid
+    Grid2d
+    PixelGrid
+
 .. _ref_dnois_units:
 
 *********************************

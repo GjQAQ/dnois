@@ -3,20 +3,6 @@ Utilities
 ######################################
 .. automodule:: dnois.utils
 
-*********************************
-Creating grid
-*********************************
-.. autosummary::
-    :toctree: ../generated/utils/grid
-
-    grid
-    interval
-
-.. autosummary::
-    :toctree: ../generated/utils/grid_cls
-
-    Grid
-
 *****************************
 Image manipulation
 *****************************

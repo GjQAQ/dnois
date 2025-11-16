@@ -9,7 +9,6 @@ from ..ray import BatchedRay
 from ... import system, psf_util
 from .... import conf, scene as _sc, base, utils, torch as _t, ext
 from ....base import typing as ty
-from ....sensor import Sensor
 
 __all__ = [
     'ChiefSide',
@@ -26,6 +25,7 @@ __all__ = [
     'WlReduction',
 ]
 
+DEFAULT_SAMPLES: int = 256
 DEFAULT_FIND_CHIEF_SAMPLES: int = 101
 DEFAULT_SAMPLES: int = 512
 
@@ -115,6 +115,9 @@ class CrtPsfModel(utils.ExternalParamMixIn, metaclass=abc.ABCMeta):
 
     @classmethod
     def create(cls, model_type: str, *args, **kwargs) -> ty.Self:
+        if cls is not CrtPsfModel:
+            return cls(*args, **kwargs)  # noqa
+
         for sub in utils.subclasses(cls):
             if sub.type == model_type:
                 return sub(*args, **kwargs)
@@ -250,7 +253,7 @@ class CoaxialRayTracing(
     def __init__(
         self,
         surfaces: surf.CoaxialSurfaceSequence,
-        sensor: Sensor = None,
+        pixel_grid: base.PixelGrid = None,
         imaging_model: ImagingModel = 'psf',
         perspective_focal_length: float = None,
         psf_model: PsfType | CrtPsfModel = 'inc_rect',
@@ -277,7 +280,7 @@ class CoaxialRayTracing(
         # must prior to super() call
         self.psf_model: CrtPsfModel = psf_model  #: See :class:`CoaxialRayTracing`.
 
-        super().__init__(sensor, perspective_focal_length, **kwargs)
+        super().__init__(pixel_grid, perspective_focal_length, **kwargs)
         self.surfaces: surf.CoaxialSurfaceSequence = surfaces  #: Surface list.
         self.fov_model: CrtFovModel = fov_model  #: See :class:`CoaxialRayTracing`.
         self.sampler: surf.Sampler = sampler  #: See :class:`CoaxialRayTracing`.
@@ -313,6 +316,8 @@ class CoaxialRayTracing(
             raise NotImplementedError()
         else:
             raise ValueError(f'Unknown imaging model: {imaging_model}')
+
+    # region Coordinate conversion
 
     def cam2lens_z(self, depth: float | Ts) -> Ts:
         """
@@ -389,6 +394,17 @@ class CoaxialRayTracing(
         xy_on_sensor[..., 0] = -xy_on_sensor[..., 0]
         return xy_on_sensor
 
+    # endregion
+
+    def get_sampler(self) -> surf.Sampler:
+        if self.sampler is None:
+            return self.first.aperture.sampler('rect', DEFAULT_SAMPLES)
+        else:
+            return self.sampler
+
+    def set_sampler(self, mode: str, *args, **kwargs):
+        self.sampler = self.first.aperture.sampler(mode, *args, **kwargs)
+
     def trace_ray(self, ray: BatchedRay, forward: bool = True) -> BatchedRay:  # deprecated
         out_ray = self.surfaces.trace_out(ray, forward)
         return out_ray
@@ -444,7 +460,7 @@ class CoaxialRayTracing(
         depth = ty.scalar(depth, dtype=self.dtype, device=self.device)
         z = self.cam2lens_z(depth)
         o = torch.stack((torch.zeros_like(z), torch.zeros_like(z), z))  # 3
-        points = self.surfaces.first.sample(self.sampler)  # N_spp x 3
+        points = self.surfaces.first.sample(self.get_sampler())  # N_spp x 3
         d, _ = _make_direction(points, o)
         wl = self.wl.reshape(-1, 1)
         ray = BatchedRay(points, d, wl)  # N_wl x N_spp
@@ -936,8 +952,9 @@ class CoaxialRayTracing(
         _plot_set_ax(ax, x_range)
 
         # image_plane
-        if self.sensor is not None:
-            diag_length = (self.sensor.h ** 2 + self.sensor.w ** 2) ** 0.5
+        if self.pixel_grid is not None:
+            pg = self.pixel_grid
+            diag_length = (pg.h ** 2 + pg.w ** 2) ** 0.5
             sensor_z = self.surfaces.total_length.item()
             ax.plot(
                 [sensor_z, sensor_z], [-diag_length / 2, diag_length / 2],
@@ -1027,7 +1044,7 @@ class CoaxialRayTracing(
     # ===========================
     @staticmethod
     def _todict_sampler(*_, **__):
-        return None  # TODO: do not store sampler at present
+        return None  # do not store sampler at present
 
     @classmethod
     def _pre_from_dict(cls, d: dict):
@@ -1160,10 +1177,7 @@ class CoaxialRayTracing(
             out_chief = self.surfaces.trace_out(chief, aperture=False)  # (B, H*W, N_wl)
             xy_chief = out_chief.o[..., None, :2]  # (B, H*W, N_wl, 1, 2)
             xy_chief = xy_chief.transpose(1, 2)  # (B, N_wl, H*W, 1, 2)
-            y, x = utils.grid(
-                self._sensor().pixel_num, self._sensor().pixel_size,
-                symmetric=True, broadcast=True, device=self.device, dtype=self.dtype
-            )
+            y, x = self.pg().make_points(True, device=self.device, dtype=self.dtype)
             xy_grid = torch.stack([-x, y], -1)  # (H, W, 2)
             xy_chief -= xy_grid.flatten(0, 1)[None, None, :, None, :]  # (B, N_wl, H*W, 1, 2)
             return xy_chief
@@ -1239,6 +1253,12 @@ class CoaxialRayTracing(
             return fl[wl.size(0) // 2]
         else:
             raise ValueError(utils.invalid_option_msg('wavelength reduction', wl_reduction, WlReduction))
+
+    def _pick_sampler(self, sampler):
+        if sampler is None:
+            return self.get_sampler()
+        else:
+            return sampler
 
     # normalizer of external parameters
     _normalize_psf_model = staticmethod(utils.type_normalizer(CrtPsfModel))

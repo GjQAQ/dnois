@@ -18,6 +18,7 @@ __all__ = [
 
     'ContextCache',
     'Conditional',
+    'ConvertSetAttrMixIn',
     'Exparam',
     'ExternalParamMixIn',
     'FixStateMixIn',
@@ -84,6 +85,14 @@ class ExternalParamMixIn:
 
         normalizer = getattr(self, '_normalize_' + name, None)
         return value if normalizer is None else normalizer(value)
+
+
+class ConvertSetAttrMixIn(ExternalParamMixIn):
+    def __setattr__(self, key: str, value):
+        normalizer = getattr(self, '_normalize_' + key, None)
+        if normalizer is not None:
+            value = normalizer(value)
+        return super().__setattr__(key, value)
 
 
 def with_external(func: typing.Callable = None, *, exclude: str | typing.Sequence[str] = ()) -> typing.Callable:

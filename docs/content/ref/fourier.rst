@@ -51,9 +51,9 @@ Otherwise, it can be set to ``None``.
 The following example illustrates its approximation to continuous Fourier transform,
 as well as its precision in a simple occasion for 32-bit float.
 
->>> x = dnois.utils.interval(1000, 4e-3)  # [-2, 2]
+>>> x = dnois.interval(1000, 4e-3)  # [-2, 2]
 >>> y = torch.exp(-torch.pi * x.square())  # Gaussian function
->>> fx = dnois.utils.interval(1000, 0.25)  # frequency
+>>> fx = dnois.interval(1000, 0.25)  # frequency
 >>> g = torch.exp(-torch.pi * fx.square())  # ground truth spectrum
 >>> torch.allclose(ft1(y, 4e-3).real, g, atol=1e-6)
 True

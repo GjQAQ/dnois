@@ -26,7 +26,7 @@ __all__ = [
 ]
 
 
-class PsfCenterDeterm(utils.ExternalParamMixIn, metaclass=abc.ABCMeta):
+class PsfCenterDeterm(utils.ConvertSetAttrMixIn, metaclass=abc.ABCMeta):
     """A class to define the way to determine PSF center."""
 
     type: str  #: A name to identify the way to determine PSF center.
@@ -211,7 +211,7 @@ class IncoherentRectKernelPsf(CenterRequiredPsfModel, utils.VarHookMixIn):
         xy = out_ray.o[..., :2]  # ... x N_wl x N_spp x 2
         xy = xy - xy_center  # ... x N_wl x N_spp x 2
 
-        xy = xy / optics.new_tensor([optics.sensor.pixel_size]).flip(0)
+        xy = xy / optics.new_tensor([optics.pg().pixel_size]).flip(0)
         x, y = xy.unbind(-1)  # ... x N_wl x N_spp
         # if PSF size is odd, the center is N/2, relative positions are -N//2, ..., N//2
         # if PSF size is even, the center is (N+1)/2, relative positions are -N//2, ..., N//2-1
@@ -277,12 +277,12 @@ class IncoherentGaussianKernelPsf(CenterRequiredPsfModel):
 
         xy_center = psf_center(optics, optics.cam2lens(origins), out_ray, wl, **kwargs)
         xy = out_ray.o[..., :2] - xy_center  # ... x N_wl x N_spp x 2
-        py, px = optics.sensor.pixel_size
+        py, px = optics.pg().pixel_size
         valid = xy[..., 0].abs().le(px * (psf_size[1] / 2 + 5)) & xy[..., 1].abs().le(py * (psf_size[0] / 2 + 5))
         valid.logical_and_(out_ray.valid)  # ... x N_wl x N_spp
 
         psf = optics.new_empty(out_ray.shape[:-1] + psf_size)  # ... x N_wl x H x W
-        ry, rx = utils.grid(psf_size, optics.sensor.pixel_size, dtype=optics.dtype, device=optics.device)
+        ry, rx = base.grid(psf_size, optics.pg().pixel_size, dtype=optics.dtype, device=optics.device)
         rxy = torch.stack([rx, ry], -1)  # H x W x 2
         pixel_diag = math.sqrt(px ** 2 + py ** 2)
         sigma = pixel_diag / 3
@@ -319,7 +319,7 @@ class CoherentIntegralPsf(CenterRequiredPsfModel, metaclass=abc.ABCMeta):
         # but the computation is performed in lens' coordinate system
         # so a horizontal flipping is needed
         # and large index for y means lower position i.e. small y
-        y, x = utils.grid(psf_size, optics.sensor.pixel_size, device=optics.device, dtype=optics.dtype)
+        y, x = base.grid(psf_size, optics.pg().pixel_size, device=optics.device, dtype=optics.dtype)
         x = -x
 
         center = psf_center(optics, origins, ray, wl, **kwargs)
@@ -402,17 +402,17 @@ class CoherentFraunhoferPsf(CrtPsfModel):
         scale = exit_pupil_distance * wl  # ... x N_wl
 
         # all: ... x N_wl
-        factor_x = grid_size * du * optics.sensor.pixel_size[1] / scale
-        factor_y = grid_size * dv * optics.sensor.pixel_size[0] / scale
+        factor_x = grid_size * du * optics.pg().pixel_size[1] / scale
+        factor_y = grid_size * dv * optics.pg().pixel_size[0] / scale
         factor_x, factor_y = factor_x.max().ceil().int().item(), factor_y.max().ceil().int().item()
-        range_u = factor_x * scale / optics.sensor.pixel_size[1]
-        range_v = factor_y * scale / optics.sensor.pixel_size[0]
+        range_u = factor_x * scale / optics.pg().pixel_size[1]
+        range_v = factor_y * scale / optics.pg().pixel_size[0]
         new_u_num, new_v_num = range_u / du, range_v / dv
         new_u_num, new_v_num = new_u_num.mean().round().int().item(), new_v_num.mean().round().int().item()
         du2, dv2 = range_u / new_u_num, range_v / new_v_num
 
         # bilinear interpolation
-        new_v, new_u = utils.grid(
+        new_v, new_u = base.grid(
             (new_v_num, new_u_num), (dv2, du2), symmetric=True, dtype=optics.dtype, device=optics.device,
         )  # ... x N_wl x MH x MW
         new_r = new_v / dv[..., None, None] + (grid_size - 1) / 2
@@ -543,8 +543,8 @@ class CoherentPsf(CenterRequiredPsfModel):
 
         xy_center = psf_center(optics, origins, out_ray, wl, **kwargs)
         xy_center = xy_center.unsqueeze(-2).unsqueeze(-2)  # (...,N_wl,1,1,1,2)
-        y, x = utils.grid(
-            psf_size, optics.sensor.pixel_size, dtype=optics.dtype, device=optics.device
+        y, x = base.grid(
+            psf_size, optics.pg().pixel_size, dtype=optics.dtype, device=optics.device
         )  # (...,N_wl,1,H,W)
         x = x + xy_center[..., 0]
         y = y + xy_center[..., 1]

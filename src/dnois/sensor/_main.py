@@ -66,6 +66,9 @@ class Sensor(torch.nn.Module):
         txt = ', '.join(base.Length.fmt(v) for v in self.pixel_size)
         return f'resolution={self.pixel_num}, pixel_size=({txt})'
 
+    def grid(self) -> base.PixelGrid:
+        return base.PixelGrid(self.pixel_num, self.pixel_size)
+
     @property
     def pixel_h(self) -> float:
         """Height of a pixel.\n\n:type: float"""
