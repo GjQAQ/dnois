@@ -24,7 +24,7 @@ class TestZernike(unittest.TestCase):
         if k > 8:
             return
 
-        dx, dy = dnois.zernike_cpd(self.r, self.theta, k)
+        dx, dy = dnois.zernike_grad(self.r, self.theta, k)
         dx_gt, dy_gt = self.zernike_cpd_gt(k)
         self.assertTrue(torch.allclose(dx, dx_gt))
         self.assertTrue(torch.allclose(dy, dy_gt))
@@ -76,3 +76,40 @@ class TestZernike(unittest.TestCase):
             return 2 * 2 ** 0.5 * (9 * x ** 2 + 3 * y ** 2 - 2), 12 * 2 ** 0.5 * x * y
         else:
             raise NotImplementedError()
+
+
+class TestXYPoly(unittest.TestCase):
+    functions = [
+        (lambda x, y: x, lambda x, y: torch.ones_like(x), lambda x, y: torch.zeros_like(x)),
+        (lambda x, y: y, lambda x, y: torch.zeros_like(x), lambda x, y: torch.ones_like(x)),
+        (lambda x, y: x ** 2, lambda x, y: 2 * x, lambda x, y: torch.zeros_like(x)),
+        (lambda x, y: x * y, lambda x, y: y, lambda x, y: x),
+        (lambda x, y: y ** 2, lambda x, y: torch.zeros_like(x), lambda x, y: 2 * y),
+        (lambda x, y: x ** 3, lambda x, y: 3 * x ** 2, lambda x, y: torch.zeros_like(x)),
+        (lambda x, y: x ** 2 * y, lambda x, y: 2 * x * y, lambda x, y: x ** 2),
+        (lambda x, y: x * y ** 2, lambda x, y: y ** 2, lambda x, y: 2 * x * y),
+        (lambda x, y: y ** 3, lambda x, y: torch.zeros_like(x), lambda x, y: 3 * y ** 2),
+    ]
+
+    def setUp(self):
+        self.grid_size = 100
+        x = torch.linspace(-1, 1, self.grid_size, dtype=torch.double)
+        self.x, self.y = torch.meshgrid(x, x, indexing='xy')
+
+    def test_xy_poly(self):
+        for i in range(1, 10):
+            with self.subTest(k=i):
+                self._test_xy_poly_item(i)
+
+    def _test_xy_poly_item(self, k: int):
+        self.assertTrue(torch.allclose(dnois.xy_polynomial(self.x, self.y, k), self.xy_poly_gt(k)))
+        dx, dy = dnois.xy_polynomial_grad(self.x, self.y, k)
+        dx_gt, dy_gt = self.xy_poly_cpd_gt(k)
+        self.assertTrue(torch.allclose(dx, dx_gt))
+        self.assertTrue(torch.allclose(dy, dy_gt))
+
+    def xy_poly_gt(self, k):
+        return self.functions[k - 1][0](self.x, self.y)
+
+    def xy_poly_cpd_gt(self, k):
+        return self.functions[k - 1][1](self.x, self.y), self.functions[k - 1][2](self.x, self.y)

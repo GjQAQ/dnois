@@ -13,7 +13,7 @@ from .. import paraxial
 from ... import base, mt, torch as _t, utils
 from ...base.typing import Any, Ts, Scalar, Sequence
 from ...base import typing as ty
-from ..._func import zernike, zernike_cpd
+from ..._func import zernike, zernike_grad
 
 __all__ = [
     'AsphereRadialPhase',
@@ -90,7 +90,7 @@ def is_even_aspherical(cls) -> bool:
     return _is_instance_or_subclass(cls, _EvenAsphereBase)
 
 
-class ThinLens(Planar):
+class ThinLens(Plane):
     """
     A model for thin lens. Focal length in object space and image space
     can be specified separately. Note that "object space" here means
@@ -183,7 +183,7 @@ class ThinLens(Planar):
             axis_vec = -axis_vec
         zero = torch.zeros_like(axis_vec)
         axis_vec = torch.stack([zero, zero, axis_vec], dim=-1)
-        if self.ctx.rotated:
+        if self.ctx.abs_rotated:
             axis_vec = self.ctx.l2g(axis_vec, True)  # 3
 
         original_d = ray.d
@@ -713,10 +713,10 @@ class Zernike(_EvenAsphereBase):
         r2 = r2 / self.norm_radius ** 2
         r = torch.sqrt(r2)
         theta = torch.atan2(y, x)
-        dx, dy = zernike_cpd(r, theta, 1, r2=r2)
+        dx, dy = zernike_grad(r, theta, 1, r2=r2)
         dx, dy = dx * self.z1, dy * self.z1
         for i in range(2, self.z_n + 1):
-            ddx, ddy = zernike_cpd(r, theta, i, r2=r2)
+            ddx, ddy = zernike_grad(r, theta, i, r2=r2)
             z_item = getattr(self, f'z{i}')
             ddx, ddy = ddx * z_item, ddy * z_item
             dx, dy = dx + ddx, dy + ddy
@@ -766,7 +766,7 @@ class Zernike(_EvenAsphereBase):
     # TODO: paraxial curvature
 
 
-class PlanarPhase(Planar, metaclass=abc.ABCMeta):
+class PlanarPhase(Plane, metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def phase_grad(self, x: Ts, y: Ts) -> tuple[Ts, Ts]:
         r"""
@@ -1093,7 +1093,7 @@ def _check_coefficients(c: ty.Vector, name: str, length: int) -> Ts | None:
     return c
 
 
-class Grating(Planar):
+class Grating(Plane):
     r"""
     Grating surface. It is uniformly extended from :math:`-\infty` to :math:`\infty`
     in its :ref:`local <guide_optics_rt_slcs>` x-coordinate and has periodic structure

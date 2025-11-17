@@ -24,8 +24,9 @@ __all__ = [
     'CoaxialSurfaceSequence',
     'Context',
     'IntersectionConfig',
-    'Planar',
+    'Plane',
     'RayCollector',
+    'RelativeContext',
     'Stop',
     'Surface',
     'SurfaceSequence',
@@ -61,7 +62,7 @@ def _rotation_mat(angles: Ts) -> Ts:
         [-s[2], c[2], zero],
         [zero, zero, ones],
     ])
-    return m1 @ m2 @ m3
+    return m3 @ m2 @ m1
 
 
 class Context(_t.EnhancedModule):
@@ -137,11 +138,10 @@ class Context(_t.EnhancedModule):
         :return: Local vectors, a tensor of shape ``(..., 3)``.
         :rtype: Tensor
         """
-        if self.shifted and not direction:
-            x = x - self.origin
-        if self.rotated:
-            rm = _rotation_mat(torch.stack([self._get_csp('theta'), self._get_csp('phi'), self._get_csp('chi')]))
-            x = rm @ x.unsqueeze(-1)
+        if self.abs_shifted and not direction:
+            x = x - self.abs_origin
+        if self.abs_rotated:
+            x = self.abs_rm @ x.unsqueeze(-1)
             x = x.squeeze(-1)
         return x
 
@@ -164,13 +164,11 @@ class Context(_t.EnhancedModule):
         :return: Global vectors, a tensor of shape ``(..., 3)``.
         :rtype: Tensor
         """
-        if self.rotated:
-            rm = _rotation_mat(torch.stack([self._get_csp('theta'), self._get_csp('phi'), self._get_csp('chi')]))
-            rm = rm.inverse()
-            x = rm @ x.unsqueeze(-1)
+        if self.abs_rotated:
+            x = self.abs_rm.inverse() @ x.unsqueeze(-1)
             x = x.squeeze(-1)
-        if self.shifted and not direction:
-            x = x + self.origin
+        if self.abs_shifted and not direction:
+            x = x + self.abs_origin
         return x
 
     def g2l_ray(self, ray: BatchedRay) -> BatchedRay:
@@ -184,6 +182,14 @@ class Context(_t.EnhancedModule):
         ray.o = self.l2g(ray.o, False)
         ray.d = self.l2g(ray.d, True)
         return ray
+
+    def relative(self) -> 'RelativeContext':
+        ctx = RelativeContext(self.surface, self.seq, self.upward_in)
+        for name in self._transform_params:
+            value = getattr(self, name, ...)
+            if value is not ...:
+                setattr(ctx, name, value)
+        return ctx
 
     def to_dict(self, keep_tensor: bool = True) -> dict[str, Any]:
         d = {}
@@ -288,6 +294,11 @@ class Context(_t.EnhancedModule):
         ))
 
     @property
+    def rm(self) -> ty.Ts:
+        """Rotation matrix.\n\n:type:Tensor"""
+        return _rotation_mat(torch.stack([self._get_csp('theta'), self._get_csp('phi'), self._get_csp('chi')]))
+
+    @property
     def origin(self) -> Ts:
         r"""
         Coordinate of the origin of local coordinate system in the global one.
@@ -311,6 +322,44 @@ class Context(_t.EnhancedModule):
         for n in 'xyz':
             if hasattr(self, n):
                 delattr(self, n)
+
+    @property
+    def abs_rm(self) -> ty.Ts:
+        """
+        Rotation matrix between global and local frame.
+        Typically identical to :attr:`.rm`.
+
+        :type: Tensor
+        """
+        return self.rm
+
+    @property
+    def abs_origin(self) -> ty.Ts:
+        """
+        Coordinate of the origin of local coordinate system in the global one.
+        Typically identical to :attr:`.origin`.
+
+        :type: Tensor
+        """
+        return self.origin
+
+    @property
+    def abs_rotated(self) -> bool:
+        """
+        Similar to :attr:`.rotated` but judged in global frame.
+
+        :type: bool
+        """
+        return self.rotated
+
+    @property
+    def abs_shifted(self) -> bool:
+        """
+        Similar to :attr:`.shifted` but judged in global frame.
+
+        :type: bool
+        """
+        return self.shifted
 
     @classmethod
     def from_dict(cls, d: dict) -> Self:
@@ -426,6 +475,79 @@ class CoaxialContext(Context):
         return obj
 
 
+class RelativeContext(Context):
+    """
+    A subclass of :class:`Context` for surfaces whose local frame
+    is defined relative that of the previous surface.
+
+    In this class, the rigid motion parameters (three shift and
+    three rotation parameters) and other related quantities are
+    defined relative to the previous surface, i.e. describes the
+    pose of local frame of this surface in that of the previous one,
+    while :attr:`.abs_rm` and :attr:`.abs_origin` are defined in
+    global coordinate system.
+
+    If this surface is the first one, this context is equivalent to
+    :class:`Context`.
+    """
+
+    @property
+    def abs_rm(self) -> ty.Ts:
+        r"""
+        Rotation matrix between global and local frame:
+
+        .. math::
+            \mathbf{R}'=\mathbf{R}_2\mathbf{R}_1
+
+        where :math:`\mathbf{R}_1` is :attr:`.abs_rm` of the
+        previous surface and :math:`\mathbf{R}_2` is :attr:`.rm`.
+
+        :type: Tensor
+        """
+        r2 = self.rm
+        if self.index == 0:
+            return r2
+
+        r1 = self.ctx_before.abs_rm
+        return r2 @ r1
+
+    @property
+    def abs_origin(self) -> ty.Ts:
+        r"""
+        Coordinate of the origin of local frame in the global one:
+
+        .. math::
+            \mathbf{x}'=\mathbf{x}_1+\mathbf{R}_1^{-1}\mathbf{x}_2
+
+        where :math:`\mathbf{x}_1` and :math:`\mathbf{R}_1` are
+        :attr:`.abs_origin` and :attr:`.abs_rm` of the previous surface,
+        respectively, and :math:`\mathbf{x}_2` is :attr:`.origin`.
+
+        :type: Tensor
+        """
+        s2 = self.origin
+        if self.index == 0:
+            return s2
+
+        s1 = self.ctx_before.abs_origin
+        r1 = self.ctx_before.abs_rm
+        return s1 + r1.inverse() @ s2
+
+    @property
+    def abs_rotated(self):
+        if self.index == 0:
+            return self.rotated
+        else:
+            return self.rotated or self.ctx_before.abs_rotated
+
+    @property
+    def abs_shifted(self):
+        if self.index == 0:
+            return self.shifted
+        else:
+            return self.shifted or self.ctx_before.abs_shifted
+
+
 class _DefaultMixIn:
     default: Self  #: Default configuration.
 
@@ -443,7 +565,7 @@ class IntersectionConfig(base.AsJsonMixIn, _DefaultMixIn):
     #: Similar to :attr:`.tolerance`, but used in validity check of rays.
     tolerance_strict: float = 20e-9
     #: Maximum absolute update to the variable to be solved in Newton's method.
-    update_bound: float = 5.
+    update_bound: float = 10.
     #: A small value to avoid division by zero.
     epsilon: float = 1e-9
     #: Whether to mark rays whose directions are opposite (sign of :math:`d_z` is wrong)  as invalid
@@ -865,7 +987,7 @@ class Surface(_t.EnhancedModule, utils.VarHookMixIn, metaclass=abc.ABCMeta):
         return self.normal(x, y)
 
 
-class Planar(Surface):
+class Plane(Surface):
     """
     Planar surface.
 
@@ -898,7 +1020,7 @@ class Planar(Surface):
         return - ray.z / ray.d_z
 
 
-class Stop(Planar):
+class Stop(Plane):
     """
     This type of surfaces only blocks rays outside the aperture and does not change their
     energy or direction.
@@ -1241,6 +1363,15 @@ class SurfaceSequence(
         rc.handles = handles
         return rc
 
+    def all_relative_(self) -> ty.Self:
+        """
+        Convert contexts of all the surfaces to :class:`RelativeContext`.
+
+        :return: self.
+        """
+        for s in self:
+            s.context = s.context.relative()
+
     @property
     def first(self) -> Surface:
         """
@@ -1379,6 +1510,9 @@ class CoaxialSurfaceSequence(SurfaceSequence):
         for i in range(len(self) - 1):
             self.ctxs[i].distance = self.ctxs[i + 1].distance
         self.ctxs[-1].distance = 0
+
+    def all_relative_(self) -> ty.Self:
+        raise RuntimeError(f'{self.__class__.__name__} does not support this method.')
 
     @property
     def ctxs(self) -> list[CoaxialContext]:

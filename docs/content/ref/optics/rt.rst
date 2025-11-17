@@ -24,6 +24,7 @@ Optical surfaces
     CoaxialSurfaceSequence
     Context
     RayCollector
+    RelativeContext
     Surface
     SurfaceSequence
 
@@ -37,6 +38,7 @@ Apertures
     BoundedAperture
     CircularAperture
     DummyAperture
+    RectangularAperture
 
 Specific surface types
 =================================
@@ -49,7 +51,7 @@ Specific surface types
     EvenAsphere
     Fresnel
     Grating
-    Planar
+    Plane
     PolynomialPhase
     Sphere
     Stop

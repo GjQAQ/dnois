@@ -4,12 +4,14 @@ from . import utils, torch as _t
 from .base import typing as ty
 
 __all__ = [
+    'xy_polynomial',
+    'xy_polynomial_grad',
     'zernike',
-    'zernike_cpd',
+    'zernike_grad',
 ]
 
 
-def _nm_from_k(k: int) -> tuple[int, int]:
+def _zernike_k2nm(k: int) -> tuple[int, int]:
     if k <= 0:
         raise ValueError(f'k must be positive, got {k}')
 
@@ -147,7 +149,7 @@ def zernike(r: ty.Numeric, theta: ty.Numeric, k: int, **kwargs) -> ty.Numeric:
     .. [#noll] Noll, R. J. (1976). Zernike polynomials and atmospheric turbulence.
         Journal of the Optical Society of America, 66(3), 207-211.
     """
-    n, m = _nm_from_k(k)
+    n, m = _zernike_k2nm(k)
     radial = _zernike_radial(r, n, m, **kwargs)
     norm = _zernike_normalization(n, m)
     if m == 0:
@@ -160,7 +162,7 @@ def zernike(r: ty.Numeric, theta: ty.Numeric, k: int, **kwargs) -> ty.Numeric:
     return radial * azimuthal * norm
 
 
-def zernike_cpd(r: ty.Numeric, theta: ty.Numeric, k: int, **kwargs) -> tuple[ty.Numeric, ty.Numeric]:
+def zernike_grad(r: ty.Numeric, theta: ty.Numeric, k: int, **kwargs) -> tuple[ty.Numeric, ty.Numeric]:
     r"""
     Computes the Cartesian partial derivatives of :math:`k`-th term of Zernike polynomials.
     See :func:`zernike` for more details.
@@ -171,7 +173,7 @@ def zernike_cpd(r: ty.Numeric, theta: ty.Numeric, k: int, **kwargs) -> tuple[ty.
     :return: A 2-tuple indicating :math:`\pfrac{Z_k(r,\theta)}{x}` and
         :math:`\pfrac{Z_k(r,\theta)}{y}`.
     """
-    n, m = _nm_from_k(k)
+    n, m = _zernike_k2nm(k)
     d_radial = _zernike_radial_derivative(r, n, m, **kwargs)
     norm = _zernike_normalization(n, m)
     if m == 0:
@@ -189,3 +191,74 @@ def zernike_cpd(r: ty.Numeric, theta: ty.Numeric, k: int, **kwargs) -> tuple[ty.
     dx = _1 * utils.GenericCompute.cos(theta) - _2 * utils.GenericCompute.sin(theta)
     dy = _1 * utils.GenericCompute.sin(theta) + _2 * utils.GenericCompute.cos(theta)
     return dx * norm, dy * norm
+
+
+def _xy_k2ni(k):
+    n = 1
+    while (n + 1) * (n + 2) // 2 - 1 < k:
+        n += 1
+    i = k - n * (n + 1) // 2
+    return i, n
+
+
+def xy_polynomial(x: ty.Numeric, y: ty.Numeric, k: int) -> ty.Numeric:
+    """
+    Computes the :math:`k`-th term of XY polynomials:
+
+    .. math::
+        P_k(x,y)=x^{n-i}y^i,
+
+    where :math:`n` and :math:`i` are determined by :math:`k` as follows:
+
+    === === ===
+    k   n   i
+    === === ===
+    1   1   0
+    2   1   1
+    3   2   0
+    4   2   1
+    5   2   2
+    6   3   0
+    ...
+    -----------
+    === === ===
+
+    :param x: X coordinate.
+    :param y: Y coordinate.
+    :param k: Index of XY polynomial.
+    :return: Value of :math:`P_k(x,y)`.
+    """
+    i, n = _xy_k2ni(k)
+    if i == 0:
+        return x ** n
+    elif i == n:
+        return y ** n
+    else:
+        return x ** (n - i) * y ** i
+
+
+def xy_polynomial_grad(x: ty.Numeric, y: ty.Numeric, k: int) -> tuple[ty.Numeric, ty.Numeric]:
+    r"""
+    Computes partial derivatives of :math:`k`-th term of XY polynomials.
+    See :func:`xy_polynomial` for more details.
+
+    :param x: X coordinate.
+    :param y: Y coordinate.
+    :param k: Index of XY polynomial.
+    :return: A 2-tuple indicating :math:`\pfrac{P_k(x,y)}{x}` and
+        :math:`\pfrac{P_k(x,y)}{y}`.
+    """
+    i, n = _xy_k2ni(k)
+    if i == n:
+        dx = utils.GenericCompute.zero(x)
+    elif i == n - 1:
+        dx = y ** i
+    else:
+        dx = (n - i) * x ** (n - i - 1) * y ** i
+    if i == 0:
+        dy = utils.GenericCompute.zero(y)
+    elif i == 1:
+        dy = x ** (n - i)
+    else:
+        dy = i * x ** (n - i) * y ** (i - 1)
+    return dx, dy

@@ -1,5 +1,6 @@
 import abc
 import functools
+import operator
 
 import torch
 from torch import nn
@@ -15,6 +16,7 @@ __all__ = [
     'BoundedAperture',
     'CircularAperture',
     'DummyAperture',
+    'RectangularAperture',
     'Sampler',
 ]
 
@@ -454,9 +456,17 @@ class RectangularAperture(BoundedAperture):
     :param width_y: Width in y direction. Must be finite.
         Default: equal to ``width_x``.
     :type width_y: float | Tensor
+    :param center_x: Center of the aperture in x direction. Default: ``None``.
+    :param center_y: Center of the aperture in y direction. Default: ``None``.
     """
 
-    def __init__(self, width_x: ty.Scalar = None, width_y: ty.Scalar = None):
+    def __init__(
+        self,
+        width_x: ty.Scalar = None,
+        width_y: ty.Scalar = None,
+        center_x: ty.Scalar = None,
+        center_y: ty.Scalar = None,
+    ):
         super().__init__()
         if width_x is None:
             width_x = _default_aperture_size() * 2
@@ -465,16 +475,35 @@ class RectangularAperture(BoundedAperture):
 
         self.register_parameter('width_x', None)
         self.register_parameter('width_y', None)
+        self.register_parameter('center_x', None)
+        self.register_parameter('center_y', None)
+
         w1 = ty.scalar(width_x, dtype=torch.get_default_dtype())
         w2 = ty.scalar(width_y, dtype=torch.get_default_dtype())
+        if center_x is not None:
+            center_x = ty.scalar(center_x, dtype=torch.get_default_dtype())
+        if center_y is not None:
+            center_y = ty.scalar(center_y, dtype=torch.get_default_dtype())
         if w1.item() <= 0 or w2.item() <= 0:
             raise ValueError('width_x and width_y must be positive')
 
         self.width_x: nn.Parameter = nn.Parameter(w1, False)
         self.width_y: nn.Parameter = nn.Parameter(w2, False)
+        if center_x is not None:
+            self.center_x: nn.Parameter = nn.Parameter(center_x, False)
+        if center_y is not None:
+            self.center_y: nn.Parameter = nn.Parameter(center_y, False)
 
     def extra_repr(self) -> str:
-        return f'width_x={base.Length.fmt(self.width_x.item())}, width_y={base.Length.fmt(self.width_y.item())}'
+        text = [
+            f'width_x={base.Length.fmt(self.width_x.item())}',
+            f'width_y={base.Length.fmt(self.width_y.item())}',
+        ]
+        if self.center_x is not None:
+            text.append(f'center_x={base.Length.fmt(self.center_x.item())}')
+        if self.center_y is not None:
+            text.append(f'center_y={base.Length.fmt(self.center_y.item())}')
+        return ', '.join(text)
 
     def max_radius(self) -> Ts:
         return torch.sqrt(self.width_x.square() + self.width_y.square()) / 2
@@ -487,6 +516,7 @@ class RectangularAperture(BoundedAperture):
 
     def evaluate(self, x: Ts, y: Ts) -> torch.BoolTensor:
         ratio = (1 + conf.detection_radius_eps) / 2
+        x, y = self._shift(x, y, True)
         return ty.cast(torch.BoolTensor, torch.logical_and(
             x.abs() <= self.width_x * ratio, y.abs() <= self.width_y * ratio
         ))
@@ -509,4 +539,26 @@ class RectangularAperture(BoundedAperture):
         d = super().to_dict(keep_tensor)
         d['width_x'] = self._attr2dictitem('width_x', keep_tensor)
         d['width_y'] = self._attr2dictitem('width_y', keep_tensor)
+        d['center_x'] = self._attr2dictitem('center_x', keep_tensor)
+        d['center_y'] = self._attr2dictitem('center_y', keep_tensor)
         return d
+
+    def _shift(self, x: Ts, y: Ts, inverse: bool = False):
+        op = operator.sub if inverse else operator.add
+        if self.center_x is not None:
+            x = op(x, self.center_x)
+        if self.center_y is not None:
+            y = op(y, self.center_y)
+        return x, y
+
+    def _sample_random(self, n):
+        return self._shift(*super()._sample_random(n))
+
+    def _sample_rect(self, n):
+        return self._shift(*super()._sample_rect(n))
+
+    def _sample_unipolar(self, n_angle, n_radius):
+        return self._shift(*super()._sample_unipolar(n_angle, n_radius))
+
+    def _sample_diameter(self, n, theta):
+        return self._shift(*super()._sample_diameter(n, theta))

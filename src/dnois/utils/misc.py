@@ -347,17 +347,19 @@ class GenericCompute:
             return self.func(value)
 
 
+# @formatter:off
 GenericCompute.zero = GenericCompute(lambda x: 0 * x, torch.zeros_like)
-GenericCompute.one = GenericCompute(lambda x: 1 if isinstance(x, int) else 1., torch.ones_like)
-GenericCompute.cos = GenericCompute(math.cos, torch.cos)
-GenericCompute.sin = GenericCompute(math.sin, torch.sin)
-GenericCompute.tan = GenericCompute(math.tan, torch.tan)
+GenericCompute.one  = GenericCompute(lambda x: 1 if isinstance(x, int) else 1., torch.ones_like)
+GenericCompute.cos  = GenericCompute(math.cos, torch.cos)
+GenericCompute.sin  = GenericCompute(math.sin, torch.sin)
+GenericCompute.tan  = GenericCompute(math.tan, torch.tan)
 GenericCompute.acos = GenericCompute(math.acos, torch.acos)
 GenericCompute.asin = GenericCompute(math.asin, torch.asin)
-GenericCompute.exp = GenericCompute(math.exp, torch.exp)
-GenericCompute.log = GenericCompute(math.log, torch.log)
+GenericCompute.exp  = GenericCompute(math.exp, torch.exp)
+GenericCompute.log  = GenericCompute(math.log, torch.log)
 GenericCompute.sqrt = GenericCompute(math.sqrt, torch.sqrt)
-GenericCompute.abs = GenericCompute(math.fabs, torch.abs)
+GenericCompute.abs  = GenericCompute(math.fabs, torch.abs)
+# @formatter:on
 
 
 class ContextCache:

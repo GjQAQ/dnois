@@ -305,7 +305,7 @@ class BatchedRay(_t.TensorContainerMixIn):
 
     def intersect_with_plane(self, normal: Ts, constant: Ts | float) -> Ts:
         r"""
-        Computers the intersection of the rays with a plane whose equation is:
+        Computes the intersection of the rays with a plane whose equation is:
 
         .. math::
             \mathbf{n}\cdot\mathbf{x}=c

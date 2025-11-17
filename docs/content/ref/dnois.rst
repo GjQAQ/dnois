@@ -34,8 +34,10 @@ Functions
 .. autosummary::
     :toctree: ../generated/dnois/functions
 
+    xy_polynomial
+    xy_polynomial_grad
     zernike
-    zernike_cpd
+    zernike_grad
 
 *********************************
 Debugging

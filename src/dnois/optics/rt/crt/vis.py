@@ -1,16 +1,21 @@
+import functools
 from dataclasses import dataclass, field
 import math
+import operator
 import warnings
 
 import torch
 
 from .. import surf
 from ..ray import BatchedRay
-from .... import base, ext, utils
+from .... import base, ext, torch as _t, utils
 
 __all__ = [
     'draw_rays',
+    'draw_rays_3d',
     'draw_surfaces',
+    'draw_surfaces_3d',
+    'draw_surface_3d',
     'draw_surface_circular_stop',
     'draw_surface_fresnel',
     'draw_surface_thin_lens',
@@ -25,9 +30,11 @@ if ty.TYPE_CHECKING:
     if ext.vis.mpl_available():
         from matplotlib.axes import Axes
         from matplotlib.pyplot import Figure
+        from mpl_toolkits.mplot3d import Axes3D
     else:
         Axes = ...
         Figure = ...
+        Axes3D = ...
 
 
 def _fov_linestyle(n: int) -> list[str]:
@@ -59,6 +66,11 @@ class CRTVisConfig:
     #: Line sytle to draw plane of object or image.
     linestyle_terminal: dict = field(default_factory=lambda: {'color': 'black', 'linewidth': 2})
     surface_points: int = 100  #: Number of points to draw profiles of surfaces.
+
+    # region 3D drawing options
+    v3d_surface_color: tuple = (0., 1., 1., 0.5)  #: Color of surfaces.
+    v3d_reflective_surface_color: tuple = ('silver', 0.5)  #: Color of reflective surfaces.
+    # endregion
 
 
 @dataclass
@@ -197,3 +209,62 @@ def draw_surfaces(
                 z = edge_z[i]
                 r1, r2 = r2, r1
             ax.plot([[z, z], [z, z]], [[r2, -r2], [r1, -r1]], **config.linestyle_surface)
+
+
+def draw_surfaces_3d(
+    ax: 'Axes3D', surfaces: surf.SurfaceSequence, config: CRTVisConfig
+):
+    for sf in surfaces:
+        draw_surface_3d(ax, sf, config)
+
+
+def draw_surface_3d(ax: 'Axes3D', sf: surf.Surface, config: CRTVisConfig):
+    apt = sf.aperture
+    if isinstance(apt, (surf.AnnularAperture, surf.CircularAperture)):
+        x, y = apt.sample_unipolar(10, 10)
+    elif isinstance(apt, surf.RectangularAperture):
+        x, y = apt.sample_rect(50)
+    else:
+        raise NotImplementedError()
+
+    z = sf.h(x, y)
+    points = torch.stack([x, y, z], dim=-1)  # (N,3)
+    points = sf.context.l2g(points)  # (N,3)
+    points = points.cpu().detach().numpy()
+    x, y, z = points.T
+
+    if sf.reflective:
+        sf_color = config.v3d_reflective_surface_color
+    else:
+        sf_color = config.v3d_surface_color
+
+    ax.plot_trisurf(x, y, z, color=sf_color)
+
+
+def draw_rays_3d(ax: 'Axes3D', rays: list[BatchedRay], wl: float):
+    color = utils.wl2rgb(wl)
+
+    valid = functools.reduce(operator.and_, (r.valid for r in rays))
+    for i in range(len(rays) - 1):
+        draw_ray_batch_3d(ax, rays[i], rays[i + 1].o, valid, color)
+
+
+def draw_ray_batch_3d(ax: 'Axes3D', ray: BatchedRay, ends: ty.Ts, valid: ty.Ts, color=None):
+    o = ray.o.squeeze()
+    _t.check_3d_vector(o)
+    _t.check_3d_vector(ends)
+    if o.ndim != 2 or ends.ndim != 2 or o.size(0) != ends.size(0):
+        raise ValueError('Invalid ray batch')
+
+    if color is None and ray.with_wl:
+        wl = ray.wl.squeeze().item()
+        color = utils.wl2rgb(wl)
+
+    kwargs = {}
+    if color is not None:
+        kwargs['color'] = color
+
+    points = torch.stack([o, ends], dim=-1)
+    points = torch.index_select(points, 0, torch.argwhere(valid).squeeze())  # (N,3,2)
+    for point in points.tolist():
+        ax.plot(*point, **kwargs)

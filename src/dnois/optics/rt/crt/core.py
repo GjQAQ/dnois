@@ -799,8 +799,7 @@ class CoaxialRayTracing(
         chief = BatchedRay(chief_point, d.unsqueeze(-2), wl)  # ... x N_wl
         return chief
 
-    # Visualization
-    # =============================
+    # region Visualization
 
     @ext.vis.visfunc
     @utils.with_external
@@ -971,6 +970,40 @@ class CoaxialRayTracing(
             ray = BatchedRay(o, d, wl.reshape(1, -1, 1))  # N x N_wl x N_spp
         draw_rays(ax, self.surfaces, ray, self.depth.isinf().item(), height, wl, legend)
         return fig
+
+    @ext.vis.visfunc
+    @utils.with_external
+    def plot_3d(self, fov: tuple[float, float] = (0., 0.), depth: ty.Scalar = None, wl: ty.Scalar = None):
+        import matplotlib.pyplot as plt
+
+        fig = plt.figure()
+        ax = fig.add_subplot(projection='3d')
+
+        draw_surfaces_3d(ax, self.surfaces, self.vis_config)
+
+        depth = ty.scalar(depth.squeeze())
+        wl = ty.scalar(wl.squeeze())
+        point_source = self.fovd2obj([fov], depth.item())
+        point_source = point_source.squeeze()  # (3,)
+        entry_points = self.surfaces.first.sample('unipolar')  # (N,3)
+        d, _ = _make_direction(entry_points, point_source)  # (N,3)
+        init_ray = BatchedRay(entry_points, d, wl)  # (N,)
+
+        rays = [init_ray]
+        for s in self.surfaces:
+            rays.append(s(rays[-1]))
+        if depth.isinf().item():
+            rays.pop(0)
+
+        draw_rays_3d(ax, rays, wl.item())
+
+        ax.view_init(vertical_axis='y')
+        ax.set_xlabel('x')
+        ax.set_ylabel('y')
+        ax.set_zlabel('z')
+        ax.set_aspect('equal')
+
+    # endregion
 
     @property
     def psf_size(self):
